@@ -120,3 +120,34 @@ underlying data pulled during Phase 1 is unaffected (SEC doesn't validate User-A
 this was a configuration-loading bug, not a data-quality one — but it's exactly the kind of
 silent-fallback-to-a-default failure mode the project's own rules warn against, so it's fixed
 rather than left as a known issue.
+
+## Phase 3
+
+**Why derive max profit/loss/breakeven generically instead of a formula per strategy?** A
+payoff-at-expiration function built from long/short calls and puts is piecewise linear, so
+every extremum provably occurs at a leg's strike, at the `S=0` floor, or along the asymptotic
+slope past the highest strike. Evaluating at those points generically handles all nine required
+strategies (and any future one) with one algorithm, instead of nine independently-derived and
+independently-tested formulas that would need to be re-verified whenever a strategy is added.
+It was still cross-checked against hand-derived values for every required strategy before
+trusting it, rather than assuming the general argument was implemented correctly.
+
+**Why `Decimal` in the payoff engine but `float` in Black-Scholes?** Strikes and premiums are
+exact, discrete quantities — `Decimal` is correct there, and the project's own tests caught a
+`Decimal`-vs-`float` bug in Phase 1 precisely because the difference matters. Black-Scholes
+inputs (implied vol, time-to-expiry as a year fraction) aren't exact quantities to begin with,
+and `math.log`/`math.exp`/`statistics.NormalDist` require floats — `Decimal`'s exactness
+guarantee wouldn't apply to a model output that's already an approximation.
+
+**Why implement Black-Scholes at all, given the American/European mismatch is a real
+limitation?** Documented, bounded model error from a well-understood, verifiable formula is
+preferable to no Greeks at all when a provider doesn't supply them — the alternative isn't "no
+error," it's "no Greeks." The mismatch is stated plainly in `docs/options_methodology.md`
+rather than presented as exact, and every Black-Scholes-derived value is tagged
+`GreeksSource.BLACK_SCHOLES` so it's never confused with a provider-quoted Greek.
+
+**Why only one implied-move methodology (ATM straddle), and why say so explicitly?** It's the
+standard, widely-cited approximation, but it is one of several defensible methods (wider
+strangle-based estimates, variance-swap-style calculations exist too). Claiming it's the only
+correct approach would be a specific, checkable claim this project doesn't want to make
+incorrectly — `docs/options_methodology.md` says outright that alternatives exist.

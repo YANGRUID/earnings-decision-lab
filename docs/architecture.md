@@ -1,13 +1,15 @@
 # Architecture (working document)
 
-This document is updated as each phase lands. It currently reflects **Phase 1**: PostgreSQL
-schema (`company`, `earnings_event`, `earnings_expectation_snapshot`, `earnings_result`,
-`price_reaction`, `options_snapshot`, `volatility_snapshot`, `filing`) is live via Alembic
-migrations, provider interfaces exist for all five provider categories, and two real (free,
-no-key) adapters — SEC EDGAR and Stooq — are implemented and, for SEC EDGAR, used to seed real
-historical earnings data for NVDA/AMD/MU/SNDK. Details: [data_model.md](data_model.md),
-[data_sources.md](data_sources.md), [limitations.md](limitations.md).
-No API endpoints, analytics, or AI components exist yet.
+This document is updated as each phase lands. It currently reflects **Phase 3**: the
+PostgreSQL schema (9 tables, including `price_bar`) is live via Alembic migrations; SEC EDGAR
+(filings/actuals) and Tiingo/Alpha Vantage (daily prices, fallback-chained) are real, wired-up
+providers; 150 real earnings events are seeded for NVDA/AMD/MU/SNDK, 77 with a confirmed
+earnings date and full price-reaction/expectation-snapshot backfill; and a deterministic
+options analytics engine (strategy payoffs, Black-Scholes Greeks, ATM-straddle implied move)
+is implemented and unit-tested. Details: [data_model.md](data_model.md),
+[data_sources.md](data_sources.md), [options_methodology.md](options_methodology.md),
+[limitations.md](limitations.md).
+No API endpoints or AI components exist yet.
 
 ## Goal
 
