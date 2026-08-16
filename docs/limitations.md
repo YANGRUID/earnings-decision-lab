@@ -3,6 +3,29 @@
 Honest accounting of gaps, updated as each phase lands. Nothing here is hidden in code
 comments only — anything that affects what the system can honestly claim is listed here.
 
+## Data coverage (Phase 2)
+
+- **No live daily price history yet.** The Phase 1 plan was to use Stooq (free, no key); live
+  testing in Phase 2 found `stooq.com/robots.txt` disallows automated access and its CSV
+  endpoint now requires solving a JavaScript proof-of-work challenge. Yahoo Finance's chart API
+  (the other common "free, no-key" source, used by `yfinance`) was checked as a fallback and
+  found to have the same `Disallow: /` in `query1.finance.yahoo.com/robots.txt`. Neither is
+  used anywhere in this codebase — see [data_sources.md](data_sources.md). `price_bar`,
+  `price_reaction`, and price-derived fields on `earnings_expectation_snapshot` remain empty
+  until a compliant provider (Alpha Vantage, Tiingo, Twelve Data — all documented APIs with
+  usable free tiers) is selected and a free API key configured. Creating that account is a
+  user action, not something performed autonomously.
+- **`earnings_date` is now populated for 77 of 150 events** (NVDA 18/48, AMD 27/49, MU 28/49,
+  SNDK 4/4) via 8-K Item 2.02 filings — a real, SEC-sourced signal, not a guess. The remaining
+  events have no matching 8-K within the 200 most-recent-filings window SEC's API returns for
+  these tickers (older 8-Ks fall outside that window); they stay `date_confirmed=False` rather
+  than being assigned an approximate date.
+- **The 8-K-to-quarter match is a proximity heuristic** (nearest qualifying 8-K filed 10–60
+  days after the quarter's `period_end_date`), documented in
+  `ingestion/earnings_date_backfill.py`. It is deterministic and unit-tested but could
+  mis-assign a quarter in an unusual reporting-calendar edge case; not currently observed in
+  spot checks of the 77 matches.
+
 ## Data coverage (Phase 1)
 
 - **No discrete Q4 EPS/revenue from XBRL.** Most filers do not separately tag a standalone Q4

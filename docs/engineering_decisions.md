@@ -72,3 +72,29 @@ simply isn't `CREATE EXTENSION`'d until it's needed.
 **Why host Postgres on port 5433, not the default 5432?** An unrelated project already runs a
 Postgres container on 5432 on this machine; 5433 avoids a collision without requiring the
 other project to change.
+
+## Phase 2
+
+**Why is there no live price-data ingestion yet, despite Stooq being implemented in Phase 1?**
+Live testing found `stooq.com/robots.txt` disallows automated access and its CSV endpoint now
+requires solving a JavaScript proof-of-work challenge. A fallback check of Yahoo Finance's
+chart API found the identical `Disallow: /` in its robots.txt. Both are explicit "no bots"
+signals from the site operators, not just inconvenient rate limits — using either would mean
+scraping a site that prohibits automated access, or solving an anti-bot challenge, both of
+which this project's rules rule out regardless of how common the practice is elsewhere. The
+honest response is to stop, document it, and pick a provider whose terms actually allow this
+(see docs/data_sources.md) rather than route around the block.
+
+**Why use 8-K Item 2.02 filings for `earnings_date` instead of waiting for a paid
+earnings-calendar provider?** SEC's submissions API tags each 8-K with its item codes, and
+Item 2.02 ("Results of Operations and Financial Condition") is SEC's own designation for
+results-announcement filings — this is a real, sourced signal, not a scrape or a guess. It's
+free and already available from a provider already in use (SEC EDGAR), so there's no reason to
+block real earnings dates on an unrelated provider decision.
+
+**Why split `bootstrap_phase2.py` into a separate `backfill_earnings_dates.py` instead of one
+script that does price ingestion too?** The SEC-EDGAR-only work (period-end dates,
+earnings-release dates) has no dependency on the blocked market-data decision and is real,
+useful progress on its own. Bundling it with the blocked price-ingestion code would have meant
+either shipping nothing until a provider is chosen, or shipping broken/dead code that calls a
+provider known not to work — neither is acceptable.

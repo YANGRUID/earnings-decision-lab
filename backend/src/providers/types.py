@@ -38,6 +38,10 @@ class FilingMetadata(ProvenancedModel):
     primary_document: str
     source_url: str
     fiscal_period: str | None = None
+    # Comma-separated 8-K item codes (e.g. "2.02,9.01"), where SEC provides
+    # them. Item 2.02 = "Results of Operations and Financial Condition" —
+    # the reliable signal that an 8-K is an earnings-release filing.
+    items: str | None = None
 
 
 class CompanyFactValue(BaseModel):

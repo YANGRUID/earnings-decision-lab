@@ -98,13 +98,15 @@ class SECEdgarProvider(FilingsProvider):
         data = self._get_json(_SUBMISSIONS_URL.format(cik=cik))
         entity_name = data.get("name", "")
         recent = data["filings"]["recent"]
+        n = len(recent["form"])
         results: list[FilingMetadata] = []
-        for form, filing_date, accession, primary_doc, period in zip(
+        for form, filing_date, accession, primary_doc, period, items in zip(
             recent["form"],
             recent["filingDate"],
             recent["accessionNumber"],
             recent["primaryDocument"],
-            recent.get("reportDate", [None] * len(recent["form"])),
+            recent.get("reportDate", [None] * n),
+            recent.get("items", [None] * n),
             strict=True,
         ):
             if form not in filing_types:
@@ -125,6 +127,7 @@ class SECEdgarProvider(FilingsProvider):
                     primary_document=primary_doc,
                     source_url=source_url,
                     fiscal_period=period or None,
+                    items=items or None,
                     source_provider="sec_edgar",
                     retrieved_at=datetime.now(UTC),
                 )

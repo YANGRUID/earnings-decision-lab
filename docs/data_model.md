@@ -88,6 +88,15 @@ from `options_snapshot` rows.
 required by the "store method, inputs, calculated value, expiration used" requirement for
 implied-move calculations.
 
+### `price_bar` (added Phase 2)
+**Grain:** one row per `(ticker, trade_date, source_provider)` daily bar. Covers both the four
+tracked companies and reference series (market/sector proxies) needed for
+`earnings_expectation_snapshot.sector_return` / `market_return` — `company_id` is null for
+reference tickers that aren't in the `company` table.
+**Keys:** `id` PK; unique `(ticker, trade_date, source_provider)`.
+**Status:** table and model exist; **no rows exist yet** — the market-data provider needed to
+populate it is blocked (see [limitations.md](limitations.md)/[data_sources.md](data_sources.md)).
+
 ### `filing`
 **Grain:** one row per SEC filing, keyed by its globally-unique accession number where one
 exists.

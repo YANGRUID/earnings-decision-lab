@@ -1,10 +1,15 @@
-"""Stooq daily OHLCV adapter — free, no API key, CSV download.
+"""Stooq daily OHLCV adapter — NOT CURRENTLY USABLE. Do not call in ingestion.
 
-Stooq (https://stooq.com) publishes free end-of-day price history for
-personal/research use with no key or signup. It is not a licensed
-redistribution source: per docs/data_sources.md, downloaded price data is
-never committed to this repository (see .gitignore), only used to compute
-derived analytics that are themselves stored with full provenance.
+As of Phase 2, stooq.com/robots.txt disallows automated access
+(``User-agent: * / Disallow: /``) and the CSV download endpoint now serves a
+JavaScript proof-of-work challenge instead of data. Both are unambiguous
+"no bots" signals, and per this project's rules that is a hard stop, not an
+obstacle to route around — see docs/data_sources.md and
+docs/engineering_decisions.md for the full discovery and what replaces it.
+
+This class is kept only because its CSV-parsing logic is real and unit
+tested against a fixture response (tests/test_providers_stooq.py); nothing
+in this codebase constructs and calls it against the live endpoint.
 """
 
 import csv
