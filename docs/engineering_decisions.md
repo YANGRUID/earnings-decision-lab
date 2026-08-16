@@ -98,3 +98,25 @@ earnings-release dates) has no dependency on the blocked market-data decision an
 useful progress on its own. Bundling it with the blocked price-ingestion code would have meant
 either shipping nothing until a provider is chosen, or shipping broken/dead code that calls a
 provider known not to work — neither is acceptable.
+
+**Why Tiingo as primary and Alpha Vantage as fallback, instead of just one?** Tiingo's free
+tier (500 req/hour) comfortably covers routine refreshes of six symbols; Alpha Vantage's
+(25/day) doesn't, so it's a poor primary but a fine occasional backstop. Wrapping both in
+`providers.fallback.MarketDataProviderChain` — try the next provider on any exception, raise
+only if all fail — is a generic pattern (works for any `*Provider` ABC, not just market data)
+that directly implements the project's requirement to handle provider failures without
+silently returning fake data: a failure surfaces as `AllProvidersFailedError`, never as an
+empty/zeroed result that looks like real data.
+
+**Why fix `Settings`' env-file resolution now instead of leaving it?** Discovered while wiring
+up the new API keys: `env_file=".env"` resolves relative to the process's current working
+directory, and every ingestion script so far had been run with `cd backend`, so `.env` (at the
+repo root) was silently never found — `DATABASE_URL` happened to work because the class
+default matched the `.env` value by coincidence, but `SEC_EDGAR_USER_AGENT` was silently using
+its placeholder default the entire time, not the real contact address configured in `.env`.
+Resolving `env_file` relative to `config.py`'s own location (`Path(__file__).resolve()`)
+instead of `cwd` makes this correct regardless of where a script is invoked from. The
+underlying data pulled during Phase 1 is unaffected (SEC doesn't validate User-Agent content);
+this was a configuration-loading bug, not a data-quality one — but it's exactly the kind of
+silent-fallback-to-a-default failure mode the project's own rules warn against, so it's fixed
+rather than left as a known issue.

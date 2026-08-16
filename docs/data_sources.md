@@ -26,61 +26,65 @@ another.
   filers report Q1–Q3 via 10-Q and only a full-year figure via the 10-K). Documented in
   [limitations.md](limitations.md) rather than derived speculatively in raw ingestion.
 
-### Stooq — daily OHLCV — **NOT USABLE, discovered live in Phase 2**
+### Tiingo — daily OHLCV, primary (`backend/src/providers/tiingo.py`)
 
-- **Status:** implemented and unit-tested in Phase 1 against fixture responses, with the
-  intent to use it for live daily OHLCV in Phase 2. When actually run against the live
-  endpoint, two things were found:
-  1. `stooq.com/robots.txt` sets `User-agent: * / Disallow: /` (an explicit allowlist for
-     Googlebot/Bingbot only) — i.e. Stooq's own policy disallows general automated access.
-  2. The CSV download endpoint (`stooq.com/q/d/l/`) now returns a JavaScript proof-of-work
-     challenge page instead of data, rather than a 200 with a CSV body.
-  Both are unambiguous "do not automate against this" signals. Per this project's operating
-  rule ("never scrape sites that prohibit automated access") and its rule against bypassing
-  bot-detection, the adapter is **not called against the live endpoint anywhere in this
-  codebase** — see `backend/src/providers/stooq.py`'s module docstring. This is a genuine,
-  live-discovered gap, not a design choice made in advance.
-- **Why this is worth stating plainly:** Stooq (and, per the same check, Yahoo Finance's
-  `query1.finance.yahoo.com` chart API — also `Disallow: /`) are both extremely common
-  "free, no-key" data sources in quant/research tutorials and tools. Neither is actually
-  compliant with its own robots.txt for automated use. This project follows the stated
-  policy rather than the common practice.
-- **What still works despite this:** SEC-EDGAR-only pieces (real earnings actuals, real
-  earnings dates via 8-K Item 2.02 — see below) are unaffected, since they never depended on
-  Stooq. `backend/src/ingestion/backfill_earnings_dates.py` runs independently of any
-  market-data provider.
-- **Replacement:** an open decision — see docs/limitations.md. The realistic candidates
-  (Alpha Vantage, Tiingo, Twelve Data, Finnhub, Polygon) all have documented APIs with usable
-  free tiers, but every one of them requires a free-account signup this project cannot
-  perform autonomously (creating accounts is outside this project's authorized actions).
+- **What it provides:** daily OHLCV, ~20 years of history per symbol in a single call.
+- **Cost:** free tier — 500 requests/hour, more than enough for six symbols refreshed daily.
+- **Auth:** API key (`TIINGO_API_KEY` in `.env`; free signup at tiingo.com — the user created
+  the account and supplied the key, since this project doesn't create accounts autonomously).
+- **Terms of service:** documented, authenticated API explicitly intended for programmatic
+  use, with terms permitting personal/research use — unlike Stooq/Yahoo (below), this is not a
+  scraped web page.
+- **Status:** live and wired up. Backfilled all four tickers plus SPY/SOXX reference series
+  back to 2007-01-03 (SNDK from its 2025 spin-off date) — see
+  [data_model.md](data_model.md#price_bar-added-phase-2).
+
+### Alpha Vantage — daily OHLCV, fallback (`backend/src/providers/alpha_vantage.py`)
+
+- **What it provides:** same shape as Tiingo (`TIME_SERIES_DAILY`, `outputsize=full`).
+- **Cost:** free tier — 25 requests/day, ~5/minute. Too tight to be primary for six symbols'
+  routine refreshes, but a reasonable backstop for the rare case Tiingo is unavailable.
+- **Auth:** API key (`ALPHA_VANTAGE_API_KEY` in `.env`).
+- **Status:** live, wired up as the fallback leg of
+  `providers.fallback.MarketDataProviderChain` — used only if Tiingo raises.
+
+### Rejected: Stooq and Yahoo Finance (yfinance) — discovered live in Phase 2
+
+The original Phase 1 plan was Stooq (free, no key). Live testing in Phase 2 found:
+1. `stooq.com/robots.txt` sets `User-agent: * / Disallow: /` (Googlebot/Bingbot excepted) —
+   Stooq's own policy disallows general automated access.
+2. Its CSV download endpoint now serves a JavaScript proof-of-work challenge instead of data.
+
+A fallback check of Yahoo Finance's chart API (what `yfinance` uses under the hood) found the
+identical `Disallow: /` in `query1.finance.yahoo.com/robots.txt`. Both are unambiguous
+"no bots" signals — and both are extremely common "free, no-key" sources in quant/research
+tutorials despite this. Per this project's rule against scraping sites that prohibit automated
+access (and against bypassing bot-detection), neither is called anywhere in this codebase; see
+`backend/src/providers/stooq.py`'s module docstring for the retained-but-unused adapter.
+SEC-EDGAR-only pieces (actuals, 8-K-sourced earnings dates) were never affected by this, since
+`ingestion/backfill_earnings_dates.py` has no market-data dependency.
 
 ## Evaluated, not yet wired up
 
-These are genuine open gaps, not oversights — no options-chain or analyst-consensus data
-source has both usable free access and terms compatible with the way this project stores and
-re-derives data. `FixtureEarningsDataProvider` / `FixtureOptionsDataProvider`
-(`backend/src/providers/fixtures.py`) exist so the rest of the system can be built and tested
-against the right interface shape in the meantime — they are explicitly test-only and are
-never wired into ingestion or the API (see that module's docstring).
+No options-chain or analyst-consensus-estimate data source has both usable free access and
+terms compatible with this project's approach. `FixtureEarningsDataProvider` /
+`FixtureOptionsDataProvider` (`backend/src/providers/fixtures.py`) exist so the rest of the
+system can be built and tested against the right interface shape in the meantime — explicitly
+test-only, never wired into ingestion or the API (see that module's docstring).
 
 | Provider | Covers | Cost | Notes |
 |---|---|---|---|
-| Alpha Vantage | daily OHLCV, consensus estimates, fundamentals | Free tier: 25 req/day, 5/min | `TIME_SERIES_DAILY` with `outputsize=full` returns ~20y in one call — 6 calls (4 tickers + SPY + SOXX) fits the daily quota easily. Strongest current candidate for `MarketDataProvider`. Documented public API, not a scrape. |
-| Tiingo | daily OHLCV (20+ years), fundamentals | Free tier: generous (500/hr) | Documented API with an explicit ToS permitting personal/research/academic use. Strong alternative/complement to Alpha Vantage. |
-| Twelve Data | daily OHLCV, some fundamentals | Free tier: 800 req/day | Documented API; viable alternative. |
-| Finnhub | earnings calendar, consensus estimates, basic options | Free tier available | Candidate for `EarningsDataProvider`; not yet integrated. |
-| Tradier | real-time-delayed options chains incl. Greeks | Free developer sandbox | Best-fit candidate for `OptionsDataProvider`. |
-| ORATS / CBOE DataShop | historical options chains incl. IV | Paid, priced per dataset | Only realistic source of *historical* (not just current-snapshot) options data; deferred until the project's value (or a specific need) justifies the cost. |
-| yfinance (Yahoo unofficial) | quotes, options chain, daily OHLCV | Free, no key | Rejected: `query1.finance.yahoo.com/robots.txt` sets `Disallow: /` — confirmed live during Phase 2, same as Stooq. Not used for any purpose. |
+| Finnhub | earnings calendar, consensus estimates, basic options | Free tier available | Candidate for `EarningsDataProvider`; requires a free-account signup not yet done. |
+| Tradier | real-time-delayed options chains incl. Greeks | Free developer sandbox | Best-fit candidate for `OptionsDataProvider`; requires signup. |
+| ORATS / CBOE DataShop | historical options chains incl. IV | Paid, priced per dataset | Only realistic source of *historical* (not just current-snapshot) options data; deferred until justified by cost. |
+| Twelve Data | daily OHLCV, some fundamentals | Free tier: 800 req/day | Viable third option for market data if Tiingo/Alpha Vantage both degrade; not currently needed. |
 
-**All of the API-key candidates above require a free-account signup** — an action this
-project cannot perform autonomously (see operating rules). Until the user creates an account
-with one of these and supplies the key via `.env`, the system has no live daily price history
-beyond what was already backfilled in Phase 1 (SEC EDGAR actuals), and no live options chain
-or analyst-consensus data. Historical Event Replay (Phase 4) is scoped accordingly — it
-implements the architecture and runs on whatever real historical coverage exists, marking gaps
-explicitly rather than fabricating strikes, IV, prices, or estimates for periods with no real
-data. See [limitations.md](limitations.md).
+**Practical consequence:** until a consensus-estimate/options provider is selected and a key
+configured, the system has no live options chain or analyst-consensus data — implied move, IV,
+put/call ratios stay null on every snapshot. Historical Event Replay (Phase 4) is scoped
+accordingly: it implements the architecture and runs on whatever real historical coverage
+exists, marking gaps explicitly rather than fabricating strikes, IV, or estimates for periods
+with no real data. See [limitations.md](limitations.md).
 
 ## Not used
 

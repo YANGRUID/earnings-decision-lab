@@ -94,8 +94,8 @@ tracked companies and reference series (market/sector proxies) needed for
 `earnings_expectation_snapshot.sector_return` / `market_return` — `company_id` is null for
 reference tickers that aren't in the `company` table.
 **Keys:** `id` PK; unique `(ticker, trade_date, source_provider)`.
-**Status:** table and model exist; **no rows exist yet** — the market-data provider needed to
-populate it is blocked (see [limitations.md](limitations.md)/[data_sources.md](data_sources.md)).
+**Status:** live — 25,046 real daily bars across NVDA/AMD/MU/SNDK/SPY/SOXX from Tiingo,
+2007-01-03 to present (SNDK from its 2025 spin-off date).
 
 ### `filing`
 **Grain:** one row per SEC filing, keyed by its globally-unique accession number where one

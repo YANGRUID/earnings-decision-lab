@@ -1,10 +1,19 @@
 from functools import lru_cache
+from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+# .env lives at the project root (backend/src/core/config.py -> backend/src ->
+# backend -> root), not wherever the process happens to be run from —
+# resolving it relative to this file means `.env` loads correctly regardless
+# of cwd (e.g. running scripts from `backend/` vs. the repo root).
+_PROJECT_ROOT = Path(__file__).resolve().parents[3]
+
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+    model_config = SettingsConfigDict(
+        env_file=_PROJECT_ROOT / ".env", env_file_encoding="utf-8", extra="ignore"
+    )
 
     app_env: str = "development"
     log_level: str = "INFO"
@@ -13,7 +22,8 @@ class Settings(BaseSettings):
         "postgresql+psycopg://postgres:change_me@localhost:5433/earnings_decision_lab"
     )
 
-    market_data_api_key: str | None = None
+    tiingo_api_key: str | None = None
+    alpha_vantage_api_key: str | None = None
     options_data_api_key: str | None = None
     earnings_calendar_api_key: str | None = None
 
