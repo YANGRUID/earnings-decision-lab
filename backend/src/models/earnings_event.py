@@ -26,6 +26,11 @@ class EarningsEvent(TimestampMixin, Base):
     fiscal_year: Mapped[int] = mapped_column(Integer)
     fiscal_quarter: Mapped[int] = mapped_column(Integer)
 
+    # Fiscal quarter end date, from XBRL. Real and unambiguous (unlike
+    # earnings_date) — used to match this event to the 8-K that actually
+    # announced its results. See ingestion.earnings_date_backfill.
+    period_end_date: Mapped[date | None] = mapped_column(Date)
+
     earnings_date: Mapped[date | None] = mapped_column(Date, index=True)
     announcement_time: Mapped[AnnouncementTime] = mapped_column(
         Enum(AnnouncementTime, name="announcement_time"), default=AnnouncementTime.UNKNOWN
