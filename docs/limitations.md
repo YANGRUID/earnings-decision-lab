@@ -3,6 +3,31 @@
 Honest accounting of gaps, updated as each phase lands. Nothing here is hidden in code
 comments only — anything that affects what the system can honestly claim is listed here.
 
+## Data coverage (Phase 5)
+
+- **Section detection is best-effort, not guaranteed exact.** `rag/parsing.py` detects "Item N."
+  headings via regex on cleaned text, not a structural parse of each filer's actual HTML
+  semantics — real 10-K/10-Q/8-K filings vary enough across companies, years, and HTML
+  generators that some headings could be missed or a stray line misclassified. A wrongly-labeled
+  section affects only the `section` citation metadata, not which text was retrieved.
+- **"Token count" is an approximation** (whitespace word count), not exact tokenization for any
+  specific LLM vendor — deliberate, since this project is provider-agnostic. See
+  [ai_architecture.md](ai_architecture.md).
+- **No reranking model is used** — Reciprocal Rank Fusion over vector + keyword search only.
+  Documented as a scale-appropriate choice for four tickers and ~2,200 chunks, not a permanent
+  ceiling; see [ai_architecture.md](ai_architecture.md).
+- **Local embeddings, not a hosted embedding API** — no configured LLM provider offers
+  embeddings (verified: DeepSeek doesn't, OpenAI isn't configured, Anthropic points to a
+  separate vendor). Quality is adequate for this project's scale but not benchmarked against a
+  larger hosted model; swapping is one new `EmbeddingProvider` adapter, not a rewrite.
+- **`vector_search` has no relevance floor.** It always returns the k nearest neighbors by
+  cosine distance, however distant they actually are — there's no minimum-similarity cutoff.
+  With ~2,200 real chunks now indexed, an off-topic query still returns *something*, just not
+  necessarily anything relevant. `hybrid_search`'s RRF fusion mitigates this somewhat (a chunk
+  that scores well on keyword search too gets a real boost), but a genuinely irrelevant query
+  can still surface low-quality context to the LLM rather than an explicit "nothing relevant
+  found." A similarity threshold is a reasonable follow-up, not yet implemented.
+
 ## Data coverage (Phase 4)
 
 - **IV crush and event-replay engines are built and unit-tested, but have never run against

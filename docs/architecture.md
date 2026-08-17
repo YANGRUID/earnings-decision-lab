@@ -1,19 +1,21 @@
 # Architecture (working document)
 
-This document is updated as each phase lands. It currently reflects **Phase 4**: the
-PostgreSQL schema (10 tables, including `price_bar` and `strategy_replay`) is live via Alembic
-migrations; SEC EDGAR (filings/actuals) and Tiingo/Alpha Vantage (daily prices, fallback-
-chained) are real, wired-up providers; 150 real earnings events are seeded for NVDA/AMD/MU/
-SNDK, 77 with a confirmed earnings date and full price-reaction/expectation-snapshot backfill;
-a deterministic options analytics engine (strategy payoffs, Black-Scholes Greeks, ATM-straddle
-implied move) is implemented and unit-tested; and IV-crush / historical-event-replay engines
-are implemented and unit-tested, ready for real options-chain data but not yet run against any
-(none is available — see [limitations.md](limitations.md)). Details:
-[data_model.md](data_model.md), [data_sources.md](data_sources.md),
-[options_methodology.md](options_methodology.md),
-[earnings_methodology.md](earnings_methodology.md), [limitations.md](limitations.md).
-No API endpoints or AI components exist yet — a provider-agnostic LLM layer
-(DeepSeek/OpenAI/Anthropic/OpenAI-compatible) is next, ahead of Phase 5.
+This document is updated as each phase lands. It currently reflects **Phase 5**: the
+PostgreSQL schema (11 tables, including `price_bar`, `strategy_replay`, `document_chunk` with
+pgvector) is live via Alembic migrations; SEC EDGAR and Tiingo/Alpha Vantage (fallback-chained)
+are real, wired-up data providers; 150 real earnings events are seeded for NVDA/AMD/MU/SNDK, 77
+with a confirmed earnings date and full price-reaction/expectation-snapshot backfill; a
+deterministic options analytics engine (strategy payoffs, Black-Scholes Greeks, ATM-straddle
+implied move) and IV-crush/event-replay engines are implemented and unit-tested (the latter
+ready for real options-chain data, none of which exists yet); a provider-agnostic LLM layer
+(DeepSeek/OpenAI/Anthropic/OpenAI-compatible) sits under a real, working hybrid-RAG pipeline —
+2,231 chunks from 93 real SEC filings, retrieved via pgvector + full-text search fused by RRF,
+synthesized into grounded, cited answers. Details: [data_model.md](data_model.md),
+[data_sources.md](data_sources.md), [options_methodology.md](options_methodology.md),
+[earnings_methodology.md](earnings_methodology.md), [llm_providers.md](llm_providers.md),
+[ai_architecture.md](ai_architecture.md), [limitations.md](limitations.md).
+No API endpoints or frontend exist yet — structured extraction (Phase 6) and agent
+orchestration (Phase 7) are next, building on this RAG pipeline.
 
 ## Goal
 

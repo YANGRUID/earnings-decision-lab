@@ -143,6 +143,18 @@ class SECEdgarProvider(FilingsProvider):
         response.raise_for_status()
         return _strip_html(response.text)
 
+    def get_filing_html(self, source_url: str) -> str:
+        """Raw HTML, for real parsing (rag.parsing) rather than the naive
+        regex stripper ``get_filing_text`` uses for its quick provenance
+        check. Takes a URL directly (not a FilingMetadata) so callers can
+        pass either a freshly-fetched FilingMetadata.source_url or an
+        already-persisted Filing.source_url from the database."""
+        self._throttle()
+        response = self._client.get(source_url, headers=self._headers)
+        self._last_request_at = time.monotonic()
+        response.raise_for_status()
+        return response.text
+
     # --- Bonus: real actual-results data via XBRL (not part of the generic
     # FilingsProvider interface — SEC-specific structured facts). ------------
 

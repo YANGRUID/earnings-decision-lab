@@ -108,6 +108,17 @@ strikes/premiums/rule produced the result — see
 rows exist yet** — there is no historical options-chain data to reconstruct a real strategy
 from (see [limitations.md](limitations.md)).
 
+### `document_chunk` (added Phase 5)
+**Grain:** one row per `(filing, chunk_index)` — a section-bounded, token-approximate chunk of
+a filing's parsed text, with its 384-dim embedding (`BAAI/bge-small-en-v1.5` via `fastembed`)
+and a PostgreSQL full-text index, for hybrid retrieval.
+**Keys:** `id` PK; unique `(filing_id, chunk_index)`; `filing_id`/`company_id` FKs, indexed.
+**Indexing:** HNSW index on `embedding` (cosine ops) for vector search; GIN index on
+`to_tsvector('english', text)` for full-text search — see
+[ai_architecture.md](ai_architecture.md) for how both are combined via Reciprocal Rank Fusion.
+**Status:** live — 2,231 real chunks from 93 real SEC filings (10-K/10-Q/8-K) across
+NVDA/AMD/MU/SNDK.
+
 ### `filing`
 **Grain:** one row per SEC filing, keyed by its globally-unique accession number where one
 exists.

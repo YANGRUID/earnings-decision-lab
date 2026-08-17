@@ -7,6 +7,20 @@ from providers.sec_edgar import SECEdgarProvider
 UA = "Earnings Decision Lab test@example.com"
 
 
+def test_get_filing_html_returns_raw_unstripped_html(httpx_mock):
+    httpx_mock.add_response(
+        url="https://www.sec.gov/Archives/edgar/data/723125/000072312525000050/mu-10q.htm",
+        text="<html><body><p>Real <b>filing</b> text.</p></body></html>",
+    )
+    provider = SECEdgarProvider(user_agent=UA)
+
+    html = provider.get_filing_html(
+        "https://www.sec.gov/Archives/edgar/data/723125/000072312525000050/mu-10q.htm"
+    )
+
+    assert "<b>filing</b>" in html  # unlike get_filing_text, tags are NOT stripped
+
+
 def test_requires_real_contact_in_user_agent():
     with pytest.raises(ValueError):
         SECEdgarProvider(user_agent="not-a-contact")
