@@ -388,3 +388,16 @@ cross-cutting change with real regression risk to already-verified, real functio
 six phases. Deliberately deferred as a tracked follow-up (see docs/limitations.md) rather than
 done reactively mid-phase without full test coverage for the new library, or silently ignored.
 
+**A bug caught by CI, not by local testing:** the first version of `lifespan` called
+`get_llm_provider(settings)` unconditionally at startup. Locally this always succeeded (a real
+`DEEPSEEK_API_KEY` is in the local `.env`), so every local test run passed — but CI
+intentionally never sets a real LLM key (see docs/llm_providers.md), so the whole app failed to
+start in CI, taking `/health` and every non-AI endpoint down with it, not just the AI ones.
+Fixed by making LLM/embedder construction failures at startup non-fatal: `app.state.llm`/
+`embedder` become `None`, and the `get_llm`/`get_embedder` dependencies raise a clear,
+already-mapped-to-503 `LLMError` only when a request actually needs the one that's missing —
+`/health`, `/companies`, `/earnings`, and the pure options calculators never depended on either
+in the first place and shouldn't have been unavailable because of them. A dedicated regression
+test (`test_api_startup_resilience.py`) reproduces the exact no-key scenario directly (not
+relying on CI's environment to catch it again) so this can't silently regress.
+
