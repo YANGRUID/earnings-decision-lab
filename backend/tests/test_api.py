@@ -89,11 +89,42 @@ def test_security_headers_present(client):
     assert response.headers["X-Content-Type-Options"] == "nosniff"
 
 
-def test_list_companies_returns_real_seeded_companies(client):
+def _seed_company_with_earnings(db_session):
+    from datetime import UTC, date, datetime
+    from decimal import Decimal
+
+    from models.company import Company
+    from models.earnings_event import EarningsEvent
+    from models.earnings_result import EarningsResult
+
+    company = Company(ticker="ZZAPI1", name="ZZ API Test Co", cik="0009980001")
+    db_session.add(company)
+    db_session.flush()
+    event = EarningsEvent(
+        company_id=company.id, fiscal_year=2026, fiscal_quarter=2, earnings_date=date(2026, 3, 18)
+    )
+    db_session.add(event)
+    db_session.flush()
+    db_session.add(
+        EarningsResult(
+            earnings_event_id=event.id,
+            actual_eps=Decimal("3.08"),
+            source_provider="test",
+            retrieved_at=datetime.now(UTC),
+        )
+    )
+    db_session.flush()
+    return company, event
+
+
+def test_list_companies_returns_seeded_companies(client, db_session):
+    company, _event = _seed_company_with_earnings(db_session)
+
     response = client.get("/api/v1/companies")
+
     assert response.status_code == 200
     tickers = {c["ticker"] for c in response.json()}
-    assert {"NVDA", "AMD", "MU", "SNDK"} <= tickers
+    assert company.ticker in tickers
 
 
 def test_get_company_not_found_returns_404_with_request_id(client):
@@ -104,23 +135,25 @@ def test_get_company_not_found_returns_404_with_request_id(client):
     assert body["request_id"] is not None
 
 
-def test_list_earnings_filtered_by_ticker(client):
-    response = client.get("/api/v1/earnings", params={"ticker": "MU", "limit": 3})
+def test_list_earnings_filtered_by_ticker(client, db_session):
+    company, _event = _seed_company_with_earnings(db_session)
+
+    response = client.get("/api/v1/earnings", params={"ticker": company.ticker, "limit": 3})
+
     assert response.status_code == 200
     events = response.json()
-    assert len(events) <= 3
-    assert len(events) > 0
+    assert len(events) == 1
 
 
-def test_get_earnings_event_detail_includes_nested_company_and_result(client):
-    list_response = client.get("/api/v1/earnings", params={"ticker": "MU", "limit": 1})
-    event_id = list_response.json()[0]["id"]
+def test_get_earnings_event_detail_includes_nested_company_and_result(client, db_session):
+    company, event = _seed_company_with_earnings(db_session)
 
-    response = client.get(f"/api/v1/earnings/{event_id}")
+    response = client.get(f"/api/v1/earnings/{event.id}")
 
     assert response.status_code == 200
     body = response.json()
-    assert body["company"]["ticker"] == "MU"
+    assert body["company"]["ticker"] == company.ticker
+    assert body["result"]["actual_eps"] == "3.080000"
 
 
 def test_get_earnings_event_not_found(client):

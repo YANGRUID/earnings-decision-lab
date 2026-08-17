@@ -401,3 +401,14 @@ in the first place and shouldn't have been unavailable because of them. A dedica
 test (`test_api_startup_resilience.py`) reproduces the exact no-key scenario directly (not
 relying on CI's environment to catch it again) so this can't silently regress.
 
+**A second CI-only failure, same root cause class:** three API tests asserted against
+NVDA/AMD/MU/SNDK data — true on the local dev database (populated by the real bootstrap
+scripts across Phases 1-6) but false in CI, which runs migrations against a deliberately fresh,
+empty Postgres container and never runs those scripts (they make real external API calls; see
+the no-live-calls-in-CI policy throughout this project). Fixed the same way every other
+DB-touching test in this suite already works: seed the exact row(s) the test needs via
+`db_session` and assert against that, never against an assumption that some other process
+already populated the database. Both this and the startup-resilience bug are the same lesson
+from two angles — a test suite that only ever runs against one developer's already-populated
+local environment isn't actually testing what CI (or a fresh clone) will experience.
+
