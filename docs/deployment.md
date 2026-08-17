@@ -24,11 +24,10 @@ architecture question is *where* to run them and what manages the database, not 
 
 Researched using current (2026) pricing pages and vendor documentation, not memorized/assumed
 numbers. All figures are for a single small, mostly-idle instance — this project's actual
-traffic profile (a personal research tool + portfolio demo, not a production service with
-real users).
+traffic profile (a personal research tool, not a production service with many concurrent
+users).
 
-### Azure (the preferred target per this project's original scope, given the Zurich/enterprise
-context this portfolio is built for)
+### Azure
 
 | Component | Service | Estimated monthly cost |
 |---|---|---|
@@ -52,8 +51,8 @@ it doesn't also need network access to Hugging Face on that cold start).
 | Database | Fly Postgres, shared-cpu-1x, 1GB volume | ~$2–3 |
 | **Total** | | **~$8–12/month**, no component scales to zero (Fly removed always-free compute in 2024) |
 
-Roughly 40–50% cheaper than the Azure floor, at the cost of a less "enterprise cloud" story on
-a CV/interview walkthrough — a real tradeoff, not a strictly-better option.
+Roughly 40–50% cheaper than the Azure floor, at the cost of a less managed platform — a real
+tradeoff, not a strictly-better option.
 
 ### Cheapest real alternative: a single small VPS running `docker compose up -d` directly
 

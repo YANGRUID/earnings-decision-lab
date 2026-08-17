@@ -1,10 +1,9 @@
-# Project Audit
+# System Audit
 
-An independent review of this repository, written from the perspective of a hiring manager
-for an Applied AI / AI Engineer role in Zurich, verifying claims against the actual repo rather
-than trusting the README. Every number below was produced by actually running the command
-shown, on `2026-08-17`, against the real repository at commit history depth of 24 commits — not
-recalled or estimated.
+An independent technical review of this repository, verifying claims against the actual system
+rather than trusting the README. Every number below was produced by actually running the
+command shown, on `2026-08-17`, against the real repository at a commit history depth of 24
+commits — not recalled or estimated.
 
 ## Verified functionality
 
@@ -34,13 +33,12 @@ Queried directly against the live PostgreSQL instance, not read from documentati
 | `ai_extraction` | 50 | real LLM extraction runs (structured guidance extraction + evaluation runs) |
 | `options_snapshot` / `volatility_snapshot` / `strategy_replay` | 0 / 0 / 0 | **honestly empty** — no options-chain data provider is wired up; every free option evaluated either lacked historical coverage or required a paid subscription (see `docs/data_sources.md`) |
 
-## Tickers actually tested end-to-end
+## Tickers exercised end-to-end
 
 All four covered tickers (NVDA, AMD, MU, SNDK) have real seeded earnings/price data. AI Research
-was manually verified in a real browser against real backend + real DeepSeek for multiple
-tickers across this project's development, including (reproduced again during this audit): a
-real filing-search query against AMD's 10-K returning correct citations, correct tool selection,
-and a verified answer.
+was manually verified in a real browser against the real backend and real DeepSeek across
+development, including (reproduced again during this audit): a real filing-search query against
+AMD's 10-K returning correct citations, correct tool selection, and a verified answer.
 
 ## Deterministic calculations verified
 
@@ -85,16 +83,15 @@ evidence, and one that catches and fixes them is stronger evidence, not weaker.
 
 ## Deployment status
 
-**Not deployed to a live public cloud.** `docker compose up --build` runs the full real stack
+**Not deployed to a live public host.** `docker compose up --build` runs the full real stack
 locally and is CI-verified (build + boot, real health check, real SPA render) on every push.
 `docs/deployment.md` has real, sourced 2026 cost research for Azure Container Apps + Flexible
 Server, Fly.io, and a single VPS — a genuine, not-yet-made decision given the recurring personal
-cost and the cloud credentials this environment doesn't have, not an oversight. See the final
-recommendation in this document's closing section.
+cost, not an oversight.
 
 ## Material weaknesses found during this audit, and what was done about them
 
-Per this audit's own standard — findings get fixed, not just listed:
+Findings get fixed, not just listed:
 
 1. **`mypy` was configured since Phase 0 but never actually run.** Running it found 58 real
    type errors across 27 files. All 58 were fixed at their root cause (not suppressed) and
@@ -119,23 +116,20 @@ frontend and API were all independently re-verified during this audit and held u
 - Single-round agent tool-calling, not a full multi-turn ReAct loop (stated scope boundary).
 - No LLM-as-judge secondary evaluation signal (documented false-negative risk of the
   deterministic fact-coverage check instead).
-- No live cloud deployment (see above).
+- No live public deployment (see above).
 - No frontend automated test suite (Vitest) — compensated by thorough manual browser
   verification against the real backend, documented per-phase.
 
-## Hiring-manager assessment
+## Summary
 
-This repository demonstrates full-lifecycle ownership of a non-trivial AI system: schema design
-with an explicit no-lookahead-bias invariant, real external data integration with documented
-provider evaluation (including two providers rejected for blocking automated access, not just
-the one that was used), deterministic financial engineering kept strictly separate from LLM
-usage, a genuinely multi-stage agent (not a single-call wrapper), a real evaluation framework
-that caught its own construction errors, Docker + CI verified by actually running the built
-artifacts, and — most tellingly for engineering judgment — two classes of real bugs (a
-credential leak, a packaging bug, and a silently-unused type checker) found by testing
-infrastructure rather than assumed correct, then fixed and documented rather than hidden. The
-gaps that remain (no live options data, no live deployment) are the honest result of real
-constraints (no free/compliant data source, real recurring cost) stated plainly rather than
-worked around with fabricated data or an inflated README claim. For a portfolio project meant
-to demonstrate production-style AI engineering practice, this is a credible, verifiable
-example of that practice — not a claim of a finished commercial product.
+The system has real, working coverage across its stated scope: point-in-time data modeling
+with an explicit no-lookahead-bias invariant, external data integration with documented
+provider evaluation (including two providers rejected outright for blocking automated access),
+deterministic financial calculations kept strictly separate from LLM usage, a genuinely
+multi-stage agent (not a single-call wrapper), an evaluation framework that caught and disclosed
+its own construction errors, and a Docker/CI setup verified by actually running the built
+artifacts rather than assumed correct. Three real bugs (a credential leak, a packaging bug, and
+a silently-unused type checker) were found by testing infrastructure directly, fixed at the
+root, and documented rather than hidden. The gaps that remain — no live options data, no public
+deployment — are the honest result of real constraints (no free/compliant data source, real
+recurring hosting cost), stated plainly rather than worked around with fabricated data.

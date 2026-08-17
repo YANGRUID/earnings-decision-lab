@@ -12,7 +12,7 @@ export function Dashboard() {
         <h1>Dashboard</h1>
         <p>
           Point-in-time earnings intelligence and options analytics for a small set of covered
-          tickers. This is a portfolio research project, not investment advice.
+          tickers. A personal research tool, not investment advice.
         </p>
       </div>
 

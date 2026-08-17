@@ -1,6 +1,6 @@
 # Architecture (working document)
 
-This document is updated as each phase lands. It currently reflects **Phase 10**: the
+This document is updated as each phase lands. It currently reflects **Phase 11**: the
 PostgreSQL schema (12 tables) is live via Alembic migrations; SEC EDGAR and Tiingo/Alpha
 Vantage (fallback-chained) are real, wired-up data providers; 150 real earnings events are
 seeded for NVDA/AMD/MU/SNDK; deterministic options and IV-crush/event-replay engines are
@@ -23,8 +23,9 @@ DeepSeek. Details: [data_model.md](data_model.md), [data_sources.md](data_source
 [ai_architecture.md](ai_architecture.md), [evaluation.md](evaluation.md),
 [deployment.md](deployment.md), [limitations.md](limitations.md).
 No live cloud deployment exists yet — a real, recurring-cost decision documented in
-deployment.md but deliberately not acted on autonomously; Phase 11 (recruiter polish) is
-next regardless of that decision.
+deployment.md but deliberately not acted on autonomously. Phase 11 (an independent audit —
+see [SYSTEM_AUDIT.md](../SYSTEM_AUDIT.md) — plus documentation review) is complete; the mypy
+type-check gap it found and fixed is documented in engineering_decisions.md.
 
 ## Goal
 
@@ -105,8 +106,6 @@ As each phase adds real substance, the following docs are created/expanded:
 - `docs/evaluation.md` — evaluation dataset design and measured results
 - `docs/engineering_decisions.md` — key technical decisions and rejected alternatives
 - `docs/limitations.md` — known gaps (historical options coverage, provider limits, etc.)
-- `docs/interview_walkthrough.md` — talking points for discussing this project
-- `docs/cv_entry.md` — CV bullets, finalized only after implementation is verified
 
 ## Build plan (phases)
 
@@ -121,6 +120,6 @@ Phase 7 — agent tool orchestration
 Phase 8 — frontend
 Phase 9 — evaluation framework
 Phase 10 — observability + deployment
-Phase 11 — recruiter-facing polish
+Phase 11 — independent audit + documentation review
 
 Each phase lands as its own commit(s) with passing tests, not as one final drop.
