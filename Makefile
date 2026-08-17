@@ -1,4 +1,4 @@
-.PHONY: db-up db-down migrate migrate-new test lint fmt
+.PHONY: db-up db-down migrate migrate-new test lint fmt eval
 
 db-up:
 	docker compose up -d db
@@ -20,3 +20,6 @@ lint:
 
 fmt:
 	cd backend && uv run ruff format src tests
+
+eval:
+	cd backend && uv run python ../evaluation/scripts/run_all.py

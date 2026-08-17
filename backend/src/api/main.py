@@ -12,7 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from api.exceptions import register_exception_handlers
 from api.middleware import RequestContextMiddleware, SecurityHeadersMiddleware
 from api.rate_limit import SlidingWindowRateLimiter
-from api.routers import companies, earnings, health, options, research
+from api.routers import companies, earnings, evaluations, health, options, research
 from core.config import get_settings
 from observability.logging import configure_logging
 from rag.embeddings import FastEmbedProvider
@@ -86,6 +86,7 @@ def create_app() -> FastAPI:
     app.include_router(earnings.router, prefix="/api/v1")
     app.include_router(options.router, prefix="/api/v1")
     app.include_router(research.router, prefix="/api/v1")
+    app.include_router(evaluations.router, prefix="/api/v1")
 
     return app
 

@@ -445,3 +445,61 @@ real browser — the `engines` field there reflects the authors' support/CI poli
 runtime dependency on Node-20-only APIs in the browser-shipped bundle. The distinction mattered
 enough to verify empirically rather than assume either way.
 
+## Phase 9
+
+**Why a hand-curated dataset instead of an LLM-generated one?** An LLM could generate hundreds
+of Q&A pairs from the corpus in minutes, but the "ground truth" would only be as trustworthy as
+the model that generated it — precisely the failure mode this evaluation exists to catch. Every
+item in `evaluation/datasets/*.jsonl` was built by directly reading the real SEC filing text and
+writing the expected answer down before running the system being evaluated, with a `note` field
+per item citing the exact source chunk(s). This is slower (51 items, not 200) but the numbers
+mean something. See [evaluation.md](evaluation.md) for the labeling mistakes this process itself
+caught and fixed during construction — kept visible in the dataset notes rather than edited away.
+
+**Why does `evaluation/metrics.py` live in the backend package (`backend/src/evaluation/`)
+instead of the top-level `evaluation/` directory?** The metric functions (`recall_at_k`,
+`fact_coverage`, etc.) are pure, dependency-free, and need to be unit-tested the same way every
+other piece of deterministic logic in this project is — via `backend/tests/` and `uv run
+pytest`, which only discovers `backend/src`. The *dataset files* and *runner scripts* stay in
+the top-level `evaluation/` directory per the originally planned layout, since they're not
+importable application code — they're standalone scripts that import from the backend package
+the same way `evaluation/scripts/_bootstrap.py` puts `backend/src` on `sys.path`. `evaluation.models.EvaluationRun`
+is also reused directly as the `GET /api/v1/evaluations/latest` response shape (via
+`schemas/api.py`) instead of being mirrored into a second schema, for the same reason
+`services/extraction.py` and `agents/types.py` aren't duplicated elsewhere in the codebase.
+
+**Why compute citation precision/completeness by re-running `hybrid_search` instead of reading
+chunk IDs off the `Citation` objects `answer_question` already returns?** `rag.context.Citation`
+is a UI-facing shape keyed by `(ticker, filing_date, section)` — deliberately, since that's what
+a user's browser needs to render a source link, not a raw database ID. A filing section commonly
+spans many chunks, so reversing a `Citation` back to one specific chunk ID would be ambiguous in
+the common case, not just an edge case. Retrieval has no randomness (no LLM call involved), so a
+second `hybrid_search` call with identical arguments reproduces exactly what the pipeline saw,
+at zero extra LLM cost — cheaper and more correct than adding a chunk-ID field to a
+response shape that exists specifically to not need one.
+
+**Why substring matching (`fact_coverage`) instead of an LLM-as-judge for RAG-answer
+correctness, when the project scope allowed a judge as a secondary signal?** A second model
+grading the first adds real, ongoing LLM cost and introduces a second unverified claim on top of
+the first — for a benefit (catching a correct-but-differently-phrased answer) that a documented,
+honest caveat already covers without spending anything. If this evaluation needs to scale past
+hand-verification size later, an LLM judge becomes worth its cost; at 51 items, the tradeoff
+favors staying deterministic and cheap. See docs/limitations.md.
+
+**Why does the agent-orchestration eval check "tool selection accuracy" as a subset match
+(expected tools ⊆ actual tools) instead of exact-set equality?** A planner that calls one
+reasonable extra tool alongside the necessary one (e.g. checking earnings history *and* a
+recent filing for a question that could use either) isn't wrong — exact-set equality would
+penalize a legitimately more thorough answer the same as a genuinely wrong tool choice. The
+dataset does include one exact-match case (`agt-10`): a question expected to trigger *no* tool
+call at all, to confirm the agent doesn't force tool use onto an out-of-scope question.
+
+**Why is `evaluation/results/*.json` gitignored while `docs/evaluation.md`'s numbers are
+committed?** The raw per-run JSON is real output, but it's a snapshot, not a source of truth —
+committing it and silently regenerating it on every commit would create a file that looks
+authoritative but drifts from whatever docs/evaluation.md claims about it. Instead,
+`docs/evaluation.md` states the numbers from one specific real run with the model and timestamp
+that produced them, and the reproduction command (`run_all.py`) is the actual source of truth
+for "is this still accurate" — state what was verified and when, don't imply it's continuously
+re-verified when it isn't.
+

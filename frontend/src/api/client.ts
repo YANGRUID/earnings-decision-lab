@@ -2,6 +2,7 @@ import type {
   Company,
   EarningsEventDetail,
   EarningsEventSummary,
+  EvaluationStatusResponse,
   FilingSearchResponse,
   ImpliedMoveRequest,
   ImpliedMoveResponse,
@@ -79,4 +80,6 @@ export const api = {
     if (params.k) qs.set("k", String(params.k));
     return request<FilingSearchResponse>(`/research/documents?${qs.toString()}`);
   },
+
+  getLatestEvaluation: () => request<EvaluationStatusResponse>("/evaluations/latest"),
 };

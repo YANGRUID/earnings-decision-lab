@@ -8,6 +8,7 @@ from decimal import Decimal
 
 from pydantic import BaseModel, ConfigDict
 
+from evaluation.models import EvaluationRun
 from rag.context import Citation
 
 
@@ -114,3 +115,15 @@ class ResearchQueryResponse(BaseModel):
     answer: str
     citations: list[CitationResponse]
     trace: ExecutionTraceResponse
+
+
+class EvaluationStatusResponse(BaseModel):
+    """Wraps evaluation.models.EvaluationRun with an explicit ``available``
+    flag rather than raising 404 -- no evaluation run exists at all on a
+    fresh clone or in CI (evaluation/results/*.json is real output, not
+    committed, see docs/evaluation.md), and that's an honest state to
+    represent, not an error.
+    """
+
+    available: bool
+    run: EvaluationRun | None

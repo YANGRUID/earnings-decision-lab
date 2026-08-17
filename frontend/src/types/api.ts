@@ -120,6 +120,56 @@ export interface ImpliedMoveResponse {
   expiration_label: string;
 }
 
+export interface RetrievalSummary {
+  item_count: number;
+  mean_recall_at_3: number;
+  mean_recall_at_5: number;
+  mean_recall_at_10: number;
+  mean_mrr: number;
+}
+
+export interface RagAnswerSummary {
+  item_count: number;
+  mean_fact_coverage: number;
+  fully_correct_count: number;
+  mean_citation_precision: number;
+  mean_citation_completeness: number;
+  mean_duration_ms: number;
+}
+
+export interface AgentSummary {
+  item_count: number;
+  intent_accuracy: number;
+  tool_selection_accuracy: number;
+  verification_run_rate: number;
+  mean_duration_ms: number;
+  total_estimated_cost_usd: number;
+}
+
+export interface ExtractionSummary {
+  item_count: number;
+  non_capex_null_accuracy: number;
+  capex_accuracy: number;
+  tone_plausibility_rate: number;
+  keyword_hit_rate: number;
+}
+
+export interface EvaluationRun {
+  run_at: string;
+  llm_provider: string;
+  llm_model: string;
+  embedding_model: string;
+  retrieval: RetrievalSummary | null;
+  rag_answer: RagAnswerSummary | null;
+  agent: AgentSummary | null;
+  extraction: ExtractionSummary | null;
+}
+
+export interface EvaluationStatusResponse {
+  available: boolean;
+  run: EvaluationRun | null;
+}
+
 export interface ApiError {
   error: string;
   request_id: string | null;
