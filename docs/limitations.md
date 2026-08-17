@@ -3,6 +3,26 @@
 Honest accounting of gaps, updated as each phase lands. Nothing here is hidden in code
 comments only — anything that affects what the system can honestly claim is listed here.
 
+## Frontend (Phase 8)
+
+- **No automated frontend test suite.** TypeScript compilation and ESLint both pass cleanly,
+  and every screen was manually exercised end-to-end in a real browser against the real backend
+  and real DeepSeek before this phase was considered done (Dashboard, Company, Earnings Event,
+  Options Lab's calculator, AI Research's full agent flow, Historical Replay, Data/Eval
+  Status) — but there's no Vitest/React Testing Library suite to catch a future regression
+  automatically. A deliberate scope decision given the size of this project already, not an
+  oversight; a reasonable follow-up.
+- **API types are hand-mirrored, not generated.** `frontend/src/types/api.ts` must be kept in
+  sync with `backend/src/schemas/api.py` manually — see
+  [engineering_decisions.md](engineering_decisions.md) for why codegen wasn't set up yet.
+- **The Earnings Event "centerpiece" screen has real gaps by design, not oversight:** market
+  expectations (implied move, ATM IV, consensus estimates), options strategy comparison, and
+  guidance previous-vs-current are all shown as honest empty/unavailable states rather than
+  populated, because no options-chain or consensus-estimate provider is wired up (Phase
+  1/2/7 finding) and there's no dedicated guidance-comparison REST endpoint yet (the capability
+  exists as an agent tool, `compare_guidance`, reachable via AI Research, but not as its own
+  page section).
+
 ## Backend API (Phase 8)
 
 - **No authentication.** Intentional for a personal, locally-run research tool — see

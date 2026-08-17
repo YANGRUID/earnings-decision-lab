@@ -412,3 +412,36 @@ already populated the database. Both this and the startup-resilience bug are the
 from two angles — a test suite that only ever runs against one developer's already-populated
 local environment isn't actually testing what CI (or a fresh clone) will experience.
 
+## Phase 8 (frontend)
+
+**Why no UI component framework (MUI, Ant Design, etc.)?** The explicit design goal is
+clarity and density, not a flashy trading-terminal look (see the project's own stated
+constraints on this). A small hand-written CSS design system (`index.css`: CSS custom
+properties for color/spacing/typography, ~15 reusable class patterns) is enough for seven
+screens and keeps the dependency surface and bundle size small — pulling in a full component
+library would be more machinery than seven data-dense screens need.
+
+**Why manually mirror `schemas/api.py` in `types/api.ts` instead of generating types from the
+OpenAPI schema?** FastAPI already emits a complete OpenAPI document — a codegen step (e.g.
+`openapi-typescript`) is the more scalable answer once the API surface is larger or changes
+more often. For eight endpoints at this stage, hand-mirroring is faster to set up and easier to
+read in a portfolio review than an extra build-pipeline dependency; the drift risk is real and
+stated plainly rather than hidden (see docs/limitations.md), not solved prematurely.
+
+**Why upgrade `react-router-dom` to 7.18.2 (past the version `create-vite`'s template
+installed) before writing any routing code?** `npm audit` flagged the scaffolded version inside
+a range with a real open-redirect / constructor-injection advisory. Since no application code
+depended on the older API yet, upgrading immediately (before writing routes) was strictly
+cheaper than upgrading later after code existed that might need migrating — and left the
+project with zero known vulnerabilities from the first routing commit rather than a
+documented-but-unfixed one.
+
+**A real environment constraint worth recording:** this development machine runs Node 18.20.8;
+both the latest `create-vite` and `react-router-dom@7.18.2` declare `engines` requirements for
+Node 20+. `create-vite` genuinely fails on Node 18 (a hard runtime error, not just a warning —
+worked around by pinning `create-vite@5`). `react-router-dom@7.18.2` only *warns* on Node 18
+and was verified to actually work by starting the dev server and exercising every screen in a
+real browser — the `engines` field there reflects the authors' support/CI policy, not a hard
+runtime dependency on Node-20-only APIs in the browser-shipped bundle. The distinction mattered
+enough to verify empirically rather than assume either way.
+

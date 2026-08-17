@@ -30,6 +30,9 @@ yarn-error.log*
 .env
 .env.*
 !.env.example
+# Vite convention: committed, contains no secrets (just the local API URL).
+# Personal overrides go in frontend/.env.development.local, still ignored.
+!frontend/.env.development
 *.pem
 *.key
 secrets/

@@ -1,20 +1,23 @@
 # Architecture (working document)
 
-This document is updated as each phase lands. It currently reflects **Phase 7**: the
+This document is updated as each phase lands. It currently reflects **Phase 8**: the
 PostgreSQL schema (12 tables) is live via Alembic migrations; SEC EDGAR and Tiingo/Alpha
 Vantage (fallback-chained) are real, wired-up data providers; 150 real earnings events are
 seeded for NVDA/AMD/MU/SNDK; deterministic options and IV-crush/event-replay engines are
 implemented and unit-tested; a provider-agnostic LLM layer sits under a real, working
 hybrid-RAG pipeline (2,231 chunks from 93 real SEC filings); structured guidance extraction
-runs against real filing text; and an explicit agent orchestrator (intent classification,
-provider-capability-aware planning, tool execution, evidence collection, cited synthesis, and
-a separate verification step with bounded revision) ties all of it together behind seven real
-tools, verified live end-to-end against DeepSeek. Details: [data_model.md](data_model.md),
-[data_sources.md](data_sources.md), [options_methodology.md](options_methodology.md),
+runs against real filing text; an explicit agent orchestrator ties all of it together behind
+seven real tools; and a typed FastAPI backend (structured logging, request IDs, normalized
+error handling, rate limiting on the LLM-backed endpoint) plus a React + TypeScript frontend
+(seven screens: Dashboard, Company, Earnings Event, Options Lab, AI Research, Historical
+Replay, Data/Eval Status) expose all of it — every screen manually verified end-to-end in a
+real browser against the real backend and real DeepSeek before this phase was considered done.
+Details: [data_model.md](data_model.md), [data_sources.md](data_sources.md),
+[options_methodology.md](options_methodology.md),
 [earnings_methodology.md](earnings_methodology.md), [llm_providers.md](llm_providers.md),
 [ai_architecture.md](ai_architecture.md), [limitations.md](limitations.md).
-No API or frontend exists yet — Phase 8 (FastAPI + React) is next, exposing this orchestrator
-and the underlying data through a real interface.
+No evaluation framework, deployment, or CI beyond backend tests exists yet — Phase 9
+(evaluation) is next.
 
 ## Goal
 
