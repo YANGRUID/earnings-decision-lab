@@ -27,8 +27,22 @@ class Settings(BaseSettings):
     options_data_api_key: str | None = None
     earnings_calendar_api_key: str | None = None
 
+    # --- LLM provider (provider-agnostic — see docs/llm_providers.md) ---
+    llm_provider: str = "deepseek"
+
+    deepseek_api_key: str | None = None
+    deepseek_base_url: str = "https://api.deepseek.com"
+    deepseek_model: str | None = None
+
+    openai_api_key: str | None = None
+    openai_model: str | None = None
+
     anthropic_api_key: str | None = None
-    llm_model: str | None = None
+    anthropic_model: str | None = None
+
+    openai_compatible_api_key: str | None = None
+    openai_compatible_base_url: str | None = None
+    openai_compatible_model: str | None = None
 
     langfuse_public_key: str | None = None
     langfuse_secret_key: str | None = None

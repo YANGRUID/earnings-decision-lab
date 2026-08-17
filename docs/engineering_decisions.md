@@ -174,3 +174,52 @@ separate functions?** Every replay's strike choice needs to be auditable to the 
 regardless of which rule produced it — a reviewer (or this project's own tests) can check "was
 this strike chosen before or after the event's outcome was known" by reading one function, not
 three independently-written ones that could drift out of sync with each other's guarantees.
+
+## LLM provider layer (before Phase 5)
+
+**Why a provider-agnostic LLM layer instead of building directly against one SDK?** The
+project's local development provider (DeepSeek) is not necessarily what a deployment or another
+contributor would use, and none of RAG, extraction, or agent orchestration logic should need to
+change if the provider does. `services/llm/LLMProvider` is the single interface those phases
+depend on; `services/llm/factory.py` is the only place that reads `LLM_PROVIDER` from config.
+See `docs/llm_providers.md` for the full design.
+
+**Why implement DeepSeek, OpenAI, and a generic OpenAI-compatible provider as three separate
+classes sharing one transport, instead of one class parameterized by vendor?** Config and logs
+should always show which vendor is actually in use — `provider.name` is unambiguous. The
+shared transport (`_OpenAICompatibleTransport`) avoids duplicating the actual wire-format
+logic three times; the subclasses are thin (constructor + `name` + `capabilities`), so the
+"three classes" choice costs almost nothing while keeping the public API honest about what's
+configured.
+
+**Why verify DeepSeek's API docs live instead of using existing knowledge?** Doing so caught a
+real, dated fact: `deepseek-chat`/`deepseek-reasoner` were deprecated 2026-07-24, replaced by
+`deepseek-v4-flash`/`deepseek-v4-pro`. Shipping the old names as a default would have meant the
+project's own "verified" default was silently broken from day one — exactly the kind of claim
+this project doesn't want to make without checking. The same live-verification was done for
+Anthropic's Messages API shape before implementing that adapter.
+
+**Why does Anthropic's structured-output path use a forced tool call while DeepSeek/OpenAI use
+JSON mode, instead of normalizing to one mechanism?** Anthropic's Messages API has no JSON-mode
+equivalent; a forced single tool call is Anthropic's own documented pattern for reliably
+getting structured JSON out of the model. Pretending both mechanisms are "the same underneath"
+would hide a real capability difference; `docs/llm_providers.md` states the difference plainly
+instead, per the project's rule against claiming uniform feature support across providers.
+
+**Why does does `DeepSeekProvider` disable thinking mode by default?** Found live during the
+one manual connectivity check this project makes (not part of the automated suite, which never
+calls a real paid API): a bare 5-max-token request to `deepseek-v4-flash` came back with empty
+content and `finish_reason="length"` — the entire token budget went to hidden reasoning tokens,
+because V4 models default to thinking mode on (a change from the old deepseek-chat/
+deepseek-reasoner split, where non-thinking vs. thinking was chosen via model *name*). Sending
+`thinking: {"type": "disabled"}` on every request (verified against
+api-docs.deepseek.com/guides/thinking_mode) restores fast, deterministic responses — the
+behavior structured extraction and agent tool-calling actually need, and what a caller
+migrating from `deepseek-chat` would expect by default.
+
+**Why does the OpenAI-compatible JSON-mode path skip OpenAI's stricter schema-constrained
+`response_format: json_schema` mode?** That mode isn't guaranteed to exist identically on
+DeepSeek or an arbitrary "OpenAI-compatible" backend. Plain JSON mode plus an embedded schema
+and Pydantic validation is the subset actually portable across all three OpenAI-compatible
+adapters — correct behavior on every configured provider was chosen over maximum strictness on
+one specific vendor.
