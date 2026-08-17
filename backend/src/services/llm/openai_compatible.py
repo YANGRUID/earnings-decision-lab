@@ -53,6 +53,7 @@ class _OpenAICompatibleTransport(LLMProvider):
         self._api_key = api_key
         self._base_url = base_url.rstrip("/")
         self._model = model
+        self.model = model  # public: callers that persist provenance need the configured model
         self._client = client or httpx.Client(timeout=60.0)
 
     def _headers(self) -> dict:

@@ -119,6 +119,16 @@ and a PostgreSQL full-text index, for hybrid retrieval.
 **Status:** live — 2,231 real chunks from 93 real SEC filings (10-K/10-Q/8-K) across
 NVDA/AMD/MU/SNDK.
 
+### `ai_extraction` (added Phase 6)
+**Grain:** one row per `(filing, extraction_type, prompt_version)` — a single structured
+LLM-extraction run.
+**Keys:** `id` PK; `filing_id`/`company_id` FKs, indexed; `extraction_type` indexed.
+`extracted_data` is the validated Pydantic schema (`schemas.extraction`), dumped to JSON.
+`source_chunk_ids` retains exactly which `document_chunk` rows were given to the model —
+every extracted value traces back to the text that produced it. `model` and `prompt_version`
+are recorded on every row so a later prompt or model change never silently changes what an
+already-stored extraction is attributed to. See [ai_architecture.md](ai_architecture.md).
+
 ### `filing`
 **Grain:** one row per SEC filing, keyed by its globally-unique accession number where one
 exists.

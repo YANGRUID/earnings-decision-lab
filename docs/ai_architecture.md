@@ -133,3 +133,33 @@ retrieval/context modules alongside the deterministic analytics tools (options p
 IV crush, etc.) from Phases 3-4. If no chunks are retrieved, the LLM is not called at all — the
 function returns an explicit "no matching content" result rather than letting the model guess
 from its own training data, which would defeat the entire point of grounding.
+
+## Structured extraction (Phase 6)
+
+`schemas/extraction.py` defines `GuidanceExtraction` (revenue/EPS/gross-margin/capex guidance,
+key drivers, risks, management tone, important topics) and `GuidanceComparisonThemes`
+(new/removed commentary themes). `services/extraction.py` retrieves a filing's MD&A/risk-factor
+chunks, calls `LLMProvider.generate_structured`, and persists an `AIExtraction` row recording
+the source chunk IDs, model, and prompt version (`prompts/guidance_extraction.py`,
+versioned as `guidance-extraction-v1`) — full provenance for every extracted field.
+
+**Numeric comparison and textual comparison are two separate code paths, deliberately never
+merged**: `analytics/earnings/guidance_comparison.py` computes midpoint changes by exact
+arithmetic on two already-extracted ranges — no LLM call. `services/extraction.py::
+compare_commentary_themes` is a *separate* LLM call, with its own versioned prompt
+(`guidance-comparison-v1`), that judges which commentary *themes* are new/removed — something
+genuinely requiring semantic judgment that arithmetic can't do. Neither function calls the
+other; a numeric midpoint change is always exact, never a model's paraphrase.
+
+**Real run, unedited:** extracted guidance from MU's two most recent 10-Q MD&A sections
+(2026-03-19 and 2026-06-25) via DeepSeek. `revenue`/`eps`/`gross_margin`/`capex` came back
+`null` for both — a genuine, informative result, not a bug: 10-Q MD&A sections discuss
+*historical* results and qualitative commentary, not forward-looking numeric ranges in a
+directly extractable format (real forward guidance for these companies typically appears in the
+earnings press release or call, not deeply embedded MD&A prose). The schema returned `null`
+rather than inventing plausible-looking numbers, exactly as designed. The qualitative fields
+worked correctly: real key drivers ("AI-driven memory and storage growth", "strategic customer
+agreements"), risks, and tone were extracted from each quarter, and the LLM thematic comparison
+correctly identified "strategic customer agreements" as a new theme and eight prior-quarter
+themes (including "DRAM and NAND pricing increases") as absent from the current quarter's
+retrieved chunks.

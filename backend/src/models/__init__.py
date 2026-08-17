@@ -1,3 +1,4 @@
+from models.ai_extraction import AIExtraction
 from models.company import Company
 from models.document_chunk import DocumentChunk
 from models.earnings_event import EarningsEvent
@@ -11,6 +12,7 @@ from models.strategy_replay import StrategyReplay
 from models.volatility_snapshot import VolatilitySnapshot
 
 __all__ = [
+    "AIExtraction",
     "Company",
     "DocumentChunk",
     "EarningsEvent",

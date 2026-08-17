@@ -13,6 +13,7 @@ from services.llm.types import Capabilities, ChatMessage, GenerateResult, ToolDe
 
 class LLMProvider(ABC):
     name: str
+    model: str
     capabilities: Capabilities
 
     @abstractmethod

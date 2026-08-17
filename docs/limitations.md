@@ -3,6 +3,22 @@
 Honest accounting of gaps, updated as each phase lands. Nothing here is hidden in code
 comments only — anything that affects what the system can honestly claim is listed here.
 
+## Data coverage (Phase 6)
+
+- **Numeric guidance extraction is frequently null, and that's expected.** Tested live against
+  real MU 10-Q MD&A text: revenue/EPS/gross-margin/capex guidance came back `null` for both
+  quarters tried. MD&A sections discuss historical results and qualitative commentary, not
+  clean forward-looking numeric ranges — that typically lives in the earnings press release or
+  call transcript, neither of which this project has an ingested source for yet (see
+  [data_sources.md](data_sources.md)). The extraction schema is designed to return `null` when
+  a value isn't actually stated rather than inventing a plausible number, so this is the schema
+  working correctly, not a coverage gap in the extraction logic itself. The real gap is upstream
+  (no transcript/press-release source), and is already documented as such.
+- **`confidence` is intentionally left unset (`None`) on every extraction.** LLM self-reported
+  confidence scores aren't reliable enough to persist as if they were meaningful signal — the
+  column exists in the schema for a future validation mechanism (e.g. cross-checking against a
+  second extraction, or human review), not for the model to grade its own output.
+
 ## Data coverage (Phase 5)
 
 - **Section detection is best-effort, not guaranteed exact.** `rag/parsing.py` detects "Item N."
