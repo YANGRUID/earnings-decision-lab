@@ -3,7 +3,12 @@ import { api } from "../api/client";
 import { useAsync } from "../hooks/useAsync";
 import { ErrorState, LoadingState } from "../components/StatusStates";
 import { MovePill } from "../components/MovePill";
-import { formatMoney } from "../lib/format";
+import { formatMoney, formatPercent } from "../lib/format";
+
+function formatPlainPercent(value: string | null): string {
+  if (value === null) return "—";
+  return formatPercent(Number(value), 1);
+}
 
 export function EarningsEvent() {
   const { id = "" } = useParams();
@@ -19,6 +24,9 @@ export function EarningsEvent() {
   if (!event.data) return null;
 
   const e = event.data;
+  const est = e.market_expectations;
+  const iv = e.implied_move;
+  const hist = e.historical_moves;
 
   return (
     <div>
@@ -74,12 +82,117 @@ export function EarningsEvent() {
         </div>
 
         <div className="card">
-          <h2>Market expectations</h2>
-          <p className="text-sm text-muted" style={{ margin: 0 }}>
-            No options-chain provider is configured yet, so implied move / ATM IV / consensus
-            estimates aren't available for this event. See{" "}
-            <Link to="/data-status">Data / Eval Status</Link>.
-          </p>
+          <h2>Historical moves — {e.company.ticker}</h2>
+          {hist ? (
+            <div className="grid grid-2" style={{ gap: 10 }}>
+              <div className="stat">
+                <span className="stat-label">Average |move| ({hist.sample_size} events)</span>
+                <MovePill value={hist.average_abs_move_pct} />
+              </div>
+              <div className="stat">
+                <span className="stat-label">Largest move</span>
+                <MovePill value={hist.largest_move_pct_signed} />
+              </div>
+            </div>
+          ) : (
+            <p className="text-sm text-muted">
+              No other reported event for {e.company.ticker} with a recorded move yet.
+            </p>
+          )}
+        </div>
+      </div>
+
+      <div className="grid grid-2">
+        <div className="card">
+          <h2>Market expectations — next unreported period</h2>
+          {est ? (
+            <>
+              <div className="grid grid-2" style={{ gap: 10 }}>
+                <div className="stat">
+                  <span className="stat-label">EPS estimate (avg)</span>
+                  <span className="stat-value small">{formatMoney(est.eps_estimate_average)}</span>
+                </div>
+                <div className="stat">
+                  <span className="stat-label">EPS revision trend</span>
+                  <span className="stat-value small mono">{est.eps_revision_direction}</span>
+                </div>
+                <div className="stat">
+                  <span className="stat-label">Analyst count (EPS)</span>
+                  <span className="stat-value small">{est.eps_estimate_analyst_count ?? "—"}</span>
+                </div>
+                <div className="stat">
+                  <span className="stat-label">Revenue estimate (avg)</span>
+                  <span className="stat-value small">
+                    {est.revenue_estimate_average
+                      ? `$${(Number(est.revenue_estimate_average) / 1e9).toFixed(2)}B`
+                      : "—"}
+                  </span>
+                </div>
+              </div>
+              <p className="text-sm text-muted" style={{ marginTop: 10, marginBottom: 0 }}>
+                Estimated report date: {est.estimated_report_date ?? "unknown"} · consensus as of{" "}
+                {new Date(est.snapshot_timestamp).toLocaleDateString()} ({est.source_provider}).
+              </p>
+            </>
+          ) : (
+            <p className="text-sm text-muted" style={{ marginBottom: 0 }}>
+              No analyst-consensus snapshot has been collected yet for {e.company.ticker}'s next
+              unreported period. See <Link to="/data-status">Data / Eval Status</Link>.
+            </p>
+          )}
+        </div>
+
+        <div className="card">
+          <h2>Implied move &amp; options</h2>
+          {iv ? (
+            <>
+              <div className="grid grid-2" style={{ gap: 10 }}>
+                <div className="stat">
+                  <span className="stat-label">Implied move</span>
+                  <span className="stat-value small">
+                    {iv.implied_move_pct ? formatPlainPercent(iv.implied_move_pct) : "—"}
+                    {iv.implied_move_absolute ? ` ($${formatMoney(iv.implied_move_absolute)})` : ""}
+                  </span>
+                </div>
+                <div className="stat">
+                  <span className="stat-label">Expiration used</span>
+                  <span className="stat-value small mono">{iv.near_term_expiration ?? "—"}</span>
+                </div>
+                <div className="stat">
+                  <span className="stat-label">ATM IV</span>
+                  <span className="stat-value small">{formatPlainPercent(iv.atm_iv_near)}</span>
+                </div>
+                <div className="stat">
+                  <span className="stat-label">Put/call OI ratio</span>
+                  <span className="stat-value small">
+                    {iv.put_call_open_interest_ratio
+                      ? Number(iv.put_call_open_interest_ratio).toFixed(2)
+                      : "—"}
+                  </span>
+                </div>
+              </div>
+              <p className="text-sm text-muted" style={{ marginTop: 10, marginBottom: 0 }}>
+                Method: {iv.method} · computed {new Date(iv.computed_at).toLocaleString()}. See{" "}
+                <a
+                  href="https://github.com/YANGRUID/earnings-decision-lab/blob/main/docs/options_methodology.md"
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  docs/options_methodology.md
+                </a>
+                .
+              </p>
+            </>
+          ) : (
+            <p className="text-sm text-muted" style={{ marginBottom: 0 }}>
+              No options-chain data has been ingested for {e.company.ticker} yet — Alpha Vantage's
+              options endpoints are premium-gated on this project's plan (see{" "}
+              <Link to="/historical-replay">Historical Replay</Link> and{" "}
+              <Link to="/data-status">Data / Eval Status</Link>). Use{" "}
+              <Link to="/options-lab">Options Lab</Link> to price a hypothetical strategy with your
+              own strikes and premiums instead.
+            </p>
+          )}
         </div>
       </div>
 
@@ -110,15 +223,6 @@ export function EarningsEvent() {
             </tbody>
           </table>
         )}
-      </div>
-
-      <div className="card">
-        <h2>Options</h2>
-        <p className="text-sm text-muted">
-          No historical option chain exists for this event to replay a strategy against. Use{" "}
-          <Link to="/options-lab">Options Lab</Link> to price a hypothetical strategy with your
-          own strikes and premiums.
-        </p>
       </div>
 
       <div className="card">
