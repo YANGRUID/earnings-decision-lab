@@ -139,6 +139,15 @@ class OptionQuote(ProvenancedModel):
     gamma: Decimal | None = None
     theta: Decimal | None = None
     vega: Decimal | None = None
+    # "live" | "delayed" | "frozen" | "unknown" -- only set by providers that
+    # can actually determine this from the response itself (e.g. IBKR's
+    # market-data-availability flag; see providers/ibkr_client.py). None
+    # for providers with no such signal (e.g. Alpha Vantage), never guessed.
+    market_data_quality: str | None = None
+    # The provider's own contract identifier (e.g. IBKR's conid), where one
+    # exists -- real provenance for re-querying or auditing exactly which
+    # contract this quote came from. None for providers with no such concept.
+    external_contract_id: str | None = None
 
 
 class TranscriptDocument(ProvenancedModel):

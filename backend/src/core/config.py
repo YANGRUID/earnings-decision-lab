@@ -27,6 +27,17 @@ class Settings(BaseSettings):
     options_data_api_key: str | None = None
     earnings_calendar_api_key: str | None = None
 
+    # --- Options-chain provider (provider-agnostic — see providers/base.py
+    # and providers/factory.py) ---
+    options_provider: str = "alpha_vantage"
+
+    # IBKR Client Portal Gateway (Phase 13). Runs locally on the user's own
+    # machine (see docs/ibkr_integration.md) -- this project never talks to
+    # IBKR's cloud directly, only to a Gateway instance already
+    # authenticated by the user themselves outside this codebase. Read-only:
+    # no order-execution endpoint is ever called against this URL.
+    ibkr_base_url: str = "https://localhost:5001/v1/api"
+
     # --- LLM provider (provider-agnostic — see docs/llm_providers.md) ---
     llm_provider: str = "deepseek"
 

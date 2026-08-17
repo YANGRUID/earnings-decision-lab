@@ -62,8 +62,13 @@ class FixtureOptionsDataProvider(OptionsDataProvider):
         self._chain = json.loads((_FIXTURES_DIR / "option_chain.json").read_text())
 
     def get_option_chain(
-        self, ticker: str, as_of: datetime, expiration: date | None = None
+        self,
+        ticker: str,
+        as_of: datetime,
+        expiration: date | None = None,
+        reference_date: date | None = None,
     ) -> list[OptionQuote]:
+        del reference_date  # this fixture already returns the full canned chain
         return [
             OptionQuote(**row, source_provider="fixture", retrieved_at=datetime.now())
             for row in self._chain

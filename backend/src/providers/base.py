@@ -32,13 +32,27 @@ class MarketDataProvider(ABC):
 class OptionsDataProvider(ABC):
     @abstractmethod
     def get_option_chain(
-        self, ticker: str, as_of: datetime, expiration: date | None = None
+        self,
+        ticker: str,
+        as_of: datetime,
+        expiration: date | None = None,
+        reference_date: date | None = None,
     ) -> list[OptionQuote]:
         """Full (or single-expiration) option chain quoted at/near ``as_of``.
 
         Implementations must not backfill fields using information that
         postdates ``as_of`` — see the no-lookahead-bias principle in
         docs/data_model.md.
+
+        ``reference_date`` is a hint, not a filter: for a provider that must
+        bound an otherwise enormous universe of contracts (e.g. a live
+        broker API where fetching every expiration/strike is impractical
+        and costly -- see providers/ibkr_options.py), it's the
+        forward-looking date to center contract discovery on, typically the
+        earnings date being researched, so the provider can pick a real
+        near-that-date expiration and a bounded ATM strike window instead of
+        everything. Providers that already return a full chain (e.g. Alpha
+        Vantage) ignore it.
         """
 
 

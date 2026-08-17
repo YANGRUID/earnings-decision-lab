@@ -6,7 +6,7 @@ from sqlalchemy import Date, DateTime, Enum, ForeignKey, Integer, Numeric, Strin
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from db.base import Base
-from models.enums import GreeksSource, OptionType
+from models.enums import GreeksSource, MarketDataQuality, OptionType
 from models.mixins import TimestampMixin
 
 if TYPE_CHECKING:
@@ -60,6 +60,16 @@ class OptionsSnapshot(TimestampMixin, Base):
     greeks_source: Mapped[GreeksSource | None] = mapped_column(
         Enum(GreeksSource, name="greeks_source")
     )
+    # Only ever set from a real signal a provider returned (e.g. IBKR's
+    # market-data-availability flag) -- never guessed. Null for providers
+    # with no such signal (e.g. Alpha Vantage).
+    market_data_quality: Mapped[MarketDataQuality | None] = mapped_column(
+        Enum(MarketDataQuality, name="market_data_quality")
+    )
+    # The provider's own contract identifier (e.g. IBKR's conid), where one
+    # exists -- real provenance for re-querying or auditing exactly which
+    # contract this quote came from.
+    external_contract_id: Mapped[str | None] = mapped_column(String(32))
 
     source_provider: Mapped[str] = mapped_column(String(64))
     retrieved_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))

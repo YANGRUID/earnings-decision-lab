@@ -73,8 +73,16 @@ class AlphaVantageOptionsProvider(OptionsDataProvider):
         reraise=True,
     )
     def get_option_chain(
-        self, ticker: str, as_of: datetime, expiration: date | None = None
+        self,
+        ticker: str,
+        as_of: datetime,
+        expiration: date | None = None,
+        reference_date: date | None = None,
     ) -> list[OptionQuote]:
+        # reference_date is a bounding hint for providers that can't return
+        # a full chain -- irrelevant here, since this already fetches every
+        # expiration/strike in one call.
+        del reference_date
         params = {
             "function": "REALTIME_OPTIONS",
             "symbol": ticker.upper(),
