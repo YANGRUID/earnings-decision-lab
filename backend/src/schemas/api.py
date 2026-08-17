@@ -84,6 +84,16 @@ class VolatilitySnapshotResponse(BaseModel):
     computed_at: datetime
 
 
+class HistoricalMoveStatsResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    sample_size: int
+    average_abs_move_pct: Decimal
+    median_abs_move_pct: Decimal
+    largest_abs_move_pct: Decimal
+    largest_move_pct_signed: Decimal
+
+
 class EarningsEventDetail(EarningsEventSummary):
     company: CompanyResponse
     result: EarningsResultResponse | None
@@ -101,6 +111,12 @@ class EarningsEventDetail(EarningsEventSummary):
     # since Alpha Vantage's options endpoints are premium-gated on this
     # project's plan -- see providers/alpha_vantage_options.py).
     implied_move: VolatilitySnapshotResponse | None = None
+    # Populated on every event (unlike market_expectations/implied_move) --
+    # this is real history the company already has regardless of whether
+    # any options data exists. Never includes this same event's own move.
+    # Null only when the company has no *other* reported event with a
+    # recorded next_day_move_pct yet. See services/historical_moves.py.
+    historical_moves: HistoricalMoveStatsResponse | None = None
 
 
 class CitationResponse(BaseModel):

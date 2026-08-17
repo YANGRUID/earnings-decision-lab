@@ -285,6 +285,46 @@ def test_get_earnings_event_omits_implied_move_for_older_event(client, db_sessio
     assert response.json()["implied_move"] is None
 
 
+def test_get_earnings_event_shows_historical_moves_from_other_events(client, db_session):
+    from datetime import UTC, date, datetime
+    from decimal import Decimal
+
+    from models.earnings_event import EarningsEvent
+    from models.price_reaction import PriceReaction
+
+    company, event = _seed_company_with_earnings(db_session)
+    older_event = EarningsEvent(
+        company_id=company.id, fiscal_year=2025, fiscal_quarter=4, earnings_date=date(2025, 12, 18)
+    )
+    db_session.add(older_event)
+    db_session.flush()
+    db_session.add(
+        PriceReaction(
+            earnings_event_id=older_event.id,
+            next_day_move_pct=Decimal("-0.07"),
+            source_provider="test",
+            retrieved_at=datetime.now(UTC),
+        )
+    )
+    db_session.flush()
+
+    response = client.get(f"/api/v1/earnings/{event.id}")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["historical_moves"]["sample_size"] == 1
+    assert body["historical_moves"]["largest_move_pct_signed"] == "-0.070000"
+
+
+def test_get_earnings_event_historical_moves_null_with_no_other_events(client, db_session):
+    company, event = _seed_company_with_earnings(db_session)
+
+    response = client.get(f"/api/v1/earnings/{event.id}")
+
+    assert response.status_code == 200
+    assert response.json()["historical_moves"] is None
+
+
 def test_options_payoff_bull_call_spread(client):
     response = client.post(
         "/api/v1/options/strategies/payoff",

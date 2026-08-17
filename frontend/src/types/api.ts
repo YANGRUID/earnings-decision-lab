@@ -61,12 +61,21 @@ export interface VolatilitySnapshot {
   computed_at: string;
 }
 
+export interface HistoricalMoveStats {
+  sample_size: number;
+  average_abs_move_pct: string;
+  median_abs_move_pct: string;
+  largest_abs_move_pct: string;
+  largest_move_pct_signed: string;
+}
+
 export interface EarningsEventDetail extends EarningsEventSummary {
   company: Company;
   result: EarningsResult | null;
   price_reaction: PriceReaction | null;
   market_expectations: EarningsEstimate | null;
   implied_move: VolatilitySnapshot | null;
+  historical_moves: HistoricalMoveStats | null;
 }
 
 export interface Citation {

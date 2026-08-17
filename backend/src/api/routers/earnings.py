@@ -6,6 +6,7 @@ from api.exceptions import NotFoundError
 from models.company import Company
 from models.earnings_event import EarningsEvent
 from schemas.api import EarningsEventDetail, EarningsEventSummary
+from services.historical_moves import get_historical_move_stats
 from services.market_expectations import get_latest_earnings_estimate
 from services.options_analytics import get_latest_volatility_snapshot
 
@@ -57,6 +58,8 @@ def get_earnings_event(event_id: int, db: DbSession) -> EarningsEventDetail:
         market_expectations = get_latest_earnings_estimate(db, event.company_id)
         implied_move = get_latest_volatility_snapshot(db, event.company_id)
 
+    historical_moves = get_historical_move_stats(db, event.company_id, exclude_event_id=event.id)
+
     # model_validate on a dict (not the ORM instance directly) so mypy sees
     # a type it can check -- each nested field (company, result, ...) still
     # goes through its own schema's from_attributes=True coercion, since
@@ -73,5 +76,6 @@ def get_earnings_event(event_id: int, db: DbSession) -> EarningsEventDetail:
             "price_reaction": event.price_reaction,
             "market_expectations": market_expectations,
             "implied_move": implied_move,
+            "historical_moves": historical_moves,
         }
     )
