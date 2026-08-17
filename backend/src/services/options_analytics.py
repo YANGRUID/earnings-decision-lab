@@ -1,0 +1,169 @@
+"""Computes and persists implied move + ATM IV from ingested OptionsSnapshot
+rows for a company's next earnings event. See
+analytics/options/implied_move.py for the underlying deterministic
+methodology and docs/options_methodology.md for the full writeup.
+
+Mirrors the collect/get split in services/market_expectations.py: writing a
+new VolatilitySnapshot is a deliberate point-in-time snapshot (so an implied
+move computed at T-7 stays a fixed historical record even if later price or
+options data changes), not something recomputed live on every API read.
+
+No options-chain provider currently returns real data for this project's
+Alpha Vantage plan (see providers/alpha_vantage_options.py), so
+OptionsSnapshot is empty today and every function here honestly returns
+None against that empty table rather than fabricating a result. This module
+is complete and ready to compute real values the moment ingestion exists.
+"""
+
+from datetime import UTC, date, datetime
+from decimal import Decimal
+
+from sqlalchemy.orm import Session
+
+from analytics.options.implied_move import (
+    NoQuoteAvailable,
+    calculate_atm_iv,
+    calculate_atm_straddle_implied_move,
+    select_expiration_after,
+)
+from models.company import Company
+from models.options_snapshot import OptionsSnapshot
+from models.price_bar import PriceBar
+from models.volatility_snapshot import VolatilitySnapshot
+from providers.types import OptionQuote
+
+
+def _latest_snapshot_timestamp(db: Session, company_id: int) -> datetime | None:
+    row = (
+        db.query(OptionsSnapshot.snapshot_timestamp)
+        .filter(OptionsSnapshot.company_id == company_id)
+        .order_by(OptionsSnapshot.snapshot_timestamp.desc())
+        .first()
+    )
+    return row[0] if row else None
+
+
+def _latest_close_price_on_or_before(db: Session, ticker: str, as_of: date) -> Decimal | None:
+    row = (
+        db.query(PriceBar)
+        .filter(PriceBar.ticker == ticker, PriceBar.trade_date <= as_of)
+        .order_by(PriceBar.trade_date.desc())
+        .first()
+    )
+    return row.close if row else None
+
+
+def _to_option_quote(row: OptionsSnapshot, ticker: str) -> OptionQuote:
+    return OptionQuote(
+        ticker=ticker,
+        snapshot_timestamp=row.snapshot_timestamp,
+        expiration_date=row.expiration_date,
+        strike=row.strike,
+        option_type=row.option_type.value,
+        bid=row.bid,
+        ask=row.ask,
+        last_price=row.last_price,
+        volume=row.volume,
+        open_interest=row.open_interest,
+        implied_volatility=row.implied_volatility,
+        delta=row.delta,
+        gamma=row.gamma,
+        theta=row.theta,
+        vega=row.vega,
+        source_provider=row.source_provider,
+        retrieved_at=row.retrieved_at,
+    )
+
+
+def compute_and_persist_volatility_snapshot(
+    db: Session, company: Company, earnings_date: date
+) -> VolatilitySnapshot | None:
+    """Computes implied move + ATM IV from the most recently ingested
+    options-chain snapshot for ``company``, using the nearest expiration
+    strictly after ``earnings_date``. Persists and returns a new
+    VolatilitySnapshot row.
+
+    Returns None -- never a fabricated result -- when: no options quotes
+    have been ingested for this company yet, no expiration after
+    ``earnings_date`` is present in the chain, no ATM call+put pair exists
+    at the chosen expiration, or no price data exists to determine the
+    underlying price as of the options snapshot.
+    """
+    snapshot_timestamp = _latest_snapshot_timestamp(db, company.id)
+    if snapshot_timestamp is None:
+        return None
+
+    rows = (
+        db.query(OptionsSnapshot)
+        .filter(
+            OptionsSnapshot.company_id == company.id,
+            OptionsSnapshot.snapshot_timestamp == snapshot_timestamp,
+        )
+        .all()
+    )
+    if not rows:
+        return None
+
+    quotes = [_to_option_quote(r, company.ticker) for r in rows]
+    available_expirations = {q.expiration_date for q in quotes}
+    expiration = select_expiration_after(available_expirations, earnings_date)
+    if expiration is None:
+        return None
+
+    underlying_price = _latest_close_price_on_or_before(
+        db, company.ticker, snapshot_timestamp.date()
+    )
+    if underlying_price is None:
+        return None
+
+    computed_at = datetime.now(UTC)
+    try:
+        move = calculate_atm_straddle_implied_move(
+            quotes,
+            expiration=expiration,
+            underlying_price=underlying_price,
+            computed_at=computed_at,
+        )
+    except NoQuoteAvailable:
+        return None
+
+    same_expiration = [q for q in quotes if q.expiration_date == expiration]
+    call = next(
+        q for q in same_expiration if q.strike == move.atm_strike and q.option_type == "call"
+    )
+    put = next(q for q in same_expiration if q.strike == move.atm_strike and q.option_type == "put")
+    iv = calculate_atm_iv(call, put)
+
+    inputs = move.as_inputs_json()
+    inputs["atm_iv_method"] = iv.method
+    inputs["atm_iv_diverges"] = iv.diverges
+    if iv.call_iv is not None:
+        inputs["call_iv"] = str(iv.call_iv)
+    if iv.put_iv is not None:
+        inputs["put_iv"] = str(iv.put_iv)
+
+    row = VolatilitySnapshot(
+        company_id=company.id,
+        snapshot_timestamp=snapshot_timestamp,
+        method=move.method,
+        near_term_expiration=expiration,
+        atm_iv_near=iv.atm_iv,
+        implied_move_pct=move.implied_move_pct,
+        implied_move_absolute=move.implied_move_absolute,
+        inputs=inputs,
+        computed_at=computed_at,
+    )
+    db.add(row)
+    db.commit()
+    return row
+
+
+def get_latest_volatility_snapshot(db: Session, company_id: int) -> VolatilitySnapshot | None:
+    """Most recently computed implied-move/ATM-IV snapshot for a company,
+    regardless of which expiration or earnings event it was computed for."""
+    return (
+        db.query(VolatilitySnapshot)
+        .filter(VolatilitySnapshot.company_id == company_id)
+        .order_by(VolatilitySnapshot.snapshot_timestamp.desc())
+        .first()
+    )

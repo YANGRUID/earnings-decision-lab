@@ -32,10 +32,41 @@ export interface EarningsEventSummary {
   date_confirmed: boolean;
 }
 
+export interface EarningsEstimate {
+  fiscal_period_end_date: string;
+  horizon: string;
+  estimated_report_date: string | null;
+  eps_estimate_average: string | null;
+  eps_estimate_high: string | null;
+  eps_estimate_low: string | null;
+  eps_estimate_analyst_count: number | null;
+  eps_revision_direction: string;
+  revenue_estimate_average: string | null;
+  revenue_estimate_high: string | null;
+  revenue_estimate_low: string | null;
+  revenue_estimate_analyst_count: number | null;
+  revenue_revision_direction: string;
+  snapshot_timestamp: string;
+  source_provider: string;
+}
+
+export interface VolatilitySnapshot {
+  method: string;
+  near_term_expiration: string | null;
+  atm_iv_near: string | null;
+  implied_move_pct: string | null;
+  implied_move_absolute: string | null;
+  inputs: Record<string, unknown> | null;
+  snapshot_timestamp: string;
+  computed_at: string;
+}
+
 export interface EarningsEventDetail extends EarningsEventSummary {
   company: Company;
   result: EarningsResult | null;
   price_reaction: PriceReaction | null;
+  market_expectations: EarningsEstimate | null;
+  implied_move: VolatilitySnapshot | null;
 }
 
 export interface Citation {

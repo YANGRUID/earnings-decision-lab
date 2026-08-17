@@ -14,10 +14,12 @@ from datetime import date, datetime
 from providers.types import (
     ConsensusEstimate,
     EarningsCalendarEntry,
+    EarningsEstimatePeriod,
     FilingMetadata,
     OHLCBar,
     OptionQuote,
     TranscriptDocument,
+    UpcomingEarningsCalendarEntry,
 )
 
 
@@ -50,6 +52,34 @@ class EarningsDataProvider(ABC):
         self, ticker: str, fiscal_year: int, fiscal_quarter: int, as_of: datetime
     ) -> ConsensusEstimate | None:
         """Consensus EPS/revenue estimate as it stood at ``as_of``."""
+
+
+class EarningsEstimatesProvider(ABC):
+    """Analyst consensus data, keyed by fiscal period end date rather than
+    fiscal_year/fiscal_quarter -- see EarningsEstimatePeriod's docstring for
+    why. A separate interface from EarningsDataProvider (which already
+    existed, unimplemented, since Phase 1): that one's shape assumes a known
+    discrete fiscal_quarter, which doesn't hold for the one period that
+    matters most in practice (the next unreported one, which for all four
+    covered tickers today is the fiscal-Q4/FYE period this project has never
+    modeled as a discrete quarter). Consensus data is never a substitute for
+    SEC actuals -- see EarningsResult, whose source of truth stays EDGAR.
+    """
+
+    @abstractmethod
+    def get_earnings_estimates(self, ticker: str) -> list[EarningsEstimatePeriod]:
+        """Current consensus by fiscal period. This reflects today's
+        analyst view for every period the provider returns (including past
+        ones) -- not a preserved point-in-time snapshot from back then, so
+        callers must only treat entries for genuinely unreported periods as
+        "expectations"; see docs/data_sources.md.
+        """
+
+    @abstractmethod
+    def get_next_earnings_date(self, ticker: str) -> UpcomingEarningsCalendarEntry | None:
+        """The provider's own prediction of the next report date -- not
+        SEC-confirmed. ``None`` if the provider has nothing upcoming.
+        """
 
 
 class FilingsProvider(ABC):

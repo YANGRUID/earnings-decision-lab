@@ -20,6 +20,17 @@ from providers.types import OptionQuote
 
 METHOD_ATM_STRADDLE = "atm_straddle"
 
+# ATM IV methodology labels -- surfaced to the UI so "how was this number
+# computed" is never ambiguous when call and put IV disagree (a real,
+# expected occurrence, not an error condition -- see calculate_atm_iv).
+ATM_IV_METHOD_AVERAGE = "average_of_call_and_put_iv"
+ATM_IV_METHOD_SINGLE_SIDE = "single_side_only"
+# Absolute IV difference (e.g. 0.05 = 5 vol points) above which call/put IV
+# at the same strike are flagged as diverging rather than just averaged
+# silently. A real, deliberately simple threshold, not a statistically
+# derived one -- see docs/options_methodology.md.
+IV_DIVERGENCE_THRESHOLD = Decimal("0.05")
+
 
 class NoQuoteAvailable(Exception):
     pass
@@ -103,4 +114,60 @@ def calculate_atm_straddle_implied_move(
         implied_move_pct=implied_move_pct,
         implied_move_absolute=straddle_price,
         computed_at=computed_at,
+    )
+
+
+def select_expiration_after(available_expirations: set[date], earnings_date: date) -> date | None:
+    """Nearest available expiration strictly *after* ``earnings_date`` —
+    the documented rule for picking which expiration's pricing actually
+    reflects the earnings move. An expiration on or before the earnings
+    date wouldn't have the event inside its remaining life at all, so it's
+    never a candidate regardless of how close it is. Returns ``None`` if
+    every available expiration is on or before the earnings date (no
+    forward-looking expiration exists in the chain).
+    """
+    candidates = [exp for exp in available_expirations if exp > earnings_date]
+    return min(candidates) if candidates else None
+
+
+@dataclass(frozen=True)
+class AtmIvResult:
+    method: str
+    call_iv: Decimal | None
+    put_iv: Decimal | None
+    atm_iv: Decimal | None
+    diverges: bool
+
+
+def calculate_atm_iv(
+    call: OptionQuote,
+    put: OptionQuote,
+    divergence_threshold: Decimal = IV_DIVERGENCE_THRESHOLD,
+) -> AtmIvResult:
+    """ATM IV from the same call/put pair ``calculate_atm_straddle_implied_move``
+    uses. When both sides report IV, the methodology is a plain average —
+    the simplest defensible choice, not presented as the only one (see
+    docs/options_methodology.md) — and ``diverges`` flags when call and put
+    IV disagree by more than ``divergence_threshold``, which the UI must
+    surface rather than silently average away. When only one side reports
+    IV (a real, observed possibility, not a bug), that side's value is used
+    directly and the method is labeled accordingly so it's never confused
+    with a genuine two-sided average.
+    """
+    call_iv, put_iv = call.implied_volatility, put.implied_volatility
+    if call_iv is not None and put_iv is not None:
+        return AtmIvResult(
+            method=ATM_IV_METHOD_AVERAGE,
+            call_iv=call_iv,
+            put_iv=put_iv,
+            atm_iv=(call_iv + put_iv) / 2,
+            diverges=abs(call_iv - put_iv) > divergence_threshold,
+        )
+    single = call_iv if call_iv is not None else put_iv
+    return AtmIvResult(
+        method=ATM_IV_METHOD_SINGLE_SIDE,
+        call_iv=call_iv,
+        put_iv=put_iv,
+        atm_iv=single,
+        diverges=False,
     )

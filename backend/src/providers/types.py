@@ -81,6 +81,48 @@ class EarningsCalendarEntry(ProvenancedModel):
     date_confirmed: bool = False
 
 
+class EarningsEstimatePeriod(ProvenancedModel):
+    """One fiscal period's consensus estimate, keyed by period *end date*
+    rather than fiscal_year/fiscal_quarter -- unlike ConsensusEstimate above.
+
+    This project never tracks a discrete fiscal-Q4/fiscal-year-end
+    EarningsEvent (SEC XBRL doesn't cleanly expose a standalone Q4 figure —
+    see docs/limitations.md, Phase 1), and confirmed live (Phase 12) that
+    the *next* unreported period for all four covered tickers is exactly
+    that Q4/FYE case. A type keyed by fiscal_year/fiscal_quarter cannot
+    represent that period at all; fiscal_period_end_date can, without
+    guessing a fiscal_quarter number this project has deliberately never
+    assigned to that kind of period.
+    """
+
+    ticker: str
+    fiscal_period_end_date: date
+    horizon: str  # "fiscal quarter" | "fiscal year"
+    eps_estimate_average: Decimal | None = None
+    eps_estimate_high: Decimal | None = None
+    eps_estimate_low: Decimal | None = None
+    eps_estimate_analyst_count: int | None = None
+    eps_estimate_revision_up_30d: int | None = None
+    eps_estimate_revision_down_30d: int | None = None
+    revenue_estimate_average: Decimal | None = None
+    revenue_estimate_high: Decimal | None = None
+    revenue_estimate_low: Decimal | None = None
+    revenue_estimate_analyst_count: int | None = None
+
+
+class UpcomingEarningsCalendarEntry(ProvenancedModel):
+    """A provider's own prediction of the next report date -- not SEC-
+    confirmed (unlike EarningsEvent.date_confirmed, which means "confirmed
+    via a real 8-K Item 2.02 filing"). Treated and labeled as an estimate
+    throughout the API/UI, never conflated with a confirmed date.
+    """
+
+    ticker: str
+    fiscal_period_end_date: date
+    estimated_report_date: date
+    calendar_eps_estimate: Decimal | None = None
+
+
 class OptionQuote(ProvenancedModel):
     ticker: str
     snapshot_timestamp: datetime

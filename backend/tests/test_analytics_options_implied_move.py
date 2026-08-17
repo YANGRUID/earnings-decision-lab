@@ -4,10 +4,14 @@ from decimal import Decimal
 import pytest
 
 from analytics.options.implied_move import (
+    ATM_IV_METHOD_AVERAGE,
+    ATM_IV_METHOD_SINGLE_SIDE,
     NoQuoteAvailable,
+    calculate_atm_iv,
     calculate_atm_straddle_implied_move,
     find_atm_strike,
     mid_price,
+    select_expiration_after,
 )
 from providers.types import OptionQuote
 
@@ -15,7 +19,7 @@ NOW = datetime(2025, 9, 22, 20, 0, 0)
 EXP = date(2025, 9, 26)
 
 
-def _quote(strike, option_type, bid=None, ask=None, last=None) -> OptionQuote:
+def _quote(strike, option_type, bid=None, ask=None, last=None, iv=None) -> OptionQuote:
     return OptionQuote(
         ticker="MU",
         snapshot_timestamp=NOW,
@@ -25,6 +29,7 @@ def _quote(strike, option_type, bid=None, ask=None, last=None) -> OptionQuote:
         bid=Decimal(str(bid)) if bid is not None else None,
         ask=Decimal(str(ask)) if ask is not None else None,
         last_price=Decimal(str(last)) if last is not None else None,
+        implied_volatility=Decimal(str(iv)) if iv is not None else None,
         source_provider="test",
         retrieved_at=NOW,
     )
@@ -84,3 +89,69 @@ def test_calculate_atm_straddle_raises_when_put_missing_at_atm_strike():
         calculate_atm_straddle_implied_move(
             quotes, expiration=EXP, underlying_price=Decimal("115"), computed_at=NOW
         )
+
+
+def test_select_expiration_after_picks_nearest_strictly_after_earnings_date():
+    expirations = {date(2025, 9, 19), date(2025, 9, 26), date(2025, 10, 3)}
+    assert select_expiration_after(expirations, date(2025, 9, 22)) == date(2025, 9, 26)
+
+
+def test_select_expiration_after_excludes_expiration_on_earnings_date():
+    expirations = {date(2025, 9, 22), date(2025, 9, 26)}
+    assert select_expiration_after(expirations, date(2025, 9, 22)) == date(2025, 9, 26)
+
+
+def test_select_expiration_after_returns_none_when_all_expirations_are_before():
+    expirations = {date(2025, 9, 1), date(2025, 9, 10)}
+    assert select_expiration_after(expirations, date(2025, 9, 22)) is None
+
+
+def test_select_expiration_after_returns_none_for_empty_set():
+    assert select_expiration_after(set(), date(2025, 9, 22)) is None
+
+
+def test_calculate_atm_iv_averages_call_and_put():
+    call = _quote(115, "call", iv=0.50)
+    put = _quote(115, "put", iv=0.52)
+    result = calculate_atm_iv(call, put)
+
+    assert result.method == ATM_IV_METHOD_AVERAGE
+    assert result.atm_iv == Decimal("0.51")
+    assert result.diverges is False
+
+
+def test_calculate_atm_iv_flags_divergence_above_threshold():
+    call = _quote(115, "call", iv=0.40)
+    put = _quote(115, "put", iv=0.50)
+    result = calculate_atm_iv(call, put)
+
+    assert result.method == ATM_IV_METHOD_AVERAGE
+    assert result.diverges is True
+
+
+def test_calculate_atm_iv_uses_single_side_when_call_iv_missing():
+    call = _quote(115, "call")
+    put = _quote(115, "put", iv=0.52)
+    result = calculate_atm_iv(call, put)
+
+    assert result.method == ATM_IV_METHOD_SINGLE_SIDE
+    assert result.atm_iv == Decimal("0.52")
+    assert result.diverges is False
+
+
+def test_calculate_atm_iv_uses_single_side_when_put_iv_missing():
+    call = _quote(115, "call", iv=0.48)
+    put = _quote(115, "put")
+    result = calculate_atm_iv(call, put)
+
+    assert result.method == ATM_IV_METHOD_SINGLE_SIDE
+    assert result.atm_iv == Decimal("0.48")
+
+
+def test_calculate_atm_iv_returns_none_when_neither_side_has_iv():
+    call = _quote(115, "call")
+    put = _quote(115, "put")
+    result = calculate_atm_iv(call, put)
+
+    assert result.method == ATM_IV_METHOD_SINGLE_SIDE
+    assert result.atm_iv is None

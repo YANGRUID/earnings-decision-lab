@@ -1,6 +1,7 @@
 from models.ai_extraction import AIExtraction
 from models.company import Company
 from models.document_chunk import DocumentChunk
+from models.earnings_estimate_snapshot import EarningsEstimateSnapshot
 from models.earnings_event import EarningsEvent
 from models.earnings_expectation_snapshot import EarningsExpectationSnapshot
 from models.earnings_result import EarningsResult
@@ -15,6 +16,7 @@ __all__ = [
     "AIExtraction",
     "Company",
     "DocumentChunk",
+    "EarningsEstimateSnapshot",
     "EarningsEvent",
     "EarningsExpectationSnapshot",
     "EarningsResult",
