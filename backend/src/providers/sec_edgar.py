@@ -22,6 +22,7 @@ from decimal import Decimal, InvalidOperation
 import httpx
 from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 
+from observability.http_client import new_http_client
 from providers.base import FilingsProvider
 from providers.types import CompanyFacts, CompanyFactValue, FilingMetadata
 
@@ -57,7 +58,7 @@ class SECEdgarProvider(FilingsProvider):
                 "SEC EDGAR requires a real contact in the User-Agent, e.g. "
                 "'Your Name your@email.com' — see SEC_EDGAR_USER_AGENT in .env"
             )
-        self._client = client or httpx.Client(timeout=10.0)
+        self._client = client or new_http_client(timeout=10.0)
         self._headers = {"User-Agent": user_agent, "Accept-Encoding": "gzip, deflate"}
         self._min_interval = min_request_interval_s
         self._last_request_at = 0.0

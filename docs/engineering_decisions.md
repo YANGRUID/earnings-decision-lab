@@ -503,3 +503,49 @@ that produced them, and the reproduction command (`run_all.py`) is the actual so
 for "is this still accurate" — state what was verified and when, don't imply it's continuously
 re-verified when it isn't.
 
+## Phase 10 (observability)
+
+**Why an httpx event hook (`observability/http_client.py`) instead of adding
+`time.monotonic()` bracketing at each of the six call sites that build their own client
+(Tiingo, Alpha Vantage, SEC EDGAR, and every LLM provider)?** All six already construct a
+plain `httpx.Client`; a `new_http_client()` drop-in that attaches request/response event hooks
+gets one consistent structured log line per outbound call without touching each provider's
+actual request logic, and without the risk of one call site's timing code drifting out of sync
+with another's. `response.elapsed` was tried first and rejected — httpx only populates it once
+the response body is fully read or closed, which doesn't line up with when the "response" hook
+fires for every client/mock configuration (`pytest-httpx`'s mock transport hit exactly this,
+caught by running the existing provider test suite against the change, not assumed to be fine).
+Timing a `request` hook against the `response` hook via `request.extensions` sidesteps that
+entirely.
+
+**A real credential leak was found and fixed while building this, not a hypothetical one.**
+Turning on `configure_logging()`'s root-level INFO logging (already wired up since Phase 8) also
+turns on httpx's own built-in `"HTTP Request: GET <full-url> ..."` line, which includes the query
+string — and this project's Tiingo/Alpha Vantage adapters authenticate via a `token`/`apikey`
+query parameter. A real live call, made specifically to verify the new latency logging worked,
+printed a real API key into what looked like a clean structured log line. Root cause traced
+before fixing anything: `configure_logging()` now explicitly sets `httpx`/`httpcore`'s own
+loggers to WARNING (this project's own `http.client` logger — host + path only, no query string
+— is the intended replacement). Two more paths were checked and hardened defensively once the
+first one was found, since the same class of bug (a secret embedded in `str(exception)`, not
+just in a log call) doesn't stop at the first place it's caught: `providers/fallback.py`'s
+provider-failure log line and `AllProvidersFailedError`'s own message (an `httpx.HTTPStatusError`
+bakes the request URL into its `__str__`), and `agents/orchestrator.py`'s per-tool
+`error=str(exc)` field — the latter is genuinely client-facing (returned in the
+`/research/query` API response), even though no agent tool currently makes a live outbound
+provider HTTP call at request time, so it wasn't reachable today but was one future tool change
+away from being a real leak, not a defensive-programming exercise against nothing.
+`observability/redact.py` strips both query-parameter-shaped secrets and Postgres-DSN-shaped
+userinfo credentials (`user:password@host`) — the second because `/api/v1/ready`'s error detail
+interpolates a raw DB exception, and some driver failures echo the DSN they were given.
+`redact()` is applied at each of those points rather than fixed "at the source" by changing
+exception types, since that would risk breaking the `tenacity` retry predicates that pattern-match
+on `httpx.HTTPStatusError` specifically.
+
+**Why retrieval latency needed explicit `time.monotonic()` timing (`rag/retrieval.py`) instead
+of the same event-hook trick?** `hybrid_search` doesn't make an HTTP call — both `vector_search`
+and `keyword_search` are SQLAlchemy queries against the local database — so there's no httpx
+request/response pair to hook into. This is the one of the four "request/provider/LLM/retrieval"
+latency categories the original project scope named that genuinely needed its own
+instrumentation rather than reusing the provider-layer mechanism.
+

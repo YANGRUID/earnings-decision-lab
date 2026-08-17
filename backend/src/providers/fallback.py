@@ -8,6 +8,7 @@ interface without duplicating logic per provider type.
 import logging
 from datetime import date
 
+from observability.redact import redact
 from providers.base import MarketDataProvider
 from providers.types import OHLCBar
 
@@ -17,7 +18,7 @@ log = logging.getLogger(__name__)
 class AllProvidersFailedError(Exception):
     def __init__(self, errors: list[tuple[str, Exception]]) -> None:
         self.errors = errors
-        detail = "; ".join(f"{name}: {exc}" for name, exc in errors)
+        detail = "; ".join(f"{name}: {redact(str(exc))}" for name, exc in errors)
         super().__init__(f"all providers failed: {detail}")
 
 
@@ -35,6 +36,6 @@ class MarketDataProviderChain(MarketDataProvider):
             except Exception as exc:  # noqa: BLE001 — deliberately broad: any
                 # provider failure should fall through to the next provider,
                 # not just the exception types we happened to anticipate.
-                log.warning("provider %s failed for %s: %s", name, ticker, exc)
+                log.warning("provider %s failed for %s: %s", name, ticker, redact(str(exc)))
                 errors.append((name, exc))
         raise AllProvidersFailedError(errors)

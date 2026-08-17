@@ -38,3 +38,14 @@ def configure_logging(level: str = "INFO") -> None:
     root = logging.getLogger()
     root.handlers = [handler]
     root.setLevel(level)
+
+    # httpx (and httpcore underneath it) log their own "HTTP Request: GET
+    # <full-url> ..." line at INFO, and several of this project's providers
+    # (Tiingo, Alpha Vantage) authenticate via an API key in the URL query
+    # string — at the default INFO level that line would print a real
+    # secret into structured logs. observability/http_client.py's own
+    # per-call log line (host + path only, no query string) is the safe,
+    # intentional replacement, so httpx/httpcore's own logging is muted
+    # rather than merely "not relied upon."
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)

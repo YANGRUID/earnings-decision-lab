@@ -28,6 +28,7 @@ from agents.tools.base import Tool
 from agents.tools.registry import build_tool_registry
 from agents.tools.types import ToolOutcome
 from agents.types import AgentResponse, ExecutionTrace, ToolCallRecord
+from observability.redact import redact
 from prompts.agent_intent import SYSTEM_PROMPT as INTENT_SYSTEM_PROMPT
 from prompts.agent_planning import TOOL_CALLING_SYSTEM_PROMPT, build_structured_planner_prompt
 from prompts.agent_synthesis import SYSTEM_PROMPT as SYNTHESIS_SYSTEM_PROMPT
@@ -222,7 +223,7 @@ class AgentOrchestrator:
                     success=False,
                     duration_ms=duration_ms,
                     summary="",
-                    error=str(exc),
+                    error=redact(str(exc)),
                 ),
                 None,
             )

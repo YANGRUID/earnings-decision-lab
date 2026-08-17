@@ -9,6 +9,7 @@ from decimal import Decimal
 import httpx
 from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 
+from observability.http_client import new_http_client
 from providers.base import MarketDataProvider
 from providers.types import OHLCBar
 
@@ -28,7 +29,7 @@ class TiingoMarketDataProvider(MarketDataProvider):
         if not api_key:
             raise ValueError("Tiingo requires an API key (TIINGO_API_KEY in .env)")
         self._api_key = api_key
-        self._client = client or httpx.Client(timeout=15.0)
+        self._client = client or new_http_client(timeout=15.0)
 
     @retry(
         retry=retry_if_exception(_retryable),

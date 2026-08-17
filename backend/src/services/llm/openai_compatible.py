@@ -25,6 +25,7 @@ import httpx
 from pydantic import BaseModel, ValidationError
 from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 
+from observability.http_client import new_http_client
 from services.llm.base import LLMProvider
 from services.llm.errors import LLMRequestError, StructuredOutputError
 from services.llm.types import ChatMessage, GenerateResult, TokenUsage, ToolCall, ToolDefinition
@@ -54,7 +55,7 @@ class _OpenAICompatibleTransport(LLMProvider):
         self._base_url = base_url.rstrip("/")
         self._model = model
         self.model = model  # public: callers that persist provenance need the configured model
-        self._client = client or httpx.Client(timeout=60.0)
+        self._client = client or new_http_client(timeout=60.0)
 
     def _headers(self) -> dict:
         return {"Authorization": f"Bearer {self._api_key}", "Content-Type": "application/json"}

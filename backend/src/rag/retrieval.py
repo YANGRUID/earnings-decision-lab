@@ -10,6 +10,8 @@ replaced by a real reranker later without changing this module's interface
 if retrieval quality ever demonstrably needs it.
 """
 
+import logging
+import time
 from dataclasses import dataclass, replace
 from datetime import date
 
@@ -19,6 +21,8 @@ from sqlalchemy.orm import Session
 from models.company import Company
 from models.document_chunk import DocumentChunk
 from models.filing import Filing
+
+log = logging.getLogger("rag.retrieval")
 
 DEFAULT_RRF_K = 60
 
@@ -137,6 +141,7 @@ def hybrid_search(
     searches' raw scores (cosine similarity and ts_rank aren't comparable)
     to be normalized against each other.
     """
+    start = time.monotonic()
     vector_results = vector_search(db, query_embedding, filters, k=k * 2)
     keyword_results = keyword_search(db, query_text, filters, k=k * 2)
 
@@ -150,4 +155,16 @@ def hybrid_search(
             by_id[chunk.chunk_id] = chunk
 
     ranked_ids = sorted(rrf_scores, key=lambda cid: rrf_scores[cid], reverse=True)[:k]
-    return [replace(by_id[cid], score=rrf_scores[cid]) for cid in ranked_ids]
+    results = [replace(by_id[cid], score=rrf_scores[cid]) for cid in ranked_ids]
+
+    log.info(
+        "hybrid search completed",
+        extra={
+            "duration_ms": round((time.monotonic() - start) * 1000, 2),
+            "vector_hits": len(vector_results),
+            "keyword_hits": len(keyword_results),
+            "returned": len(results),
+            "k": k,
+        },
+    )
+    return results

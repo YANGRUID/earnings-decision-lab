@@ -3,6 +3,28 @@
 Honest accounting of gaps, updated as each phase lands. Nothing here is hidden in code
 comments only — anything that affects what the system can honestly claim is listed here.
 
+## Observability & security (Phase 10)
+
+- **`observability/redact.py` is a best-effort regex pattern match, not a verified secret
+  scanner.** It catches the two concrete leak shapes found live in this codebase (a
+  `token`/`apikey`/similar query parameter, and a Postgres-DSN-style `user:password@host`) —
+  it would not catch a secret embedded in some other format (e.g. inside a JSON response body,
+  or a differently-named query parameter). Applied at the specific points that were found to
+  actually interpolate a raw exception into a log line or API response, not as a blanket
+  guarantee that no exception anywhere in the codebase could ever leak a secret.
+- **httpx/httpcore's own loggers are silenced to WARNING rather than fixed at the source**
+  (`observability/logging.py`) — this project's own `http.client` logger (host + path, no query
+  string) is the intended replacement for the per-call log line httpx provides by default. A
+  library upgrade that changes what httpx logs at WARNING (unlikely, but not impossible) could
+  reopen a version of the same leak; this is a reasonable tradeoff given the alternative
+  (patching httpx's internals) is far more fragile, not evidence the fix is airtight forever.
+- **No OpenTelemetry/distributed tracing** — evaluated and not added. This is a single-process
+  FastAPI service talking to one Postgres instance and outbound HTTP APIs, not a multi-service
+  system where request flow needs to be reconstructed across process boundaries; the structured
+  JSON logs (request ID, per-call latency for every provider/LLM/retrieval call) already answer
+  "what happened and how long did it take" for this project's actual shape. A real, not
+  reflexive, follow-up if this ever becomes a genuinely distributed system.
+
 ## Evaluation framework (Phase 9)
 
 Full methodology, honest per-category analysis, and the most recent measured results are in
