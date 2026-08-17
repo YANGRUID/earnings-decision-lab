@@ -67,7 +67,12 @@ services:
       backend:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost/"]
+      # 127.0.0.1, not localhost -- wget resolves "localhost" to ::1 first
+      # inside this container, and nginx doesn't listen on IPv6, so the
+      # healthcheck reported "unhealthy" (connection refused) even while
+      # correctly serving real traffic on IPv4. Confirmed live in Phase 12
+      # Docker verification.
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1/"]
       interval: 10s
       timeout: 5s
       start_period: 5s
