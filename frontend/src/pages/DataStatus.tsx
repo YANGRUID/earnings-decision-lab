@@ -1,55 +1,137 @@
 import { api } from "../api/client";
 import { useAsync } from "../hooks/useAsync";
-import { LoadingState } from "../components/StatusStates";
+import { ErrorState, LoadingState } from "../components/StatusStates";
 import { formatPercent } from "../lib/format";
 
+function Timestamp({ value }: { value: string | null }) {
+  if (value === null) return <span className="text-faint">never</span>;
+  return <span className="mono">{new Date(value).toLocaleString()}</span>;
+}
+
 export function DataStatus() {
-  const companies = useAsync(() => api.listCompanies(), []);
-  const earnings = useAsync(() => api.listEarnings({ limit: 100 }), []);
-  const evaluation = useAsync(() => api.getLatestEvaluation(), []);
+  const status = useAsync(() => api.getSystemStatus(), []);
+
+  if (status.loading) return <LoadingState label="Loading system status…" />;
+  if (status.error) return <ErrorState message={status.error} />;
+  if (!status.data) return null;
+
+  const { counts, freshness, llm, embedding_model: embeddingModel, evaluation } = status.data;
 
   return (
     <div>
       <div className="page-header">
         <h1>Data / Evaluation Status</h1>
-        <p>What has real data behind it today, stated plainly rather than left to be discovered.</p>
+        <p>What has real data behind it right now, stated plainly rather than left to be discovered.</p>
       </div>
 
       <div className="card">
         <h2>Live counts</h2>
-        {companies.loading || earnings.loading ? (
-          <LoadingState />
-        ) : (
-          <div className="grid grid-3">
-            <div className="stat">
-              <span className="stat-label">Covered companies</span>
-              <span className="stat-value">{companies.data?.length ?? "—"}</span>
-            </div>
-            <div className="stat">
-              <span className="stat-label">Earnings events (sample)</span>
-              <span className="stat-value">{earnings.data?.length ?? "—"}</span>
-            </div>
+        <div className="grid grid-4" style={{ gap: 10 }}>
+          <div className="stat">
+            <span className="stat-label">Companies</span>
+            <span className="stat-value">{counts.companies}</span>
           </div>
+          <div className="stat">
+            <span className="stat-label">Earnings events</span>
+            <span className="stat-value">{counts.earnings_events}</span>
+          </div>
+          <div className="stat">
+            <span className="stat-label">— with reported results</span>
+            <span className="stat-value">{counts.earnings_events_with_results}</span>
+          </div>
+          <div className="stat">
+            <span className="stat-label">Price bars</span>
+            <span className="stat-value">{counts.price_bars.toLocaleString()}</span>
+          </div>
+          <div className="stat">
+            <span className="stat-label">Filings</span>
+            <span className="stat-value">{counts.filings}</span>
+          </div>
+          <div className="stat">
+            <span className="stat-label">Filing chunks (RAG)</span>
+            <span className="stat-value">{counts.document_chunks.toLocaleString()}</span>
+          </div>
+          <div className="stat">
+            <span className="stat-label">Earnings estimate snapshots</span>
+            <span className="stat-value">{counts.earnings_estimate_snapshots}</span>
+          </div>
+          <div className="stat">
+            <span className="stat-label">Options snapshots</span>
+            <span className="stat-value">{counts.options_snapshots}</span>
+          </div>
+        </div>
+      </div>
+
+      <div className="card">
+        <h2>Data freshness</h2>
+        <div className="grid grid-2" style={{ gap: 10 }}>
+          <div className="stat">
+            <span className="stat-label">Latest price bar</span>
+            <span className="stat-value small">
+              {freshness.latest_price_bar_date ?? <span className="text-faint">—</span>}
+            </span>
+          </div>
+          <div className="stat">
+            <span className="stat-label">Latest filing ingested</span>
+            <span className="stat-value small">
+              <Timestamp value={freshness.latest_filing_retrieved_at} />
+            </span>
+          </div>
+          <div className="stat">
+            <span className="stat-label">Latest earnings estimate snapshot</span>
+            <span className="stat-value small">
+              <Timestamp value={freshness.latest_earnings_estimate_snapshot_at} />
+            </span>
+          </div>
+          <div className="stat">
+            <span className="stat-label">Latest options-chain snapshot</span>
+            <span className="stat-value small">
+              <Timestamp value={freshness.latest_options_snapshot_at} />
+            </span>
+          </div>
+        </div>
+        {freshness.latest_options_snapshot_at === null && (
+          <p className="text-sm text-muted" style={{ marginTop: 10, marginBottom: 0 }}>
+            No options-chain data ingested yet — Alpha Vantage's options endpoints are
+            premium-gated on this project's plan. See{" "}
+            <a
+              href="https://github.com/YANGRUID/earnings-decision-lab/blob/main/docs/data_sources.md"
+              target="_blank"
+              rel="noreferrer"
+            >
+              docs/data_sources.md
+            </a>
+            .
+          </p>
         )}
       </div>
 
       <div className="card">
-        <h2>Real, working data</h2>
-        <ul className="text-sm">
-          <li>Historical earnings actuals (EPS, revenue) — SEC EDGAR XBRL, all 4 tickers</li>
-          <li>Confirmed earnings dates — sourced from 8-K Item 2.02 filings, not guessed</li>
-          <li>Daily price history and price reactions — Tiingo (fallback: Alpha Vantage)</li>
-          <li>2,200+ real SEC filing chunks, hybrid-searchable with citations</li>
-          <li>Structured guidance extraction with full provenance (source, model, prompt version)</li>
-          <li>AI research assistant with real tool orchestration, verification, and execution traces</li>
-        </ul>
+        <h2>AI provider</h2>
+        <div className="grid grid-3" style={{ gap: 10 }}>
+          <div className="stat">
+            <span className="stat-label">LLM provider</span>
+            <span className="stat-value small mono">{llm.provider}</span>
+          </div>
+          <div className="stat">
+            <span className="stat-label">Model</span>
+            <span className="stat-value small mono">{llm.model ?? "—"}</span>
+          </div>
+          <div className="stat">
+            <span className="stat-label">Status</span>
+            <span className={`pill ${llm.configured ? "pill-positive" : "pill-negative"}`}>
+              {llm.configured ? "configured" : "not configured"}
+            </span>
+          </div>
+        </div>
+        <p className="text-sm text-muted" style={{ marginTop: 10, marginBottom: 0 }}>
+          Embeddings: <span className="mono">{embeddingModel}</span> (local, no API key needed).
+        </p>
       </div>
 
       <div className="card">
         <h2>Evaluation</h2>
-        {evaluation.loading ? (
-          <LoadingState />
-        ) : !evaluation.data?.available || !evaluation.data.run ? (
+        {!evaluation.available || !evaluation.run ? (
           <p className="text-sm text-muted" style={{ marginBottom: 0 }}>
             No evaluation run recorded on this deployment. Results are real output written to a
             local file, not committed to the repo — see docs/evaluation.md for the most recent
@@ -58,40 +140,48 @@ export function DataStatus() {
         ) : (
           <>
             <p className="text-sm text-muted">
-              Run at {new Date(evaluation.data.run.run_at).toLocaleString()} against{" "}
-              {evaluation.data.run.llm_provider}/{evaluation.data.run.llm_model}. Full methodology
-              and honest analysis of these numbers in docs/evaluation.md.
+              Run at {new Date(evaluation.run.run_at).toLocaleString()} against{" "}
+              {evaluation.run.llm_provider}/{evaluation.run.llm_model}. Full methodology and
+              honest analysis of these numbers in docs/evaluation.md.
             </p>
             <div className="grid grid-4">
-              {evaluation.data.run.retrieval && (
+              {evaluation.run.retrieval && (
                 <div className="stat">
-                  <span className="stat-label">Retrieval Recall@5 ({evaluation.data.run.retrieval.item_count} items)</span>
+                  <span className="stat-label">
+                    Retrieval Recall@5 ({evaluation.run.retrieval.item_count} items)
+                  </span>
                   <span className="stat-value">
-                    {formatPercent(evaluation.data.run.retrieval.mean_recall_at_5)}
+                    {formatPercent(evaluation.run.retrieval.mean_recall_at_5)}
                   </span>
                 </div>
               )}
-              {evaluation.data.run.rag_answer && (
+              {evaluation.run.rag_answer && (
                 <div className="stat">
-                  <span className="stat-label">RAG answer fact coverage ({evaluation.data.run.rag_answer.item_count} items)</span>
+                  <span className="stat-label">
+                    RAG answer fact coverage ({evaluation.run.rag_answer.item_count} items)
+                  </span>
                   <span className="stat-value">
-                    {formatPercent(evaluation.data.run.rag_answer.mean_fact_coverage)}
+                    {formatPercent(evaluation.run.rag_answer.mean_fact_coverage)}
                   </span>
                 </div>
               )}
-              {evaluation.data.run.agent && (
+              {evaluation.run.agent && (
                 <div className="stat">
-                  <span className="stat-label">Agent tool-selection accuracy ({evaluation.data.run.agent.item_count} items)</span>
+                  <span className="stat-label">
+                    Agent tool-selection accuracy ({evaluation.run.agent.item_count} items)
+                  </span>
                   <span className="stat-value">
-                    {formatPercent(evaluation.data.run.agent.tool_selection_accuracy)}
+                    {formatPercent(evaluation.run.agent.tool_selection_accuracy)}
                   </span>
                 </div>
               )}
-              {evaluation.data.run.extraction && (
+              {evaluation.run.extraction && (
                 <div className="stat">
-                  <span className="stat-label">Extraction capex accuracy ({evaluation.data.run.extraction.item_count} items)</span>
+                  <span className="stat-label">
+                    Extraction capex accuracy ({evaluation.run.extraction.item_count} items)
+                  </span>
                   <span className="stat-value">
-                    {formatPercent(evaluation.data.run.extraction.capex_accuracy)}
+                    {formatPercent(evaluation.run.extraction.capex_accuracy)}
                   </span>
                 </div>
               )}
@@ -100,13 +190,19 @@ export function DataStatus() {
         )}
       </div>
 
-      <div className="card">
-        <h2>Known gaps — not hidden, not faked</h2>
-        <ul className="text-sm">
-          <li>No live options-chain data (implied move, IV, strategy replay) — no provider configured yet</li>
-          <li>No analyst consensus estimates</li>
+      <details className="card">
+        <summary style={{ cursor: "pointer", fontWeight: 600 }}>Known gaps — not hidden, not faked</summary>
+        <ul className="text-sm" style={{ marginTop: 10 }}>
+          <li>
+            No real options-chain data — Alpha Vantage's options endpoints are premium-gated on
+            this project's plan (confirmed live, see docs/data_sources.md); implied move, IV, and
+            put/call ratios stay null until a subscription exists or forward snapshots accumulate.
+          </li>
           <li>No earnings-call transcripts (no legally accessible free source identified)</li>
-          <li>Retrieval quality is the measured bottleneck for AI Research (Recall@5 ≈ 0.35) — see docs/evaluation.md for the specific, verified cause</li>
+          <li>
+            Retrieval quality is the measured bottleneck for AI Research — see docs/evaluation.md
+            for the specific, verified cause
+          </li>
         </ul>
         <p className="text-sm text-muted" style={{ marginBottom: 0 }}>
           Full detail in{" "}
@@ -119,7 +215,7 @@ export function DataStatus() {
           </a>
           .
         </p>
-      </div>
+      </details>
     </div>
   );
 }

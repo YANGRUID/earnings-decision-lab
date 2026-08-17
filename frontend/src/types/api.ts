@@ -234,6 +234,39 @@ export interface EvaluationStatusResponse {
   run: EvaluationRun | null;
 }
 
+export interface DataCounts {
+  companies: number;
+  earnings_events: number;
+  earnings_events_with_results: number;
+  price_bars: number;
+  filings: number;
+  document_chunks: number;
+  earnings_estimate_snapshots: number;
+  options_snapshots: number;
+  volatility_snapshots: number;
+}
+
+export interface DataFreshness {
+  latest_price_bar_date: string | null;
+  latest_filing_retrieved_at: string | null;
+  latest_earnings_estimate_snapshot_at: string | null;
+  latest_options_snapshot_at: string | null;
+}
+
+export interface LlmConfigStatus {
+  provider: string;
+  model: string | null;
+  configured: boolean;
+}
+
+export interface SystemStatus {
+  counts: DataCounts;
+  freshness: DataFreshness;
+  llm: LlmConfigStatus;
+  embedding_model: string;
+  evaluation: EvaluationStatusResponse;
+}
+
 export interface ApiError {
   error: string;
   request_id: string | null;

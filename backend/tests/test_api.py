@@ -399,6 +399,21 @@ def test_replay_summary_includes_real_historical_moves_and_implied_vs_realized(c
     assert entry["implied_vs_realized"][0]["realized_next_day_move_pct"] == "-0.060000"
 
 
+def test_system_status_reflects_real_counts_and_config(client, db_session):
+    _seed_company_with_earnings(db_session)
+
+    response = client.get("/api/v1/system-status")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["counts"]["companies"] >= 1
+    assert body["counts"]["earnings_events_with_results"] >= 1
+    assert body["embedding_model"]
+    assert "provider" in body["llm"]
+    assert "configured" in body["llm"]
+    assert "available" in body["evaluation"]
+
+
 def test_options_payoff_bull_call_spread(client):
     response = client.post(
         "/api/v1/options/strategies/payoff",

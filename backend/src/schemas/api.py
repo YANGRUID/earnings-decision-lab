@@ -226,3 +226,42 @@ class EvaluationStatusResponse(BaseModel):
 
     available: bool
     run: EvaluationRun | None
+
+
+class DataCountsResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    companies: int
+    earnings_events: int
+    earnings_events_with_results: int
+    price_bars: int
+    filings: int
+    document_chunks: int
+    earnings_estimate_snapshots: int
+    options_snapshots: int
+    volatility_snapshots: int
+
+
+class DataFreshnessResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    latest_price_bar_date: date | None
+    latest_filing_retrieved_at: datetime | None
+    latest_earnings_estimate_snapshot_at: datetime | None
+    latest_options_snapshot_at: datetime | None
+
+
+class LlmConfigStatusResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    provider: str
+    model: str | None
+    configured: bool
+
+
+class SystemStatusResponse(BaseModel):
+    counts: DataCountsResponse
+    freshness: DataFreshnessResponse
+    llm: LlmConfigStatusResponse
+    embedding_model: str
+    evaluation: EvaluationStatusResponse
