@@ -148,6 +148,45 @@ class TestComputeAndPersistVolatilitySnapshot:
 
         assert compute_and_persist_volatility_snapshot(db_session, company, EARNINGS_DATE) is None
 
+    def test_underlying_price_never_leaks_a_future_price_bar(self, db_session):
+        """The whole point of ``as_of``-scoped snapshots: a price bar dated
+        after the options snapshot was taken must never be used as "the"
+        underlying price, even when it's the most recent one on record --
+        that would be using information not yet available at snapshot time.
+        """
+        company = _seed_company(db_session)
+        # Correct: on record before the options snapshot's date (2025-09-15).
+        _seed_price_bar(db_session, company.ticker, date(2025, 9, 12), Decimal("114.50"))
+        # Must be ignored: dated *after* the options snapshot -- using this
+        # would be a lookahead-bias bug.
+        _seed_price_bar(db_session, company.ticker, date(2025, 9, 20), Decimal("999.00"))
+        _seed_option_quote(
+            db_session,
+            company,
+            expiration=NEAR_EXP,
+            strike=Decimal("115"),
+            option_type=OptionType.CALL,
+            bid=Decimal("4.20"),
+            ask=Decimal("4.40"),
+        )
+        _seed_option_quote(
+            db_session,
+            company,
+            expiration=NEAR_EXP,
+            strike=Decimal("115"),
+            option_type=OptionType.PUT,
+            bid=Decimal("4.00"),
+            ask=Decimal("4.20"),
+        )
+
+        row = compute_and_persist_volatility_snapshot(db_session, company, EARNINGS_DATE)
+
+        assert row is not None
+        expected_pct = (Decimal("8.40") / Decimal("114.50")).quantize(
+            Decimal("0.000001"), rounding=ROUND_HALF_UP
+        )
+        assert row.implied_move_pct == expected_pct
+
     def test_persists_real_implied_move_and_atm_iv(self, db_session):
         company = _seed_company(db_session)
         _seed_price_bar(db_session, company.ticker, date(2025, 9, 12), Decimal("114.50"))

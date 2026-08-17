@@ -659,3 +659,56 @@ configured-but-never-invoked tool is not a safety net, and "tests pass" was neve
 "the type annotations are honest" — these are genuinely different properties, and only one of
 them was actually being checked.
 
+## Phase 12 (product completion: market expectations, options data, replay)
+
+**Every claim about what Alpha Vantage actually returns is a captured, live response, not an
+assumption from its docs.** `EARNINGS_ESTIMATES` and `EARNINGS_CALENDAR` are confirmed free-tier;
+`REALTIME_OPTIONS` and `HISTORICAL_OPTIONS` are confirmed premium-gated — both return HTTP 200
+with an explicit `message`/`Information` field naming the required plan, never a 4xx, so a naive
+implementation could easily have mistaken the gate response's artificial sample data for real
+contracts. The exact captured shapes are embedded verbatim in
+`backend/tests/test_providers_alpha_vantage_options.py` and
+`backend/tests/test_providers_alpha_vantage_estimates.py` so a future change can't silently start
+trusting fabricated data again.
+
+**`EarningsEstimateSnapshot` is keyed by `fiscal_period_end_date`, not `(fiscal_year,
+fiscal_quarter)`.** The existing `EarningsEvent` schema (Phase 1) has never tracked a discrete
+fiscal Q4/FYE period — most filers report Q1–Q3 via 10-Q and only a full-year figure via the
+10-K, so this project never modeled Q4 as its own row. Checking the real data: every one of the
+four covered tickers' *next* real earnings event today is exactly that untracked Q4/FYE case.
+Keying the new table by the real period-end date sidesteps the gap entirely rather than forcing a
+fiscal_quarter value that doesn't exist.
+
+**`VolatilitySnapshot.target_earnings_date` is a real column, independent of
+`earnings_event_id`.** The same Q4/FYE gap means the *next* real earnings date usually has no
+`EarningsEvent` row to link to at the moment an options snapshot is taken (forward, ahead of the
+event). Rather than leave `earnings_event_id` unpopulated and lose the ability to later match a
+snapshot to its realized outcome, `target_earnings_date` is set directly from the date the
+snapshot was computed against and matched to `EarningsEvent.earnings_date` purely by value once
+that event is eventually reported — see `services/options_analytics.get_implied_vs_realized_moves`.
+
+**ATM IV methodology is labeled, not silently averaged.** When both call and put report IV at the
+same ATM strike, the value used is a plain average — the simplest defensible choice, not
+presented as the only one — and a `diverges` flag (>5 vol points apart) is computed and exposed
+alongside it rather than hidden inside the average. When only one side reports IV (observed as a
+real possibility in Alpha Vantage's documented schema, not assumed), that side is used directly
+and labeled `single_side_only` so it's never later confused with a genuine two-sided average.
+
+**A real bug caught before it shipped: two different clock sources for one collection
+decision.** The first draft of `collect_forward_options_snapshot` took `today: date` (for the
+T-14/T-7/T-3/T-1 schedule check) and separately called `datetime.now(UTC)` for the persisted
+`snapshot_timestamp` — fine in production where both resolve to the same real moment, but a test
+that injected a fixed `today` far from the real wall-clock date exposed that the function would
+schedule against one date and stamp data with another. Fixed by taking a single `as_of: datetime`
+parameter and deriving `today = as_of.date()` from it, so the two can never diverge by
+construction. Caught by a deterministic test (`test_does_not_refetch_if_already_collected_today`),
+not by manual inspection — exactly the case for writing the test even when the code "looks right".
+
+**Historical Replay shows real history instead of an empty placeholder, honestly.** With
+`HISTORICAL_OPTIONS` confirmed premium-gated, a genuine options-chain replay isn't possible on
+this project's plan. Rather than leave the screen a static "not available" message, it now shows
+real per-company historical price-move statistics (computed from already-ingested `PriceReaction`
+rows) and a real (currently empty, by necessity) implied-vs-realized comparison that populates
+automatically as forward options snapshots age into reported events — with an explicit
+`options_data_ingested` flag so the frontend states the reason rather than hiding it.
+
