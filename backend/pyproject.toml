@@ -15,6 +15,8 @@ dependencies = [
     "tenacity>=9.0",
     "apscheduler>=3.10",
     "pgvector>=0.3.6",
+    "beautifulsoup4>=4.15.0",
+    "fastembed>=0.8.0",
 ]
 
 [dependency-groups]

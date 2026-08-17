@@ -1,4 +1,5 @@
 from models.company import Company
+from models.document_chunk import DocumentChunk
 from models.earnings_event import EarningsEvent
 from models.earnings_expectation_snapshot import EarningsExpectationSnapshot
 from models.earnings_result import EarningsResult
@@ -11,6 +12,7 @@ from models.volatility_snapshot import VolatilitySnapshot
 
 __all__ = [
     "Company",
+    "DocumentChunk",
     "EarningsEvent",
     "EarningsExpectationSnapshot",
     "EarningsResult",
