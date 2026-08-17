@@ -101,6 +101,36 @@ class HistoricalMoveStatsResponse(BaseModel):
     largest_move_pct_signed: Decimal
 
 
+class ImpliedVsRealizedMoveResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    target_earnings_date: date
+    snapshot_timestamp: datetime
+    near_term_expiration: date | None
+    implied_move_pct: Decimal | None
+    realized_next_day_move_pct: Decimal
+
+
+class CompanyReplaySummaryResponse(BaseModel):
+    company: CompanyResponse
+    historical_moves: HistoricalMoveStatsResponse | None
+    # Real implied-vs-realized comparisons accumulated so far -- see
+    # services/options_analytics.py.get_implied_vs_realized_moves. Empty
+    # for every company today; options_data_ingested on the parent response
+    # explains why.
+    implied_vs_realized: list[ImpliedVsRealizedMoveResponse]
+
+
+class ReplaySummaryResponse(BaseModel):
+    companies: list[CompanyReplaySummaryResponse]
+    # Whether any options-chain quote has ever been ingested for any
+    # company -- false today, since no provider on this project's Alpha
+    # Vantage plan returns real options data (see
+    # providers/alpha_vantage_options.py). The frontend uses this to
+    # explain, rather than hide, why implied_vs_realized is empty.
+    options_data_ingested: bool
+
+
 class EarningsEventDetail(EarningsEventSummary):
     company: CompanyResponse
     result: EarningsResultResponse | None

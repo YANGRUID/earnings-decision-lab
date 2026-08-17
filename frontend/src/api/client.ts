@@ -6,6 +6,7 @@ import type {
   FilingSearchResponse,
   ImpliedMoveRequest,
   ImpliedMoveResponse,
+  ReplaySummary,
   ResearchQueryResponse,
   StrategyPayoffRequest,
   StrategyPayoffResponse,
@@ -82,4 +83,6 @@ export const api = {
   },
 
   getLatestEvaluation: () => request<EvaluationStatusResponse>("/evaluations/latest"),
+
+  getReplaySummary: () => request<ReplaySummary>("/replay"),
 };

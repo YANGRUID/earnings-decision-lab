@@ -74,6 +74,25 @@ export interface HistoricalMoveStats {
   largest_move_pct_signed: string;
 }
 
+export interface ImpliedVsRealizedMove {
+  target_earnings_date: string;
+  snapshot_timestamp: string;
+  near_term_expiration: string | null;
+  implied_move_pct: string | null;
+  realized_next_day_move_pct: string;
+}
+
+export interface CompanyReplaySummary {
+  company: Company;
+  historical_moves: HistoricalMoveStats | null;
+  implied_vs_realized: ImpliedVsRealizedMove[];
+}
+
+export interface ReplaySummary {
+  companies: CompanyReplaySummary[];
+  options_data_ingested: boolean;
+}
+
 export interface EarningsEventDetail extends EarningsEventSummary {
   company: Company;
   result: EarningsResult | null;

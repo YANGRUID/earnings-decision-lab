@@ -333,6 +333,72 @@ def test_get_earnings_event_historical_moves_null_with_no_other_events(client, d
     assert response.json()["historical_moves"] is None
 
 
+def test_replay_summary_empty_options_data_still_lists_companies(client, db_session):
+    company, _event = _seed_company_with_earnings(db_session)
+
+    response = client.get("/api/v1/replay")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["options_data_ingested"] is False
+    tickers = {c["company"]["ticker"] for c in body["companies"]}
+    assert company.ticker in tickers
+    entry = next(c for c in body["companies"] if c["company"]["ticker"] == company.ticker)
+    assert entry["implied_vs_realized"] == []
+
+
+def test_replay_summary_includes_real_historical_moves_and_implied_vs_realized(client, db_session):
+    from datetime import UTC, date, datetime
+    from decimal import Decimal
+
+    from models.enums import OptionType
+    from models.options_snapshot import OptionsSnapshot
+    from models.price_reaction import PriceReaction
+    from models.volatility_snapshot import VolatilitySnapshot
+
+    company, event = _seed_company_with_earnings(db_session)
+    db_session.add(
+        PriceReaction(
+            earnings_event_id=event.id,
+            next_day_move_pct=Decimal("-0.06"),
+            source_provider="test",
+            retrieved_at=datetime.now(UTC),
+        )
+    )
+    db_session.add(
+        VolatilitySnapshot(
+            company_id=company.id,
+            snapshot_timestamp=datetime(2026, 3, 10, tzinfo=UTC),
+            method="atm_straddle",
+            target_earnings_date=event.earnings_date,
+            implied_move_pct=Decimal("0.073"),
+            computed_at=datetime.now(UTC),
+        )
+    )
+    db_session.add(
+        OptionsSnapshot(
+            company_id=company.id,
+            snapshot_timestamp=datetime(2026, 3, 10, tzinfo=UTC),
+            expiration_date=date(2026, 3, 20),
+            strike=Decimal("100"),
+            option_type=OptionType.CALL,
+            source_provider="test",
+            retrieved_at=datetime.now(UTC),
+        )
+    )
+    db_session.flush()
+
+    response = client.get("/api/v1/replay")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["options_data_ingested"] is True
+    entry = next(c for c in body["companies"] if c["company"]["ticker"] == company.ticker)
+    assert entry["historical_moves"]["sample_size"] == 1
+    assert len(entry["implied_vs_realized"]) == 1
+    assert entry["implied_vs_realized"][0]["realized_next_day_move_pct"] == "-0.060000"
+
+
 def test_options_payoff_bull_call_spread(client):
     response = client.post(
         "/api/v1/options/strategies/payoff",

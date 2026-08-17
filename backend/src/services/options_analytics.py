@@ -15,6 +15,7 @@ None against that empty table rather than fabricating a result. This module
 is complete and ready to compute real values the moment ingestion exists.
 """
 
+from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from decimal import Decimal
 
@@ -32,8 +33,10 @@ from analytics.options.sentiment import (
     put_call_volume_ratio,
 )
 from models.company import Company
+from models.earnings_event import EarningsEvent
 from models.options_snapshot import OptionsSnapshot
 from models.price_bar import PriceBar
+from models.price_reaction import PriceReaction
 from models.volatility_snapshot import VolatilitySnapshot
 from providers.types import OptionQuote
 
@@ -164,6 +167,7 @@ def compute_and_persist_volatility_snapshot(
         company_id=company.id,
         snapshot_timestamp=snapshot_timestamp,
         method=move.method,
+        target_earnings_date=earnings_date,
         near_term_expiration=expiration,
         next_term_expiration=next_expiration,
         atm_iv_near=iv.atm_iv,
@@ -181,6 +185,14 @@ def compute_and_persist_volatility_snapshot(
     return row
 
 
+def has_any_options_data(db: Session) -> bool:
+    """Whether any options-chain quote has ever been ingested for any
+    company -- the single fact that explains why implied_vs_realized stays
+    empty (no provider on this project's Alpha Vantage plan returns real
+    options data yet; see providers/alpha_vantage_options.py)."""
+    return db.query(OptionsSnapshot.id).first() is not None
+
+
 def get_latest_volatility_snapshot(db: Session, company_id: int) -> VolatilitySnapshot | None:
     """Most recently computed implied-move/ATM-IV snapshot for a company,
     regardless of which expiration or earnings event it was computed for."""
@@ -190,3 +202,52 @@ def get_latest_volatility_snapshot(db: Session, company_id: int) -> VolatilitySn
         .order_by(VolatilitySnapshot.snapshot_timestamp.desc())
         .first()
     )
+
+
+@dataclass(frozen=True)
+class ImpliedVsRealizedMove:
+    target_earnings_date: date
+    snapshot_timestamp: datetime
+    near_term_expiration: date | None
+    implied_move_pct: Decimal | None
+    realized_next_day_move_pct: Decimal
+
+
+def get_implied_vs_realized_moves(db: Session, company_id: int) -> list[ImpliedVsRealizedMove]:
+    """Every VolatilitySnapshot computed for ``company_id`` whose target
+    earnings date has since been reported with a real next_day_move_pct on
+    record -- an implied move that can now be checked against what actually
+    happened. Matches purely on (company, date), independent of whether an
+    EarningsEvent row existed yet at snapshot time (see
+    VolatilitySnapshot.target_earnings_date).
+
+    Empty until options data has been ingested ahead of a real earnings
+    date and that date has since been reported -- true for every covered
+    company today, since no options-chain provider returns real data on
+    this project's current Alpha Vantage plan (see
+    providers/alpha_vantage_options.py). This is the "forward accumulation"
+    this project relies on: each real snapshot taken between now and a
+    future earnings date becomes one more row here once that date reports.
+    """
+    rows = (
+        db.query(VolatilitySnapshot, PriceReaction.next_day_move_pct)
+        .join(EarningsEvent, EarningsEvent.company_id == VolatilitySnapshot.company_id)
+        .join(PriceReaction, PriceReaction.earnings_event_id == EarningsEvent.id)
+        .filter(
+            VolatilitySnapshot.company_id == company_id,
+            VolatilitySnapshot.target_earnings_date == EarningsEvent.earnings_date,
+            PriceReaction.next_day_move_pct.isnot(None),
+        )
+        .order_by(VolatilitySnapshot.snapshot_timestamp)
+        .all()
+    )
+    return [
+        ImpliedVsRealizedMove(
+            target_earnings_date=snapshot.target_earnings_date,
+            snapshot_timestamp=snapshot.snapshot_timestamp,
+            near_term_expiration=snapshot.near_term_expiration,
+            implied_move_pct=snapshot.implied_move_pct,
+            realized_next_day_move_pct=realized_move_pct,
+        )
+        for snapshot, realized_move_pct in rows
+    ]

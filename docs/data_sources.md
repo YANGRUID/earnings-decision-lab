@@ -64,27 +64,70 @@ access (and against bypassing bot-detection), neither is called anywhere in this
 SEC-EDGAR-only pieces (actuals, 8-K-sourced earnings dates) were never affected by this, since
 `ingestion/backfill_earnings_dates.py` has no market-data dependency.
 
-## Evaluated, not yet wired up
+### Alpha Vantage — analyst consensus estimates (`backend/src/providers/alpha_vantage_estimates.py`, Phase 12)
 
-No options-chain or analyst-consensus-estimate data source has both usable free access and
-terms compatible with this project's approach. `FixtureEarningsDataProvider` /
-`FixtureOptionsDataProvider` (`backend/src/providers/fixtures.py`) exist so the rest of the
-system can be built and tested against the right interface shape in the meantime — explicitly
-test-only, never wired into ingestion or the API (see that module's docstring).
+- **What it provides:** `EARNINGS_ESTIMATES` (consensus EPS/revenue, high/low, analyst count,
+  30-day EPS revision counts, per fiscal period) and `EARNINGS_CALENDAR` (the provider's own
+  next-report-date prediction). Both confirmed **live, on the free tier** during Phase 12.
+- **Cost:** free tier, same shared 25 requests/day / ~5/minute budget as the OHLCV adapter
+  above — both endpoints count against the same daily quota.
+- **Status:** live and wired up. See [engineering_decisions.md](engineering_decisions.md)
+  (Phase 12) for why `EarningsEstimateSnapshot` is keyed by `fiscal_period_end_date` rather
+  than `(fiscal_year, fiscal_quarter)`.
+
+### Alpha Vantage — options chain (`backend/src/providers/alpha_vantage_options.py`, Phase 12)
+
+- **What it provides (on paper):** `REALTIME_OPTIONS` (current chain incl. Greeks with
+  `require_greeks=true`) and `HISTORICAL_OPTIONS` (past chains).
+- **Confirmed live, Phase 12: both require a premium Alpha Vantage subscription this project's
+  key doesn't have.**
+  - `REALTIME_OPTIONS` returns HTTP 200 with an explicit
+    `"message": "This is a premium endpoint..."` field and artificial sample data (fake
+    contract IDs, an invalid `"2099-99-99"` expiration) — the adapter detects this shape and
+    raises `PremiumEndpointRequiredError` rather than ever parsing it as real data.
+  - `HISTORICAL_OPTIONS` returns an even more explicit
+    `{"Information": "... This is a premium endpoint ..."}` body with no data at all — checked
+    live again in Phase 12 while building the Historical Replay honest-fallback screen (see
+    below); the exact captured response is in `backend/tests/test_providers_alpha_vantage_options.py`.
+- **Practical consequence:** `OptionsSnapshot` is empty, and every downstream calculation that
+  depends on it (implied move, ATM IV, IV term structure, put/call ratios — all built in
+  Phase 12, see [options_methodology.md](options_methodology.md)) correctly returns null rather
+  than a fabricated value. The parsing path for a real (non-demo) response is implemented and
+  unit-tested against Alpha Vantage's documented schema, ready to verify the moment a
+  subscription exists.
+
+### Historical Replay — real fallback instead of a fabricated options-chain reconstruction (Phase 12)
+
+With `HISTORICAL_OPTIONS` confirmed premium-gated, the Historical Replay screen cannot show a
+real historical options-chain reconstruction today — earlier versions of this project's plan
+assumed one might exist by now. Rather than leave the screen an empty placeholder or fabricate
+data, it now shows two things that **are** real:
+
+1. **Historical price-move statistics** per company (average/median/largest absolute
+   next-day move, with the largest move's real direction) computed from already-ingested,
+   real `PriceReaction` rows — see `backend/src/analytics/earnings/historical_moves.py`.
+2. **Implied-vs-realized move comparisons**, accumulated forward from now: each real
+   `VolatilitySnapshot` computed ahead of a real earnings date (via forward snapshot
+   collection — see below) is matched, once that date is actually reported, against the real
+   realized next-day move. Empty today for the reason above, but the matching logic itself is
+   real and tested (`backend/tests/test_services_options_analytics.py`), not a placeholder —
+   it populates automatically as real snapshots accumulate, no code change needed.
+
+`GET /api/v1/replay` exposes both, plus an explicit `options_data_ingested` flag so the
+frontend states the reason implied-vs-realized is empty rather than hiding it.
+
+### Rejected/deferred alternatives for options-chain data
 
 | Provider | Covers | Cost | Notes |
 |---|---|---|---|
-| Finnhub | earnings calendar, consensus estimates, basic options | Free tier available | Candidate for `EarningsDataProvider`; requires a free-account signup not yet done. |
-| Tradier | real-time-delayed options chains incl. Greeks | Free developer sandbox | Best-fit candidate for `OptionsDataProvider`; requires signup. |
-| ORATS / CBOE DataShop | historical options chains incl. IV | Paid, priced per dataset | Only realistic source of *historical* (not just current-snapshot) options data; deferred until justified by cost. |
+| Finnhub | earnings calendar, consensus estimates, basic options | Free tier available | Superseded by Alpha Vantage's EARNINGS_ESTIMATES/EARNINGS_CALENDAR (Phase 12), which are already live. |
+| Tradier | real-time-delayed options chains incl. Greeks | Free developer sandbox | Candidate `OptionsDataProvider` if Alpha Vantage's options endpoints stay out of reach; requires signup, not yet done. |
+| ORATS / CBOE DataShop | historical options chains incl. IV | Paid, priced per dataset | Only realistic source of genuinely *historical* (not just current-snapshot) options data; deferred until justified by cost. |
 | Twelve Data | daily OHLCV, some fundamentals | Free tier: 800 req/day | Viable third option for market data if Tiingo/Alpha Vantage both degrade; not currently needed. |
 
-**Practical consequence:** until a consensus-estimate/options provider is selected and a key
-configured, the system has no live options chain or analyst-consensus data — implied move, IV,
-put/call ratios stay null on every snapshot. Historical Event Replay (Phase 4) is scoped
-accordingly: it implements the architecture and runs on whatever real historical coverage
-exists, marking gaps explicitly rather than fabricating strikes, IV, or estimates for periods
-with no real data. See [limitations.md](limitations.md).
+`FixtureEarningsDataProvider` / `FixtureOptionsDataProvider` (`backend/src/providers/fixtures.py`)
+remain test-only fixtures for exercising the interface shape — never wired into ingestion or
+the API.
 
 ## Not used
 

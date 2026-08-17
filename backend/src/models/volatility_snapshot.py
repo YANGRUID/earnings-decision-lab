@@ -38,6 +38,14 @@ class VolatilitySnapshot(TimestampMixin, Base):
     snapshot_timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
     method: Mapped[str] = mapped_column(String(64))
 
+    # The earnings date this snapshot was computed against -- set even when
+    # no EarningsEvent row exists yet for that date (true for every
+    # upcoming period today; see EarningsEstimateSnapshot's docstring for
+    # why). Lets a forward snapshot be matched to its eventual realized
+    # move purely by date once that event is reported, independent of
+    # whether earnings_event_id could be populated at snapshot time.
+    target_earnings_date: Mapped[date | None] = mapped_column(Date, index=True)
+
     near_term_expiration: Mapped[date | None] = mapped_column(Date)
     next_term_expiration: Mapped[date | None] = mapped_column(Date)
 

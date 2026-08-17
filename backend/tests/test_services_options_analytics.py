@@ -2,12 +2,15 @@ from datetime import UTC, date, datetime
 from decimal import ROUND_HALF_UP, Decimal
 
 from models.company import Company
+from models.earnings_event import EarningsEvent
 from models.enums import OptionType
 from models.options_snapshot import OptionsSnapshot
 from models.price_bar import PriceBar
+from models.price_reaction import PriceReaction
 from models.volatility_snapshot import VolatilitySnapshot
 from services.options_analytics import (
     compute_and_persist_volatility_snapshot,
+    get_implied_vs_realized_moves,
     get_latest_volatility_snapshot,
 )
 
@@ -165,6 +168,7 @@ class TestComputeAndPersistVolatilitySnapshot:
         assert row.inputs["atm_iv_method"] == "average_of_call_and_put_iv"
         assert row.inputs["atm_iv_diverges"] is False
         assert row.snapshot_timestamp == SNAPSHOT_TS
+        assert row.target_earnings_date == EARNINGS_DATE
         # Only one forward expiration on record -- no term structure or
         # ratios to compute without open_interest/volume data.
         assert row.next_term_expiration is None
@@ -308,3 +312,133 @@ class TestGetLatestVolatilitySnapshot:
         latest = get_latest_volatility_snapshot(db_session, company.id)
         assert latest is not None
         assert latest.near_term_expiration == NEAR_EXP
+
+
+class TestGetImpliedVsRealizedMoves:
+    def test_returns_empty_list_when_no_snapshots_exist(self, db_session):
+        company = _seed_company(db_session)
+        assert get_implied_vs_realized_moves(db_session, company.id) == []
+
+    def test_excludes_snapshot_whose_earnings_date_has_no_reported_event(self, db_session):
+        company = _seed_company(db_session)
+        db_session.add(
+            VolatilitySnapshot(
+                company_id=company.id,
+                snapshot_timestamp=SNAPSHOT_TS,
+                method="atm_straddle",
+                target_earnings_date=EARNINGS_DATE,
+                implied_move_pct=Decimal("0.073"),
+                computed_at=datetime.now(UTC),
+            )
+        )
+        db_session.flush()
+
+        assert get_implied_vs_realized_moves(db_session, company.id) == []
+
+    def test_excludes_reported_event_with_no_next_day_move_recorded(self, db_session):
+        company = _seed_company(db_session)
+        event = EarningsEvent(
+            company_id=company.id, fiscal_year=2025, fiscal_quarter=3, earnings_date=EARNINGS_DATE
+        )
+        db_session.add(event)
+        db_session.flush()
+        db_session.add(
+            PriceReaction(
+                earnings_event_id=event.id,
+                next_day_move_pct=None,
+                source_provider="test",
+                retrieved_at=datetime.now(UTC),
+            )
+        )
+        db_session.add(
+            VolatilitySnapshot(
+                company_id=company.id,
+                snapshot_timestamp=SNAPSHOT_TS,
+                method="atm_straddle",
+                target_earnings_date=EARNINGS_DATE,
+                implied_move_pct=Decimal("0.073"),
+                computed_at=datetime.now(UTC),
+            )
+        )
+        db_session.flush()
+
+        assert get_implied_vs_realized_moves(db_session, company.id) == []
+
+    def test_matches_snapshot_to_its_eventual_realized_move(self, db_session):
+        company = _seed_company(db_session)
+        event = EarningsEvent(
+            company_id=company.id, fiscal_year=2025, fiscal_quarter=3, earnings_date=EARNINGS_DATE
+        )
+        db_session.add(event)
+        db_session.flush()
+        db_session.add(
+            PriceReaction(
+                earnings_event_id=event.id,
+                next_day_move_pct=Decimal("-0.06"),
+                source_provider="test",
+                retrieved_at=datetime.now(UTC),
+            )
+        )
+        db_session.add(
+            VolatilitySnapshot(
+                company_id=company.id,
+                snapshot_timestamp=SNAPSHOT_TS,
+                method="atm_straddle",
+                target_earnings_date=EARNINGS_DATE,
+                near_term_expiration=NEAR_EXP,
+                implied_move_pct=Decimal("0.073"),
+                computed_at=datetime.now(UTC),
+            )
+        )
+        db_session.flush()
+
+        results = get_implied_vs_realized_moves(db_session, company.id)
+
+        assert len(results) == 1
+        assert results[0].target_earnings_date == EARNINGS_DATE
+        assert results[0].implied_move_pct == Decimal("0.073")
+        assert results[0].realized_next_day_move_pct == Decimal("-0.06")
+
+    def test_returns_every_forward_snapshot_for_the_same_earnings_date(self, db_session):
+        company = _seed_company(db_session)
+        event = EarningsEvent(
+            company_id=company.id, fiscal_year=2025, fiscal_quarter=3, earnings_date=EARNINGS_DATE
+        )
+        db_session.add(event)
+        db_session.flush()
+        db_session.add(
+            PriceReaction(
+                earnings_event_id=event.id,
+                next_day_move_pct=Decimal("-0.06"),
+                source_provider="test",
+                retrieved_at=datetime.now(UTC),
+            )
+        )
+        earlier_ts = datetime(2025, 9, 8, 15, 0, tzinfo=UTC)
+        db_session.add(
+            VolatilitySnapshot(
+                company_id=company.id,
+                snapshot_timestamp=earlier_ts,
+                method="atm_straddle",
+                target_earnings_date=EARNINGS_DATE,
+                implied_move_pct=Decimal("0.065"),
+                computed_at=datetime.now(UTC),
+            )
+        )
+        db_session.add(
+            VolatilitySnapshot(
+                company_id=company.id,
+                snapshot_timestamp=SNAPSHOT_TS,
+                method="atm_straddle",
+                target_earnings_date=EARNINGS_DATE,
+                implied_move_pct=Decimal("0.073"),
+                computed_at=datetime.now(UTC),
+            )
+        )
+        db_session.flush()
+
+        results = get_implied_vs_realized_moves(db_session, company.id)
+
+        assert len(results) == 2
+        assert results[0].snapshot_timestamp == earlier_ts
+        assert results[1].snapshot_timestamp == SNAPSHOT_TS
