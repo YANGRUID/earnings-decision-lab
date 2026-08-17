@@ -3,6 +3,28 @@
 Honest accounting of gaps, updated as each phase lands. Nothing here is hidden in code
 comments only — anything that affects what the system can honestly claim is listed here.
 
+## Docker & deployment (Phase 10)
+
+- **No live cloud deployment.** `docker compose up --build` runs the full stack locally and is
+  verified working (see [deployment.md](deployment.md) and
+  [engineering_decisions.md](engineering_decisions.md)), but nothing has been deployed to
+  Azure, Fly.io, or a VPS — that requires real, recurring personal spending and cloud
+  credentials this environment doesn't have, so it's a decision left to the project owner
+  rather than defaulted into. The cost research in deployment.md is real (current 2026
+  pricing pages), but unverified by actually provisioning anything.
+- **`docker-compose.yml`'s `db` service has no automated backup strategy** — fine for local
+  development (the volume persists across restarts), not something that's been designed for a
+  production deployment. A managed database service (Azure Flexible Server, Fly Postgres) would
+  handle this; a self-hosted VPS deployment would need its own backup job, not yet written.
+  Whichever deployment path is chosen, this is real follow-up work, not shipped by this phase.
+- **The CI `docker` job validates that the stack builds and boots healthy with no real
+  provider/LLM keys configured** (the same graceful-degradation posture as the `backend` job) —
+  it does not exercise a live LLM call, live provider call, or the frontend's actual data
+  rendering against the backend. A genuinely fuller smoke test (start the stack, run a real
+  DeepSeek-backed query end-to-end) was deliberately not added to CI, since that would mean a
+  real secret in CI and real per-run LLM cost for every push — the manual verification already
+  done locally (see engineering_decisions.md) covers that gap today, not CI.
+
 ## Observability & security (Phase 10)
 
 - **`observability/redact.py` is a best-effort regex pattern match, not a verified secret

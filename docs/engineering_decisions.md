@@ -549,3 +549,66 @@ request/response pair to hook into. This is the one of the four "request/provide
 latency categories the original project scope named that genuinely needed its own
 instrumentation rather than reusing the provider-layer mechanism.
 
+## Phase 10 (Docker + CI)
+
+**Two real, previously-undetected bugs were found by actually running `docker compose up
+--build`, not by writing the Dockerfiles and assuming they'd work.** Both are documented here
+in the order they were found because each one would have shipped silently otherwise:
+
+1. **The wheel's package layout was broken.** `backend/pyproject.toml` had
+   `[tool.hatch.build.targets.wheel] packages = ["src"]` since Phase 0. This was never actually
+   exercised — the test suite imports via `pythonpath = ["src"]` in the pytest config, not via an
+   installed package — so nothing ever ran `uv build` or installed the wheel until this phase's
+   Dockerfile tried to. The built wheel shipped `src/agents/...`, `src/api/...` (the `src/`
+   prefix preserved), not `agents/...`, `api/...` as every import statement in the codebase
+   assumes, so `import models` failed with `ModuleNotFoundError` the moment a real container
+   tried to run `alembic upgrade head`. Root cause confirmed by inspecting the actual wheel
+   contents (`python -m zipfile -l`) before guessing at a fix, and by checking current Hatch
+   documentation for the correct multi-package-under-`src/` configuration rather than
+   trial-and-error. Fixed by listing each top-level package explicitly (`packages =
+   ["src/agents", "src/api", ...]`) — Hatch has no single option for "flatten every directory
+   under `src/`."
+2. **The embedding model couldn't load in the running container.** `rag/embeddings.py`'s
+   `FastEmbedProvider` downloads its ONNX weights from Hugging Face Hub on first construction.
+   The backend container runs as a non-root user (`app`) with no writable default `HOME`, so
+   that first-use download failed with a permission error — surfaced by actually calling
+   `/research/query` against the running container (not just checking `/health`, which doesn't
+   exercise the embedder) and reading the real traceback in the container's structured logs.
+   Fixed by pre-warming the model cache at *build* time (`ENV HF_HOME=/app/.cache/huggingface`,
+   then instantiating `FastEmbedProvider()` once in the builder stage and copying that cache
+   into the final image) rather than patching around the permission error — this is also the
+   better production behavior regardless of the permission issue: the running container no
+   longer needs outbound network access to Hugging Face to become healthy, and startup doesn't
+   race a multi-second download.
+
+Neither bug would have been caught by code review or by the existing test suite (which runs
+against source, not a built package, by design) — only by actually building the image and
+running real requests against the real running container, which is why that step wasn't
+skipped even though the Dockerfiles "looked right" after the first draft.
+
+**Why `uv sync --locked --no-editable` in the builder stage, and why does that specific flag
+matter here?** uv installs the local project in editable mode by default (a `.pth` file
+pointing back at `/app/src`), which works fine within the builder stage but breaks the moment
+the final stage copies only `/app/.venv` and not `/app/src` — confirmed live via the packaging
+bug above, not assumed from documentation alone. `--no-editable` makes the venv install a
+real, self-contained copy of the package instead.
+
+**Why a one-shot `migrate` service instead of running `alembic upgrade head` inside the
+backend container's own startup?** Baking migration-on-boot into the app process means every
+restart of `backend` (a crash loop, a redeploy, a scale-up event) re-runs migrations, which is
+itself a footgun given this exact codebase's history — Phase 5/6 already needed a manually-edited
+migration once (see the Phase 5 entry above) precisely because autogenerate can produce
+different SQL than intended. A separate `migrate` service that `backend` depends on via
+`condition: service_completed_successfully` makes "did migrations actually apply, and did they
+succeed" an explicit, observable step in `docker compose up`'s own output, not something that
+happens implicitly inside another service's logs.
+
+**Why does the CI `docker` job write its own throwaway `.env` instead of reusing repo secrets
+or skipping the LLM-dependent checks?** The same posture as the existing `backend` CI job:
+`docker-compose.yml`'s services need `env_file: .env` to exist at all (Compose errors on a
+missing file), but no real provider/LLM key should ever be a CI secret for a project whose
+whole design goal is graceful degradation without one — see `api/main.py`'s lifespan handling
+from Phase 8. The docker job's real assertion is that `/api/v1/health` returns 200 and the
+frontend serves its SPA shell with *no* real keys configured at all, which is a stronger,
+not weaker, validation of the graceful-degradation behavior than skipping the check would be.
+

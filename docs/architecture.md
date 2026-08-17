@@ -1,6 +1,6 @@
 # Architecture (working document)
 
-This document is updated as each phase lands. It currently reflects **Phase 9**: the
+This document is updated as each phase lands. It currently reflects **Phase 10**: the
 PostgreSQL schema (12 tables) is live via Alembic migrations; SEC EDGAR and Tiingo/Alpha
 Vantage (fallback-chained) are real, wired-up data providers; 150 real earnings events are
 seeded for NVDA/AMD/MU/SNDK; deterministic options and IV-crush/event-replay engines are
@@ -8,19 +8,23 @@ implemented and unit-tested; a provider-agnostic LLM layer sits under a real, wo
 hybrid-RAG pipeline (2,231 chunks from 93 real SEC filings); structured guidance extraction
 runs against real filing text; an explicit agent orchestrator ties all of it together behind
 seven real tools; a typed FastAPI backend (structured logging, request IDs, normalized
-error handling, rate limiting on the LLM-backed endpoint) plus a React + TypeScript frontend
-(seven screens: Dashboard, Company, Earnings Event, Options Lab, AI Research, Historical
-Replay, Data/Eval Status) expose all of it; and a hand-curated, hand-verified 51-item
+error handling, rate limiting on the LLM-backed endpoint, one structured log line per
+outbound HTTP call with latency, credential-redacting error handling) plus a React +
+TypeScript frontend (seven screens) expose all of it; a hand-curated, hand-verified 51-item
 evaluation dataset measures retrieval, RAG-answer, agent-orchestration, and structured-
-extraction quality against the real system, with the most recent real results served at
-`GET /api/v1/evaluations/latest` and shown on the Data/Eval Status screen. Every screen
-manually verified end-to-end in a real browser against the real backend and real DeepSeek.
-Details: [data_model.md](data_model.md), [data_sources.md](data_sources.md),
+extraction quality against the real system, served at `GET /api/v1/evaluations/latest`; and
+the whole stack (`db` → `migrate` → `backend` → `frontend`) runs via `docker compose up
+--build`, verified by actually building the images and exercising the running containers
+with real requests, with CI validating the same build+boot sequence on every push. Every
+screen manually verified end-to-end in a real browser against the real backend and real
+DeepSeek. Details: [data_model.md](data_model.md), [data_sources.md](data_sources.md),
 [options_methodology.md](options_methodology.md),
 [earnings_methodology.md](earnings_methodology.md), [llm_providers.md](llm_providers.md),
 [ai_architecture.md](ai_architecture.md), [evaluation.md](evaluation.md),
-[limitations.md](limitations.md).
-No deployment or Docker-based CI exists yet — Phase 10 (observability + deployment) is next.
+[deployment.md](deployment.md), [limitations.md](limitations.md).
+No live cloud deployment exists yet — a real, recurring-cost decision documented in
+deployment.md but deliberately not acted on autonomously; Phase 11 (recruiter polish) is
+next regardless of that decision.
 
 ## Goal
 
