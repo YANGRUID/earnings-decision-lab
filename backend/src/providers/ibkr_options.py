@@ -23,6 +23,7 @@ strike, both calls and puts. See docs/ibkr_integration.md for the worked
 example this rule was derived from (NVDA, 2026-08-17).
 """
 
+import time
 from datetime import UTC, date, datetime
 from decimal import Decimal, InvalidOperation
 
@@ -48,6 +49,16 @@ STRIKES_AROUND_ATM = 5
 # expiration) to a small, fixed number of extra calls rather than walking
 # every month IBKR lists.
 _MAX_MONTHS_TO_TRY = 3
+
+# Real, empirically necessary: IBKR's snapshot endpoint needs to actually
+# start streaming a conid's market data server-side before a second call
+# can return real values -- a "priming" call immediately followed by
+# another with no pause reliably comes back with only identity fields
+# (conid), no bid/ask/Greeks at all, confirmed live during Phase 13 (a
+# real bug this project shipped and caught: the very first NVDA snapshot
+# ingested with zero delay had null market data on every one of 22
+# contracts). 2 seconds was sufficient in every live test performed.
+_SNAPSHOT_PRIMING_DELAY_SECONDS = 2.0
 
 # Field codes requested from /iserver/marketdata/snapshot, confirmed live
 # against a real NVDA option chain during Phase 13 development -- not
@@ -214,9 +225,18 @@ class IBKROptionsProvider(OptionsDataProvider):
         )
 
     def _underlying_quote(self, conid: int) -> tuple[Decimal | None, str]:
-        data = self._snapshot([conid], fields=f"{_FIELD_LAST},{_FIELD_AVAILABILITY}")
+        fields = f"{_FIELD_LAST},{_FIELD_AVAILABILITY}"
+        # Same priming requirement as _fetch_snapshots -- a conid queried
+        # for the first time in a session needs a moment before a snapshot
+        # call returns real values, not just identity fields. Cheap to
+        # always do (one extra local call plus a short pause) and avoids
+        # silently depending on some other earlier call having already
+        # warmed this conid up.
+        self._snapshot([conid], fields=fields)
+        time.sleep(_SNAPSHOT_PRIMING_DELAY_SECONDS)
+        data = self._snapshot([conid], fields=fields)
         row = next((r for r in data if r.get("conid") == conid), None)
-        if row is None:
+        if row is None or _decimal_or_none(row.get(_FIELD_LAST)) is None:
             return None, "unknown"
         price = _decimal_or_none(row.get(_FIELD_LAST))
         quality = decode_market_data_quality(row.get(_FIELD_AVAILABILITY))
@@ -318,11 +338,10 @@ class IBKROptionsProvider(OptionsDataProvider):
         as_of: datetime,
     ) -> list[OptionQuote]:
         conids = [c[2] for c in contracts]
-        # IBKR's snapshot endpoint needs a "priming" call to start the
-        # subscription before a second call returns real values -- a real,
-        # documented quirk confirmed live during Phase 13 (the first call
-        # for a not-yet-subscribed conid returns only identity fields).
+        # Priming call, then a real pause (see _SNAPSHOT_PRIMING_DELAY_SECONDS)
+        # before the call that returns real values.
         self._snapshot(conids, fields=_SNAPSHOT_FIELDS)
+        time.sleep(_SNAPSHOT_PRIMING_DELAY_SECONDS)
         data = self._snapshot(conids, fields=_SNAPSHOT_FIELDS)
         by_conid = {row.get("conid"): row for row in data}
 

@@ -8,11 +8,15 @@ new VolatilitySnapshot is a deliberate point-in-time snapshot (so an implied
 move computed at T-7 stays a fixed historical record even if later price or
 options data changes), not something recomputed live on every API read.
 
-No options-chain provider currently returns real data for this project's
-Alpha Vantage plan (see providers/alpha_vantage_options.py), so
-OptionsSnapshot is empty today and every function here honestly returns
-None against that empty table rather than fabricating a result. This module
-is complete and ready to compute real values the moment ingestion exists.
+Works against whichever OptionsDataProvider is configured (see
+providers/factory.py) -- Alpha Vantage's REALTIME_OPTIONS remains
+premium-gated on this project's plan (providers/alpha_vantage_options.py),
+but the real Interactive Brokers Client Portal Gateway adapter
+(providers/ibkr_options.py, Phase 13) can populate OptionsSnapshot for
+real, locally, when the user's own Gateway is running and authenticated.
+Every function here still honestly returns None/empty against an empty
+table rather than fabricating a result, regardless of which provider (or
+none) is configured.
 """
 
 from dataclasses import dataclass
@@ -38,7 +42,7 @@ from analytics.options.sentiment import (
 )
 from models.company import Company
 from models.earnings_event import EarningsEvent
-from models.enums import OptionType
+from models.enums import MarketDataQuality, OptionType
 from models.options_snapshot import OptionsSnapshot
 from models.price_bar import PriceBar
 from models.price_reaction import PriceReaction
@@ -238,7 +242,12 @@ def collect_forward_options_snapshot(
     if _already_collected_today(db, company.id, today):
         return None
 
-    quotes = provider.get_option_chain(company.ticker, as_of)
+    # reference_date lets a bounded provider (e.g. IBKR, which can't return
+    # a full chain -- see providers/ibkr_options.py) pick a sensible
+    # expiration/strike window; providers that already return everything
+    # (e.g. Alpha Vantage) ignore it. Always the real earnings date this
+    # snapshot is being collected ahead of, never a guess.
+    quotes = provider.get_option_chain(company.ticker, as_of, reference_date=earnings_date)
 
     rows = [
         OptionsSnapshot(
@@ -257,6 +266,10 @@ def collect_forward_options_snapshot(
             gamma=quote.gamma,
             theta=quote.theta,
             vega=quote.vega,
+            market_data_quality=MarketDataQuality(quote.market_data_quality)
+            if quote.market_data_quality
+            else None,
+            external_contract_id=quote.external_contract_id,
             source_provider=quote.source_provider,
             retrieved_at=quote.retrieved_at,
         )

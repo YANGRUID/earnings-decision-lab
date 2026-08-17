@@ -6,17 +6,21 @@ scheduled day, and never twice on the same day.
 
 Run: uv run python -m ingestion.collect_options_snapshots
 
-**Confirmed live during Phase 12: Alpha Vantage's REALTIME_OPTIONS requires
-a premium subscription this project's key doesn't have** (see
-providers/alpha_vantage_options.py) -- so today, every run logs a
-PremiumEndpointRequiredError for every scheduled ticker and persists
-nothing. That's the honest, expected outcome, not a bug in this script;
-this is ready to collect and derive real implied-move/ATM-IV/sentiment
-data the moment a subscription exists, with zero code changes.
+Uses whichever OptionsDataProvider is configured via OPTIONS_PROVIDER (see
+providers/factory.py):
 
-One real Alpha Vantage API call per scheduled ticker (REALTIME_OPTIONS),
-against the same shared free-tier budget as the other Alpha Vantage
-ingestion scripts (~5/minute, 25/day) -- hence the delay between tickers.
+- alpha_vantage: **Confirmed live during Phase 12: REALTIME_OPTIONS
+  requires a premium subscription this project's key doesn't have** (see
+  providers/alpha_vantage_options.py) -- every run logs a
+  PremiumEndpointRequiredError for every scheduled ticker and persists
+  nothing. Honest, expected, not a bug.
+- ibkr: a real Interactive Brokers Client Portal Gateway running locally
+  and already authenticated by the user (Phase 13, see
+  providers/ibkr_options.py and docs/ibkr_integration.md). If the Gateway
+  isn't running or the session isn't authenticated, this is reported
+  clearly and the whole run stops early (retrying per-ticker against a
+  down/unauthenticated Gateway wastes calls for no benefit, since the
+  problem is account-level, not per-ticker) -- it never crashes.
 """
 
 import logging
@@ -27,9 +31,13 @@ from core.config import get_settings
 from db.session import SessionLocal
 from models.company import Company
 from providers.alpha_vantage import AlphaVantageError
-from providers.alpha_vantage_options import (
-    AlphaVantageOptionsProvider,
-    PremiumEndpointRequiredError,
+from providers.alpha_vantage_options import PremiumEndpointRequiredError
+from providers.factory import get_options_provider
+from providers.ibkr_client import (
+    IBKRCompetingSessionError,
+    IBKRError,
+    IBKRGatewayUnavailableError,
+    IBKRNotAuthenticatedError,
 )
 from services.market_expectations import get_latest_earnings_estimate
 from services.options_analytics import (
@@ -41,14 +49,31 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 log = logging.getLogger("collect_options_snapshots")
 
 TICKERS = ["NVDA", "AMD", "MU", "SNDK"]
-_DELAY_BETWEEN_TICKERS_SECONDS = 15.0
+
+# Only applied for Alpha Vantage, whose free tier enforces a real
+# ~5/minute, 25/day budget shared across every ingestion script (see
+# docs/data_sources.md). IBKR's Gateway is a local loopback process with no
+# such cloud-style quota, so this delay would be pure, unnecessary latency
+# there.
+_ALPHA_VANTAGE_DELAY_BETWEEN_TICKERS_SECONDS = 15.0
+
+# Account-level IBKR failures: retrying against the next ticker can't help
+# (the Gateway/session problem applies to every request equally), so the
+# whole run stops rather than repeating the same failure four times.
+_IBKR_ACCOUNT_LEVEL_ERRORS = (
+    IBKRGatewayUnavailableError,
+    IBKRNotAuthenticatedError,
+    IBKRCompetingSessionError,
+)
 
 
 def main() -> None:
     settings = get_settings()
-    if not settings.alpha_vantage_api_key:
-        raise SystemExit("ALPHA_VANTAGE_API_KEY is not configured — see .env.example")
-    provider = AlphaVantageOptionsProvider(api_key=settings.alpha_vantage_api_key)
+    try:
+        provider = get_options_provider(settings)
+    except Exception as exc:
+        raise SystemExit(f"could not construct options provider: {exc}") from exc
+
     db = SessionLocal()
     try:
         for i, ticker in enumerate(TICKERS):
@@ -62,8 +87,8 @@ def main() -> None:
                 log.info("%s: no known upcoming earnings date, nothing to schedule against", ticker)
                 continue
 
-            if i > 0:
-                time.sleep(_DELAY_BETWEEN_TICKERS_SECONDS)
+            if i > 0 and settings.options_provider.lower() == "alpha_vantage":
+                time.sleep(_ALPHA_VANTAGE_DELAY_BETWEEN_TICKERS_SECONDS)
 
             as_of = datetime.now(UTC)
             try:
@@ -77,7 +102,13 @@ def main() -> None:
                     ticker,
                 )
                 continue
-            except AlphaVantageError:
+            except _IBKR_ACCOUNT_LEVEL_ERRORS as exc:
+                log.error(
+                    "stopping run: IBKR Gateway not usable (%s) — see docs/ibkr_integration.md",
+                    exc,
+                )
+                break
+            except (AlphaVantageError, IBKRError):
                 log.exception("%s: options snapshot fetch failed", ticker)
                 continue
 

@@ -28,7 +28,7 @@ class _StubOptionsProvider(OptionsDataProvider):
         self._quotes = quotes
         self.call_count = 0
 
-    def get_option_chain(self, ticker, as_of, expiration=None):
+    def get_option_chain(self, ticker, as_of, expiration=None, reference_date=None):
         self.call_count += 1
         return self._quotes
 
