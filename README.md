@@ -35,13 +35,17 @@ breadth (see [docs/engineering_decisions.md](docs/engineering_decisions.md) for 
 data model and provider interfaces designed to make adding more a config change, not a rewrite.
 
 Data comes from documented, authenticated APIs only — SEC EDGAR (filings, XBRL facts), Tiingo
-(primary price data), Alpha Vantage (price-data fallback). Two other providers (Stooq, Yahoo
-Finance) were evaluated and rejected outright after live testing showed both block automated
-access — see [docs/data_sources.md](docs/data_sources.md) for what was checked and why. No
-scraping, no unlicensed data, no options-chain provider wired up yet (every free option
-evaluated either lacked historical coverage or required a paid subscription — implied move,
-ATM IV, and historical strategy replay are architecturally complete but honestly run on empty
-tables until one is).
+(primary price data), Alpha Vantage (price-data fallback, plus real analyst-consensus estimates).
+Two other market-data providers (Stooq, Yahoo Finance) were evaluated and rejected outright after
+live testing showed both block automated access — see
+[docs/data_sources.md](docs/data_sources.md) for what was checked and why. No scraping, no
+unlicensed data.
+
+Real options-chain data (implied move, ATM IV, put/call ratios) comes from the user's own
+Interactive Brokers account via the official, locally-run Client Portal Gateway — read-only, no
+order execution, see [docs/ibkr_integration.md](docs/ibkr_integration.md). Alpha Vantage's own
+options endpoints remain premium-gated on this project's plan and are kept wired up as an
+alternate provider (`OPTIONS_PROVIDER=alpha_vantage`).
 
 ## Research workflows
 
@@ -132,9 +136,12 @@ also be run independently outside Docker — see `backend/README.md` and `fronte
 
 ## Limitations
 
-The single biggest gap: no live options-chain data provider is wired up, so implied move, ATM
-IV, and historical strategy replay run on honestly-empty tables rather than real numbers. Full,
-current list in [docs/limitations.md](docs/limitations.md).
+Real options-chain data requires the user's own IBKR Client Portal Gateway running locally and
+authenticated (see [docs/ibkr_integration.md](docs/ibkr_integration.md)) — without it, implied
+move, ATM IV, and historical strategy replay honestly run on empty tables rather than real
+numbers. A dockerized backend can't reach a Gateway running on the host machine without extra
+network configuration not set up by default. Full, current list in
+[docs/limitations.md](docs/limitations.md).
 
 ## Disclaimer
 
