@@ -296,3 +296,54 @@ class PortfolioPositionResponse(BaseModel):
 class PortfolioSnapshotResponse(BaseModel):
     positions: list[PortfolioPositionResponse]
     snapshot_timestamp: datetime | None
+
+
+class PreparationStepResponse(BaseModel):
+    step: str
+    status: str
+    detail: str | None
+    updated_at: datetime
+
+
+class ResearchJobResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    ticker: str
+    company_id: int | None
+    status: str
+    steps: list[PreparationStepResponse]
+    started_at: datetime
+    completed_at: datetime | None
+    error: str | None
+
+
+class ResearchJobQueuedResponse(BaseModel):
+    """Returned the instant a preparation/refresh run is scheduled, before
+    the background task has written its own ResearchPreparationJob row --
+    a real, if brief, "queued" state, not a fabricated stand-in for a job
+    that doesn't exist yet. Poll GET /research/{symbol}/status for the real
+    row once it's created (nearly immediately -- FastAPI runs background
+    tasks right after the response is sent).
+    """
+
+    ticker: str
+    status: str = "queued"
+
+
+class ResearchOverviewResponse(BaseModel):
+    """A cross-section of what's actually on record for a ticker right
+    now -- enough for the frontend to decide whether a research workspace
+    has anything real to show, without re-deriving freshness/counts logic
+    client-side.
+    """
+
+    ticker: str
+    company: CompanyResponse | None
+    latest_job: ResearchJobResponse | None
+    earnings_events_count: int
+    price_bars_count: int
+    filings_count: int
+    filing_chunks_count: int
+    latest_earnings_estimate: EarningsEstimateResponse | None
+    latest_volatility_snapshot: VolatilitySnapshotResponse | None

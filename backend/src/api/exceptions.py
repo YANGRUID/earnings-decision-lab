@@ -5,6 +5,7 @@ from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 
 from services.llm.errors import LLMError
+from services.research_orchestration import UnsupportedSymbolError
 
 log = logging.getLogger("api.errors")
 
@@ -32,6 +33,10 @@ def register_exception_handlers(app: FastAPI) -> None:
     async def rate_limited_handler(request: Request, exc: RateLimitedError):
         return JSONResponse(status_code=429, content=_error_body(request, exc.message))
 
+    @app.exception_handler(UnsupportedSymbolError)
+    async def unsupported_symbol_handler(request: Request, exc: UnsupportedSymbolError):
+        return JSONResponse(status_code=422, content=_error_body(request, exc.reason))
+
     @app.exception_handler(LLMError)
     async def llm_error_handler(request: Request, exc: LLMError):
         log.warning("LLM error", extra={"request_id": getattr(request.state, "request_id", None)})
@@ -47,6 +52,4 @@ def register_exception_handlers(app: FastAPI) -> None:
     async def unhandled_exception_handler(request: Request, exc: Exception):
         request_id = getattr(request.state, "request_id", None)
         log.exception("unhandled exception", extra={"request_id": request_id})
-        return JSONResponse(
-            status_code=500, content=_error_body(request, "internal server error")
-        )
+        return JSONResponse(status_code=500, content=_error_body(request, "internal server error"))

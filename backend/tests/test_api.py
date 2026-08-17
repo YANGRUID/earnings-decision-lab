@@ -527,3 +527,208 @@ def test_search_documents_unknown_ticker_returns_empty(client):
     )
     assert response.status_code == 200
     assert response.json()["citations"] == []
+
+
+# --- Research preparation orchestration endpoints ---------------------------
+#
+# `_run_preparation_background` is stubbed out in every test below: it's
+# what actually calls out to real providers (SEC/Tiingo/Alpha Vantage/IBKR)
+# via a *separate* SessionLocal() that bypasses the db_session test
+# fixture's rollback boundary entirely -- letting it run for real here
+# would both violate this module's no-real-network-calls rule and leave
+# real rows behind in the shared dev database. These tests cover the
+# synchronous request-handling contract (validation, idempotency, status/
+# overview reads), not the pipeline itself (see
+# tests/test_services_research_orchestration.py for that).
+
+
+@pytest.fixture
+def _stub_background_prep(monkeypatch):
+    calls = []
+
+    def _stub(ticker, force, embedder):
+        calls.append((ticker, force))
+
+    monkeypatch.setattr("api.routers.research._run_preparation_background", _stub)
+    return calls
+
+
+def test_prepare_unsupported_ticker_returns_422(client, _stub_background_prep):
+    response = client.post("/api/v1/research/ZZINVALID1/prepare")
+    assert response.status_code == 422
+    assert _stub_background_prep == []
+
+
+def test_prepare_known_ticker_schedules_background_job(client, db_session, _stub_background_prep):
+    from models.company import Company
+
+    db_session.add(Company(ticker="ZZPREP", name="ZZ Prep Co", cik="0009999910"))
+    db_session.flush()
+
+    response = client.post("/api/v1/research/zzprep/prepare")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body == {"ticker": "ZZPREP", "status": "queued"}
+    assert _stub_background_prep == [("ZZPREP", False)]
+
+
+def test_refresh_schedules_background_job_with_force(client, db_session, _stub_background_prep):
+    from models.company import Company
+
+    db_session.add(Company(ticker="ZZRFSH", name="ZZ Refresh Co", cik="0009999911"))
+    db_session.flush()
+
+    response = client.post("/api/v1/research/zzrfsh/refresh")
+
+    assert response.status_code == 200
+    assert _stub_background_prep == [("ZZRFSH", True)]
+
+
+def test_prepare_reuses_already_running_job_without_scheduling_duplicate(
+    client, db_session, _stub_background_prep
+):
+    from datetime import UTC, datetime
+
+    from models.company import Company
+    from models.research_preparation_job import JobStatus, PreparationStep, StepStatus
+
+    company = Company(ticker="ZZRUN", name="ZZ Running Co", cik="0009999912")
+    db_session.add(company)
+    db_session.flush()
+
+    now = datetime.now(UTC)
+    from models.research_preparation_job import ResearchPreparationJob
+
+    running_job = ResearchPreparationJob(
+        ticker="ZZRUN",
+        company_id=company.id,
+        status=JobStatus.RUNNING,
+        steps=[
+            {
+                "step": s.value,
+                "status": StepStatus.PENDING.value,
+                "detail": None,
+                "updated_at": now.isoformat(),
+            }
+            for s in PreparationStep
+        ],
+        started_at=now,
+    )
+    db_session.add(running_job)
+    db_session.flush()
+
+    response = client.post("/api/v1/research/zzrun/prepare")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["id"] == running_job.id
+    assert body["status"] == "running"
+    assert _stub_background_prep == []  # no duplicate background task scheduled
+
+
+def test_status_returns_404_when_no_job_exists(client):
+    response = client.get("/api/v1/research/ZZNOJOB/status")
+    assert response.status_code == 404
+
+
+def test_status_returns_latest_job(client, db_session):
+    from datetime import UTC, datetime
+
+    from models.company import Company
+    from models.research_preparation_job import (
+        JobStatus,
+        PreparationStep,
+        ResearchPreparationJob,
+        StepStatus,
+    )
+
+    company = Company(ticker="ZZSTAT", name="ZZ Status Co", cik="0009999913")
+    db_session.add(company)
+    db_session.flush()
+
+    now = datetime.now(UTC)
+    job = ResearchPreparationJob(
+        ticker="ZZSTAT",
+        company_id=company.id,
+        status=JobStatus.COMPLETED,
+        steps=[
+            {
+                "step": s.value,
+                "status": StepStatus.DONE.value,
+                "detail": "ok",
+                "updated_at": now.isoformat(),
+            }
+            for s in PreparationStep
+        ],
+        started_at=now,
+        completed_at=now,
+    )
+    db_session.add(job)
+    db_session.flush()
+
+    response = client.get("/api/v1/research/zzstat/status")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ticker"] == "ZZSTAT"
+    assert body["status"] == "completed"
+    assert len(body["steps"]) == len(PreparationStep)
+
+
+def test_overview_unknown_company_returns_honest_nulls(client):
+    response = client.get("/api/v1/research/ZZNOCOMP/overview")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["company"] is None
+    assert body["latest_job"] is None
+    assert body["earnings_events_count"] == 0
+    assert body["latest_earnings_estimate"] is None
+
+
+def test_overview_known_company_reflects_real_counts(client, db_session):
+    from datetime import UTC, date, datetime
+    from decimal import Decimal
+
+    from models.company import Company
+    from models.filing import Filing
+    from models.price_bar import PriceBar
+
+    company = Company(ticker="ZZOVW", name="ZZ Overview Co", cik="0009999914")
+    db_session.add(company)
+    db_session.flush()
+    db_session.add(
+        PriceBar(
+            ticker="ZZOVW",
+            company_id=company.id,
+            trade_date=date(2025, 1, 1),
+            source_provider="fake",
+            open=Decimal("10"),
+            high=Decimal("11"),
+            low=Decimal("9"),
+            close=Decimal("10.5"),
+            volume=1000,
+            retrieved_at=datetime.now(UTC),
+        )
+    )
+    db_session.add(
+        Filing(
+            company_id=company.id,
+            accession_number="0000000000-25-000099",
+            filing_type="FORM_10K",
+            filing_date=date(2025, 1, 1),
+            cik="0009999914",
+            source_url="https://example.com/doc.htm",
+            title="ZZOVW 10-K",
+            retrieved_at=datetime.now(UTC),
+        )
+    )
+    db_session.flush()
+
+    response = client.get("/api/v1/research/zzovw/overview")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["company"]["ticker"] == "ZZOVW"
+    assert body["price_bars_count"] == 1
+    assert body["filings_count"] == 1

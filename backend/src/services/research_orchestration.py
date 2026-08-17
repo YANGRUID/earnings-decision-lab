@@ -25,6 +25,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from analytics.research.freshness import DataClass, assess_freshness, needs_refresh
+from core.config import Settings
 from ingestion.backfill_earnings_dates import _backfill_earnings_dates, _backfill_period_end_dates
 from ingestion.backfill_price_data import (
     MARKET_TICKER,
@@ -32,6 +33,7 @@ from ingestion.backfill_price_data import (
     _backfill_snapshots,
     _ingest_price_bars,
     _load_close_series,
+    build_provider_chain,
 )
 from ingestion.bootstrap_phase1 import (
     _FP_TO_QUARTER,
@@ -57,7 +59,9 @@ from models.research_preparation_job import (
     ResearchPreparationJob,
     StepStatus,
 )
+from providers.alpha_vantage_estimates import AlphaVantageEarningsEstimatesProvider
 from providers.base import EarningsEstimatesProvider, MarketDataProvider, OptionsDataProvider
+from providers.factory import MissingOptionsProviderConfigError, get_options_provider
 from providers.sec_edgar import SECEdgarProvider
 from rag.embeddings import EmbeddingProvider
 from services.market_expectations import (
@@ -91,6 +95,64 @@ class ResearchProviders:
     estimates: EarningsEstimatesProvider | None
     options: OptionsDataProvider | None
     embedder: EmbeddingProvider
+
+
+def build_research_providers(settings: Settings, embedder: EmbeddingProvider) -> ResearchProviders:
+    """Constructs every provider the pipeline can use from real app config.
+    ``estimates`` and ``options`` are None -- not raised -- when their
+    configuration is missing, since both are optional preparation steps
+    (see REQUIRED_STEPS): a missing Alpha Vantage key or unset
+    OPTIONS_PROVIDER should degrade those two steps to SKIPPED, not fail
+    the whole pipeline. ``market_data`` has no such fallback -- price
+    history is required, so a genuinely unconfigured deployment (no Tiingo
+    or Alpha Vantage key at all) is left to raise, the same real
+    RuntimeError ``ingestion.backfill_price_data.main`` already raises.
+    """
+    edgar = SECEdgarProvider(user_agent=settings.sec_edgar_user_agent)
+    market_data = build_provider_chain()
+
+    estimates: EarningsEstimatesProvider | None = None
+    if settings.alpha_vantage_api_key:
+        estimates = AlphaVantageEarningsEstimatesProvider(api_key=settings.alpha_vantage_api_key)
+
+    options: OptionsDataProvider | None = None
+    try:
+        options = get_options_provider(settings)
+    except MissingOptionsProviderConfigError:
+        options = None
+
+    return ResearchProviders(
+        edgar=edgar,
+        market_data=market_data,
+        estimates=estimates,
+        options=options,
+        embedder=embedder,
+    )
+
+
+def get_latest_research_job(db: Session, ticker: str) -> ResearchPreparationJob | None:
+    return (
+        db.query(ResearchPreparationJob)
+        .filter(ResearchPreparationJob.ticker == ticker)
+        .order_by(ResearchPreparationJob.started_at.desc())
+        .first()
+    )
+
+
+def get_running_research_job(db: Session, ticker: str) -> ResearchPreparationJob | None:
+    """The already-in-flight job for ``ticker``, if any -- this is what
+    makes ``POST /research/{symbol}/prepare`` idempotent: a second request
+    while one is already running reuses it instead of starting a
+    duplicate background task that would just race the first one."""
+    return (
+        db.query(ResearchPreparationJob)
+        .filter(
+            ResearchPreparationJob.ticker == ticker,
+            ResearchPreparationJob.status == JobStatus.RUNNING,
+        )
+        .order_by(ResearchPreparationJob.started_at.desc())
+        .first()
+    )
 
 
 _StepResult = tuple[StepStatus, str | None]
@@ -174,14 +236,14 @@ def _options_chain_last_updated(db: Session, company_id: int) -> datetime | None
 
 
 def _prepare_historical_earnings(
-    db: Session, edgar: SECEdgarProvider, company: Company, as_of: datetime
+    db: Session, edgar: SECEdgarProvider, company: Company, as_of: datetime, force: bool = False
 ) -> _StepResult:
     if company.cik is None:
         return StepStatus.SKIPPED, "no CIK on record"
     status = assess_freshness(
         DataClass.HISTORICAL_EARNINGS, _historical_earnings_last_updated(db, company.id), as_of
     )
-    if not needs_refresh(status):
+    if not force and not needs_refresh(status):
         return StepStatus.DONE, "already fresh, reused existing data"
 
     facts = edgar.get_company_facts(company.cik)
@@ -205,12 +267,16 @@ def _prepare_historical_earnings(
 
 
 def _prepare_price_history(
-    db: Session, market_data: MarketDataProvider, company: Company, as_of: datetime
+    db: Session,
+    market_data: MarketDataProvider,
+    company: Company,
+    as_of: datetime,
+    force: bool = False,
 ) -> _StepResult:
     status = assess_freshness(
         DataClass.PRICE_HISTORY, _price_history_last_updated(db, company.ticker), as_of
     )
-    if not needs_refresh(status):
+    if not force and not needs_refresh(status):
         return StepStatus.DONE, "already fresh, reused existing data"
 
     _ingest_price_bars(db, market_data, MARKET_TICKER)
@@ -230,14 +296,18 @@ def _prepare_price_history(
 
 
 def _prepare_earnings_estimates(
-    db: Session, estimates: EarningsEstimatesProvider | None, company: Company, as_of: datetime
+    db: Session,
+    estimates: EarningsEstimatesProvider | None,
+    company: Company,
+    as_of: datetime,
+    force: bool = False,
 ) -> _StepResult:
     if estimates is None:
         return StepStatus.SKIPPED, "no earnings-estimates provider configured"
     status = assess_freshness(
         DataClass.EARNINGS_ESTIMATES, _earnings_estimates_last_updated(db, company.id), as_of
     )
-    if not needs_refresh(status):
+    if not force and not needs_refresh(status):
         return StepStatus.DONE, "already fresh, reused existing data"
     row = collect_next_earnings_estimate(db, estimates, company)
     if row is None:
@@ -246,14 +316,14 @@ def _prepare_earnings_estimates(
 
 
 def _prepare_sec_filings(
-    db: Session, edgar: SECEdgarProvider, company: Company, as_of: datetime
+    db: Session, edgar: SECEdgarProvider, company: Company, as_of: datetime, force: bool = False
 ) -> _StepResult:
     if company.cik is None:
         return StepStatus.SKIPPED, "no CIK on record"
     status = assess_freshness(
         DataClass.SEC_FILINGS, _sec_filings_last_updated(db, company.id), as_of
     )
-    if not needs_refresh(status):
+    if not force and not needs_refresh(status):
         return StepStatus.DONE, "already fresh, reused existing data"
     filings = edgar.search_filings(company.cik, filing_types=["10-K", "10-Q"], limit=4)
     for meta in filings:
@@ -285,7 +355,11 @@ def _prepare_filing_embeddings(
 
 
 def _prepare_options_chain(
-    db: Session, options: OptionsDataProvider | None, company: Company, as_of: datetime
+    db: Session,
+    options: OptionsDataProvider | None,
+    company: Company,
+    as_of: datetime,
+    force: bool = False,
 ) -> _StepResult:
     if options is None:
         return StepStatus.SKIPPED, "no options-data provider configured"
@@ -296,7 +370,7 @@ def _prepare_options_chain(
     status = assess_freshness(
         DataClass.OPTIONS_CHAIN, _options_chain_last_updated(db, company.id), as_of
     )
-    if not needs_refresh(status):
+    if not force and not needs_refresh(status):
         return StepStatus.DONE, "already fresh, reused existing data"
 
     snapshots = collect_options_snapshot_now(
@@ -329,12 +403,19 @@ def prepare_company_research(
     symbol: str,
     providers: ResearchProviders,
     now: datetime | None = None,
+    force: bool = False,
 ) -> ResearchPreparationJob:
     """Runs the full on-demand preparation pipeline for ``symbol`` and
     returns the finished (or failed) job row. Raises ``UnsupportedSymbolError``
     before creating any job row at all when the symbol itself can't be
     honestly researched (see services.symbol_resolution) -- an unsupported
     ticker never gets a job, a company, or any other trace in the database.
+
+    ``force=True`` (the API layer's explicit "Refresh" action, as opposed to
+    "Prepare") bypasses every step's freshness check and always re-fetches
+    -- otherwise this call is identical to a normal freshness-gated
+    preparation run, including still deduplicating same-day snapshots (see
+    services.options_analytics.collect_options_snapshot_now).
     """
     as_of = now if now is not None else datetime.now(UTC)
     resolution: SymbolResolution = resolve_symbol(db, providers.edgar, symbol)
@@ -388,22 +469,22 @@ def prepare_company_research(
         (
             PreparationStep.HISTORICAL_EARNINGS,
             True,
-            lambda: _prepare_historical_earnings(db, providers.edgar, company, as_of),
+            lambda: _prepare_historical_earnings(db, providers.edgar, company, as_of, force),
         ),
         (
             PreparationStep.PRICE_HISTORY,
             True,
-            lambda: _prepare_price_history(db, providers.market_data, company, as_of),
+            lambda: _prepare_price_history(db, providers.market_data, company, as_of, force),
         ),
         (
             PreparationStep.EARNINGS_ESTIMATES,
             False,
-            lambda: _prepare_earnings_estimates(db, providers.estimates, company, as_of),
+            lambda: _prepare_earnings_estimates(db, providers.estimates, company, as_of, force),
         ),
         (
             PreparationStep.SEC_FILINGS,
             False,
-            lambda: _prepare_sec_filings(db, providers.edgar, company, as_of),
+            lambda: _prepare_sec_filings(db, providers.edgar, company, as_of, force),
         ),
         (
             PreparationStep.FILING_EMBEDDINGS,
@@ -413,7 +494,7 @@ def prepare_company_research(
         (
             PreparationStep.OPTIONS_CHAIN,
             False,
-            lambda: _prepare_options_chain(db, providers.options, company, as_of),
+            lambda: _prepare_options_chain(db, providers.options, company, as_of, force),
         ),
         (
             PreparationStep.EARNINGS_ANALYSIS,

@@ -293,6 +293,42 @@ def test_second_call_reuses_fresh_data_without_refetching(db_session):
     assert market_data.tickers_fetched == tickers_after_first
 
 
+def test_force_refetches_even_when_fresh(db_session):
+    edgar = _FakeEdgar(
+        cik="0009999904",
+        entity_name="ZZ Force Co",
+        eps_values=[
+            CompanyFactValue(
+                fiscal_year=2025,
+                fiscal_period="Q1",
+                value=Decimal("0.75"),
+                unit="USD/shares",
+                filed_date=date(2025, 3, 1),
+                end_date=date(2025, 1, 31),
+                accession_number="0000000000-25-000004",
+                form="10-Q",
+            )
+        ],
+    )
+    market_data = _FakeMarketData()
+    providers = _providers(edgar=edgar, market_data=market_data)
+
+    prepare_company_research(db_session, "zzfrce", providers, now=NOW)
+    facts_calls_after_first = edgar.facts_calls
+    bars_calls_after_first = len(market_data.tickers_fetched)
+
+    job2 = prepare_company_research(
+        db_session, "zzfrce", providers, now=NOW + timedelta(minutes=5), force=True
+    )
+
+    assert job2.status == JobStatus.COMPLETED
+    steps_by_name = {s["step"]: s for s in job2.steps}
+    assert "already fresh" not in steps_by_name[PreparationStep.HISTORICAL_EARNINGS.value]["detail"]
+    assert "already fresh" not in steps_by_name[PreparationStep.PRICE_HISTORY.value]["detail"]
+    assert edgar.facts_calls > facts_calls_after_first
+    assert len(market_data.tickers_fetched) > bars_calls_after_first
+
+
 def test_required_step_failure_fails_whole_job(db_session):
     class _BrokenMarketData(MarketDataProvider):
         def get_daily_bars(self, ticker, start, end):
