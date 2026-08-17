@@ -132,27 +132,23 @@ class ReplaySummaryResponse(BaseModel):
 
 
 class EarningsEventDetail(EarningsEventSummary):
+    """A single, already-reported (or about-to-be-confirmed) earnings
+    event -- strictly retrospective. Deliberately carries no forward-
+    looking fields (next-period analyst estimates, implied move): those
+    are a property of the *company* right now, not of any specific past
+    event, and belong to GET /research/{symbol}/overview instead (see
+    api/routers/research.py) -- mixing them into a past event's own page
+    is exactly the temporal-context confusion this schema avoids.
+    """
+
     company: CompanyResponse
     result: EarningsResultResponse | None
     price_reaction: PriceReactionResponse | None
-    # Only populated when this is the company's most recently reported
-    # event and a real estimate snapshot has been collected for the next
-    # (unreported) period -- see api/routers/earnings.py and
-    # services/market_expectations.py. Never about *this* event's own
-    # since-reported quarter, which has no meaningful "expectation" left.
-    market_expectations: EarningsEstimateResponse | None = None
-    # Same "most recently reported event only" rule as market_expectations,
-    # and for the same reason -- see api/routers/earnings.py and
-    # services/options_analytics.py. Null whenever no options-chain data has
-    # been ingested for this company yet (true for every company today,
-    # since Alpha Vantage's options endpoints are premium-gated on this
-    # project's plan -- see providers/alpha_vantage_options.py).
-    implied_move: VolatilitySnapshotResponse | None = None
-    # Populated on every event (unlike market_expectations/implied_move) --
-    # this is real history the company already has regardless of whether
-    # any options data exists. Never includes this same event's own move.
-    # Null only when the company has no *other* reported event with a
-    # recorded next_day_move_pct yet. See services/historical_moves.py.
+    # Populated on every event -- this is real history the company already
+    # has regardless of whether any options data exists. Never includes
+    # this same event's own move. Null only when the company has no
+    # *other* reported event with a recorded next_day_move_pct yet. See
+    # services/historical_moves.py.
     historical_moves: HistoricalMoveStatsResponse | None = None
 
 

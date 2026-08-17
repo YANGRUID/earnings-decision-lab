@@ -161,136 +161,22 @@ def test_get_earnings_event_not_found(client):
     assert response.status_code == 404
 
 
-def test_get_earnings_event_shows_market_expectations_for_most_recent_event(client, db_session):
-    from datetime import UTC, date, datetime
-    from decimal import Decimal
-
-    from models.earnings_estimate_snapshot import EarningsEstimateSnapshot
-    from models.enums import RevisionDirection
-
-    company, event = _seed_company_with_earnings(db_session)
-    db_session.add(
-        EarningsEstimateSnapshot(
-            company_id=company.id,
-            fiscal_period_end_date=date(2026, 8, 31),
-            horizon="fiscal quarter",
-            snapshot_timestamp=datetime.now(UTC),
-            eps_estimate_average=Decimal("3.20"),
-            eps_revision_direction=RevisionDirection.UP,
-            revenue_revision_direction=RevisionDirection.UNKNOWN,
-            source_provider="alpha_vantage",
-            retrieved_at=datetime.now(UTC),
-        )
-    )
-    db_session.flush()
+def test_get_earnings_event_never_includes_forward_looking_fields(client, db_session):
+    """A past earnings event's detail page must never carry next-period
+    analyst estimates or implied move -- those are company-level, always-
+    current data that belongs to GET /research/{symbol}/overview instead
+    (see api/routers/earnings.py and api/routers/research.py). This is the
+    Phase 14 temporal-mixing fix: no such fields exist on the response at
+    all anymore, regardless of what else is on record for the company.
+    """
+    _company, event = _seed_company_with_earnings(db_session)
 
     response = client.get(f"/api/v1/earnings/{event.id}")
 
     assert response.status_code == 200
     body = response.json()
-    assert body["market_expectations"]["eps_estimate_average"] == "3.200000"
-    assert body["market_expectations"]["eps_revision_direction"] == "up"
-
-
-def test_get_earnings_event_omits_market_expectations_for_older_event(client, db_session):
-    from datetime import UTC, date, datetime
-    from decimal import Decimal
-
-    from models.earnings_estimate_snapshot import EarningsEstimateSnapshot
-    from models.earnings_event import EarningsEvent
-    from models.enums import RevisionDirection
-
-    company, older_event = _seed_company_with_earnings(db_session)
-    newer_event = EarningsEvent(
-        company_id=company.id, fiscal_year=2026, fiscal_quarter=3, earnings_date=date(2026, 6, 18)
-    )
-    db_session.add(newer_event)
-    db_session.add(
-        EarningsEstimateSnapshot(
-            company_id=company.id,
-            fiscal_period_end_date=date(2026, 11, 30),
-            horizon="fiscal quarter",
-            snapshot_timestamp=datetime.now(UTC),
-            eps_estimate_average=Decimal("3.20"),
-            eps_revision_direction=RevisionDirection.UP,
-            revenue_revision_direction=RevisionDirection.UNKNOWN,
-            source_provider="alpha_vantage",
-            retrieved_at=datetime.now(UTC),
-        )
-    )
-    db_session.flush()
-
-    response = client.get(f"/api/v1/earnings/{older_event.id}")
-
-    assert response.status_code == 200
-    assert response.json()["market_expectations"] is None
-
-
-def test_get_earnings_event_shows_implied_move_for_most_recent_event(client, db_session):
-    from datetime import UTC, date, datetime
-    from decimal import Decimal
-
-    from models.volatility_snapshot import VolatilitySnapshot
-
-    company, event = _seed_company_with_earnings(db_session)
-    db_session.add(
-        VolatilitySnapshot(
-            company_id=company.id,
-            snapshot_timestamp=datetime(2026, 3, 10, tzinfo=UTC),
-            method="atm_straddle",
-            near_term_expiration=date(2026, 3, 20),
-            next_term_expiration=date(2026, 4, 17),
-            atm_iv_near=Decimal("0.51"),
-            atm_iv_next=Decimal("0.55"),
-            term_structure_slope=Decimal("0.04"),
-            implied_move_pct=Decimal("0.0734"),
-            implied_move_absolute=Decimal("8.40"),
-            put_call_open_interest_ratio=Decimal("1.20"),
-            put_call_volume_ratio=Decimal("0.90"),
-            inputs={"method": "atm_straddle"},
-            computed_at=datetime.now(UTC),
-        )
-    )
-    db_session.flush()
-
-    response = client.get(f"/api/v1/earnings/{event.id}")
-
-    assert response.status_code == 200
-    body = response.json()
-    assert body["implied_move"]["method"] == "atm_straddle"
-    assert body["implied_move"]["implied_move_absolute"] == "8.400000"
-    assert body["implied_move"]["next_term_expiration"] == "2026-04-17"
-    assert body["implied_move"]["term_structure_slope"] == "0.040000"
-    assert body["implied_move"]["put_call_open_interest_ratio"] == "1.200000"
-
-
-def test_get_earnings_event_omits_implied_move_for_older_event(client, db_session):
-    from datetime import UTC, date, datetime
-    from decimal import Decimal
-
-    from models.earnings_event import EarningsEvent
-    from models.volatility_snapshot import VolatilitySnapshot
-
-    company, older_event = _seed_company_with_earnings(db_session)
-    newer_event = EarningsEvent(
-        company_id=company.id, fiscal_year=2026, fiscal_quarter=3, earnings_date=date(2026, 6, 18)
-    )
-    db_session.add(newer_event)
-    db_session.add(
-        VolatilitySnapshot(
-            company_id=company.id,
-            snapshot_timestamp=datetime(2026, 3, 10, tzinfo=UTC),
-            method="atm_straddle",
-            implied_move_absolute=Decimal("8.40"),
-            computed_at=datetime.now(UTC),
-        )
-    )
-    db_session.flush()
-
-    response = client.get(f"/api/v1/earnings/{older_event.id}")
-
-    assert response.status_code == 200
-    assert response.json()["implied_move"] is None
+    assert "market_expectations" not in body
+    assert "implied_move" not in body
 
 
 def test_get_earnings_event_shows_historical_moves_from_other_events(client, db_session):

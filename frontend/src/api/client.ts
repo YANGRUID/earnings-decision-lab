@@ -7,6 +7,9 @@ import type {
   ImpliedMoveRequest,
   ImpliedMoveResponse,
   ReplaySummary,
+  ResearchJob,
+  ResearchJobQueued,
+  ResearchOverview,
   ResearchQueryResponse,
   StrategyPayoffRequest,
   StrategyPayoffResponse,
@@ -82,6 +85,14 @@ export const api = {
     if (params.k) qs.set("k", String(params.k));
     return request<FilingSearchResponse>(`/research/documents?${qs.toString()}`);
   },
+
+  prepareResearch: (ticker: string) =>
+    request<ResearchJob | ResearchJobQueued>(`/research/${ticker}/prepare`, { method: "POST" }),
+  refreshResearch: (ticker: string) =>
+    request<ResearchJob | ResearchJobQueued>(`/research/${ticker}/refresh`, { method: "POST" }),
+  getResearchStatus: (ticker: string) => request<ResearchJob>(`/research/${ticker}/status`),
+  getResearchOverview: (ticker: string) =>
+    request<ResearchOverview>(`/research/${ticker}/overview`),
 
   getLatestEvaluation: () => request<EvaluationStatusResponse>("/evaluations/latest"),
 

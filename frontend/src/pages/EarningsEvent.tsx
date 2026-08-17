@@ -18,14 +18,22 @@ export function EarningsEvent() {
     () => (event.data ? api.listEarnings({ ticker: event.data.company.ticker, limit: 8 }) : Promise.resolve([])),
     [event.data?.company.ticker],
   );
+  // Forward-looking data (next-period estimate, implied move) is
+  // company-level and always-current -- never tied to this specific past
+  // event -- so it's fetched separately from GET /research/{ticker}/overview
+  // rather than living on the event's own response. See types/api.ts.
+  const overview = useAsync(
+    () => (event.data ? api.getResearchOverview(event.data.company.ticker) : Promise.resolve(null)),
+    [event.data?.company.ticker],
+  );
 
   if (event.loading) return <LoadingState label="Loading earnings event…" />;
   if (event.error) return <ErrorState message={event.error} />;
   if (!event.data) return null;
 
   const e = event.data;
-  const est = e.market_expectations;
-  const iv = e.implied_move;
+  const est = overview.data?.latest_earnings_estimate ?? null;
+  const iv = overview.data?.latest_volatility_snapshot ?? null;
   const hist = e.historical_moves;
 
   return (
@@ -102,9 +110,14 @@ export function EarningsEvent() {
         </div>
       </div>
 
+      <p className="text-sm text-muted" style={{ marginTop: 4 }}>
+        The two cards below are about {e.company.ticker}'s <em>next</em> earnings report — a
+        separate, always-current concern from the FY{e.fiscal_year} Q{e.fiscal_quarter} event
+        above, not a property of it.
+      </p>
       <div className="grid grid-2">
         <div className="card">
-          <h2>Market expectations — next unreported period</h2>
+          <h2>{e.company.ticker}'s upcoming earnings — market expectations</h2>
           {est ? (
             <>
               <div className="grid grid-2" style={{ gap: 10 }}>
@@ -145,7 +158,7 @@ export function EarningsEvent() {
         </div>
 
         <div className="card">
-          <h2>Implied move &amp; options</h2>
+          <h2>{e.company.ticker}'s upcoming earnings — implied move</h2>
           {iv ? (
             <>
               <div className="grid grid-2" style={{ gap: 10 }}>

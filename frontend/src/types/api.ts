@@ -93,12 +93,14 @@ export interface ReplaySummary {
   options_data_ingested: boolean;
 }
 
+// Deliberately no market_expectations/implied_move here -- a past earnings
+// event's own page never carries forward-looking data (Phase 14 fix for
+// mixing historical-event and upcoming-earnings temporal contexts). That
+// company-level, always-current data lives on ResearchOverview instead.
 export interface EarningsEventDetail extends EarningsEventSummary {
   company: Company;
   result: EarningsResult | null;
   price_reaction: PriceReaction | null;
-  market_expectations: EarningsEstimate | null;
-  implied_move: VolatilitySnapshot | null;
   historical_moves: HistoricalMoveStats | null;
 }
 
@@ -265,6 +267,44 @@ export interface SystemStatus {
   llm: LlmConfigStatus;
   embedding_model: string;
   evaluation: EvaluationStatusResponse;
+}
+
+export interface PreparationStep {
+  step: string;
+  status: "pending" | "running" | "done" | "failed" | "skipped";
+  detail: string | null;
+  updated_at: string;
+}
+
+export interface ResearchJob {
+  id: number;
+  ticker: string;
+  company_id: number | null;
+  status: "running" | "completed" | "completed_with_warnings" | "failed";
+  steps: PreparationStep[];
+  started_at: string;
+  completed_at: string | null;
+  error: string | null;
+}
+
+export interface ResearchJobQueued {
+  ticker: string;
+  status: "queued";
+}
+
+// The single, company-level, always-current read for "what's on record
+// right now" -- this is where forward-looking data (next-period estimate,
+// implied move) actually belongs, never on a specific past EarningsEvent.
+export interface ResearchOverview {
+  ticker: string;
+  company: Company | null;
+  latest_job: ResearchJob | null;
+  earnings_events_count: number;
+  price_bars_count: number;
+  filings_count: number;
+  filing_chunks_count: number;
+  latest_earnings_estimate: EarningsEstimate | null;
+  latest_volatility_snapshot: VolatilitySnapshot | null;
 }
 
 export interface ApiError {
