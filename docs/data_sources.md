@@ -73,7 +73,17 @@ SEC-EDGAR-only pieces (actuals, 8-K-sourced earnings dates) were never affected 
   above — both endpoints count against the same daily quota.
 - **Status:** live and wired up. See [engineering_decisions.md](engineering_decisions.md)
   (Phase 12) for why `EarningsEstimateSnapshot` is keyed by `fiscal_period_end_date` rather
-  than `(fiscal_year, fiscal_quarter)`.
+  than `(fiscal_year, fiscal_quarter)`, and for a real matching bug (fiscal quarter vs. fiscal
+  year sharing one period-end date) caught during Phase 12 live verification.
+- **Data-quality caveat, observed live:** Micron's (MU) real `EARNINGS_ESTIMATES` response as of
+  2026-08-17 has forward (2026+) consensus EPS/revenue figures far above its own recent
+  historical range in the same response (e.g. "fiscal quarter" EPS jumping from ~$2-4 in
+  2025 quarters to $31+ from Q1 FY2026 onward; "fiscal year" EPS of $73-155). This is Alpha
+  Vantage's own third-party consensus data, faithfully parsed and stored as-is (not a parsing
+  bug in this project) — treat MU's specific forward estimates with real skepticism until
+  cross-checked against another source, rather than assuming this project's numbers are wrong.
+  NVDA's real forward estimate (EPS ~$2.08 for the quarter ending 2026-07-31) looked plausible
+  by comparison.
 
 ### Alpha Vantage — options chain (`backend/src/providers/alpha_vantage_options.py`, Phase 12)
 

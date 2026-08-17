@@ -5,6 +5,7 @@ end date rather than a (fiscal_year, fiscal_quarter) pair, and
 docs/engineering_decisions.md (Phase 12) for the full design rationale.
 """
 
+import time
 from datetime import UTC, datetime
 
 from sqlalchemy.orm import Session
@@ -16,6 +17,31 @@ from analytics.earnings.estimate_revisions import (
 from models.company import Company
 from models.earnings_estimate_snapshot import EarningsEstimateSnapshot
 from providers.base import EarningsEstimatesProvider
+from providers.types import EarningsEstimatePeriod, UpcomingEarningsCalendarEntry
+
+
+def _select_matching_period(
+    all_periods: list[EarningsEstimatePeriod],
+    calendar_entry: UpcomingEarningsCalendarEntry,
+) -> EarningsEstimatePeriod | None:
+    """When a company's next reporting period is its fiscal Q4/year-end,
+    Alpha Vantage returns *two* real entries with the same
+    fiscal_period_end_date -- one horizon="fiscal quarter", one
+    horizon="fiscal year" (observed live: Micron's real EARNINGS_ESTIMATES
+    response for FY2026 Q4/FYE, both dated 2026-08-31). Blindly taking the
+    first match by date alone is order-dependent on Alpha Vantage's own
+    array ordering and can silently substitute the *annual* consensus for
+    what this project represents as "next quarterly report" -- a real bug
+    caught by live verification, not a hypothetical. This prefers an exact
+    "quarter" horizon match at that date, falling back to any horizon match
+    (still real data, honestly labeled via the persisted ``horizon`` field)
+    only when no quarterly entry exists for that exact date at all.
+    """
+    same_date = [
+        p for p in all_periods if p.fiscal_period_end_date == calendar_entry.fiscal_period_end_date
+    ]
+    quarterly = next((p for p in same_date if "quarter" in p.horizon.lower()), None)
+    return quarterly or (same_date[0] if same_date else None)
 
 
 def collect_next_earnings_estimate(
@@ -36,15 +62,14 @@ def collect_next_earnings_estimate(
     if calendar_entry is None:
         return None
 
+    # Alpha Vantage's free tier enforces a real per-second burst limit
+    # (observed live: two calls fired back-to-back return a 200 OK "please
+    # spread out your requests" body, not a retryable 429) on top of its
+    # daily cap -- this pause is what keeps these two calls, which always
+    # fire together for one ticker, from tripping it.
+    time.sleep(1.5)
     all_periods = provider.get_earnings_estimates(company.ticker)
-    matching = next(
-        (
-            p
-            for p in all_periods
-            if p.fiscal_period_end_date == calendar_entry.fiscal_period_end_date
-        ),
-        None,
-    )
+    matching = _select_matching_period(all_periods, calendar_entry)
 
     previous = (
         db.query(EarningsEstimateSnapshot)

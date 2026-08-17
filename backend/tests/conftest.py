@@ -1,9 +1,20 @@
+import time
 from collections.abc import Generator
 
 import pytest
 from sqlalchemy.orm import Session
 
 from db.session import engine
+
+
+@pytest.fixture(autouse=True)
+def _no_real_sleeps(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A handful of ingestion-adjacent functions call time.sleep to pace
+    real Alpha Vantage API requests (see services/market_expectations.py) --
+    no test should ever wait on a real clock for that, so this keeps the
+    whole suite fast and deterministic regardless of which module adds one.
+    """
+    monkeypatch.setattr(time, "sleep", lambda _seconds: None)
 
 
 @pytest.fixture

@@ -109,7 +109,7 @@ export function EarningsEvent() {
             <>
               <div className="grid grid-2" style={{ gap: 10 }}>
                 <div className="stat">
-                  <span className="stat-label">EPS estimate (avg)</span>
+                  <span className="stat-label">EPS estimate (avg, {est.horizon})</span>
                   <span className="stat-value small">{formatMoney(est.eps_estimate_average)}</span>
                 </div>
                 <div className="stat">
@@ -121,7 +121,7 @@ export function EarningsEvent() {
                   <span className="stat-value small">{est.eps_estimate_analyst_count ?? "—"}</span>
                 </div>
                 <div className="stat">
-                  <span className="stat-label">Revenue estimate (avg)</span>
+                  <span className="stat-label">Revenue estimate (avg, {est.horizon})</span>
                   <span className="stat-value small">
                     {est.revenue_estimate_average
                       ? `$${(Number(est.revenue_estimate_average) / 1e9).toFixed(2)}B`
@@ -130,6 +130,8 @@ export function EarningsEvent() {
                 </div>
               </div>
               <p className="text-sm text-muted" style={{ marginTop: 10, marginBottom: 0 }}>
+                Figures above are for Alpha Vantage's "{est.horizon}" consensus specifically —
+                not necessarily a single quarter's worth if this is a fiscal year-end period.
                 Estimated report date: {est.estimated_report_date ?? "unknown"} · consensus as of{" "}
                 {new Date(est.snapshot_timestamp).toLocaleDateString()} ({est.source_provider}).
               </p>

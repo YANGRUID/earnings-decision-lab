@@ -112,6 +112,50 @@ class TestCollectNextEarningsEstimate:
         assert row.eps_estimate_average is None
         assert row.horizon == "unknown"
 
+    def test_prefers_fiscal_quarter_over_fiscal_year_at_same_period_end_date(self, db_session):
+        """Real bug, caught live: a company's fiscal Q4/year-end period has
+        the *same* fiscal_period_end_date for both its "fiscal quarter" and
+        "fiscal year" consensus entries (observed for Micron's real
+        EARNINGS_ESTIMATES response). Taking whichever the provider lists
+        first would silently substitute the annual figure for what this
+        project represents as the next quarterly report's consensus.
+        """
+        company = _seed_company(db_session)
+        period_end = date(2026, 8, 31)
+        provider = _StubEstimatesProvider(
+            calendar_entry=_calendar_entry(period_end, date(2026, 9, 22)),
+            periods=[
+                _period(period_end, horizon="fiscal year", eps_estimate_average=Decimal("73.39")),
+                _period(
+                    period_end, horizon="fiscal quarter", eps_estimate_average=Decimal("31.30")
+                ),
+            ],
+        )
+
+        row = collect_next_earnings_estimate(db_session, provider, company)
+
+        assert row is not None
+        assert row.horizon == "fiscal quarter"
+        assert row.eps_estimate_average == Decimal("31.30")
+
+    def test_falls_back_to_annual_entry_when_no_quarterly_entry_exists_at_that_date(
+        self, db_session
+    ):
+        company = _seed_company(db_session)
+        period_end = date(2026, 8, 31)
+        provider = _StubEstimatesProvider(
+            calendar_entry=_calendar_entry(period_end, date(2026, 9, 22)),
+            periods=[
+                _period(period_end, horizon="fiscal year", eps_estimate_average=Decimal("73.39"))
+            ],
+        )
+
+        row = collect_next_earnings_estimate(db_session, provider, company)
+
+        assert row is not None
+        assert row.horizon == "fiscal year"
+        assert row.eps_estimate_average == Decimal("73.39")
+
     def test_second_snapshot_derives_real_revenue_revision_direction(self, db_session):
         company = _seed_company(db_session)
         period_end = date(2026, 11, 30)
