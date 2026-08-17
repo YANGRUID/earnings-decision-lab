@@ -1,10 +1,15 @@
 from datetime import datetime
+from typing import TYPE_CHECKING
 
 from sqlalchemy import JSON, DateTime, ForeignKey, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from db.base import Base
 from models.mixins import TimestampMixin
+
+if TYPE_CHECKING:
+    from models.company import Company
+    from models.filing import Filing
 
 
 class AIExtraction(TimestampMixin, Base):

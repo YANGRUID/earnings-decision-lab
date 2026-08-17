@@ -20,6 +20,7 @@ the gap instead of the whole request crashing.
 
 import json
 import time
+from typing import Any
 
 from sqlalchemy.orm import Session
 
@@ -49,7 +50,7 @@ class AgentOrchestrator:
     def __init__(self, db: Session, llm: LLMProvider, embedder: EmbeddingProvider) -> None:
         self._db = db
         self._llm = llm
-        self._tools: dict[str, Tool] = build_tool_registry(db, embedder)
+        self._tools: dict[str, Tool[Any]] = build_tool_registry(db, embedder)
 
     def run(self, question: str) -> AgentResponse:
         start = time.monotonic()

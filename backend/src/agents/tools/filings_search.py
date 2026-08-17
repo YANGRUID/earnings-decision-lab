@@ -15,7 +15,7 @@ class FilingsSearchArgs(BaseModel):
     k: int = Field(default=5, ge=1, le=15)
 
 
-class FilingsSearchTool(Tool):
+class FilingsSearchTool(Tool[FilingsSearchArgs]):
     name = "search_filings"
     description = (
         "Hybrid (vector + keyword) search over real SEC filing text (10-K/10-Q/8-K) for "

@@ -5,6 +5,22 @@ financial calculations are never delegated to a model.
 
 from datetime import date
 from decimal import Decimal
+from typing import TypedDict
+
+
+class PriceReactionMoves(TypedDict):
+    """Precise shape for price_reaction_moves' result -- a plain
+    ``dict[str, tuple[date, Decimal] | Decimal | None]`` return type would
+    describe the same data but let a caller index any key expecting either
+    shape; TypedDict makes each key's actual value type explicit at the
+    call site instead.
+    """
+
+    close_price_before: tuple[date, Decimal] | None
+    next_day_close: tuple[date, Decimal] | None
+    five_day_close: tuple[date, Decimal] | None
+    next_day_move_pct: Decimal | None
+    five_day_move_pct: Decimal | None
 
 
 class InsufficientPriceHistory(Exception):
@@ -72,40 +88,45 @@ def recent_return(bars: dict[date, Decimal], as_of: date, lookback_trading_days:
     return pct_change(bars[start_date], bars[end_date])
 
 
-def price_reaction_moves(
-    bars: dict[date, Decimal], earnings_date: date
-) -> dict[str, tuple[date, Decimal] | None]:
+def price_reaction_moves(bars: dict[date, Decimal], earnings_date: date) -> PriceReactionMoves:
     """Close-price-before / next-day-close / five-day-close and their move
     percentages relative to the last close before ``earnings_date``.
-
-    Returns a dict with keys close_price_before, next_day_close,
-    five_day_close (each a (date, price) tuple or None if unavailable) plus
-    next_day_move_pct / five_day_move_pct (Decimal or None).
     """
-    result: dict[str, tuple[date, Decimal] | None] = {
+    empty: PriceReactionMoves = {
         "close_price_before": None,
         "next_day_close": None,
         "five_day_close": None,
+        "next_day_move_pct": None,
+        "five_day_move_pct": None,
     }
-    moves: dict[str, Decimal | None] = {"next_day_move_pct": None, "five_day_move_pct": None}
 
     try:
-        result["close_price_before"] = nth_trading_day_close(bars, earnings_date, 0)
+        close_price_before = nth_trading_day_close(bars, earnings_date, 0)
     except InsufficientPriceHistory:
-        return {**result, **moves}
+        return empty
 
-    before_price = result["close_price_before"][1]
-
-    try:
-        result["next_day_close"] = nth_trading_day_close(bars, earnings_date, 1)
-        moves["next_day_move_pct"] = pct_change(before_price, result["next_day_close"][1])
-    except InsufficientPriceHistory:
-        pass
+    before_price = close_price_before[1]
+    next_day_close: tuple[date, Decimal] | None = None
+    five_day_close: tuple[date, Decimal] | None = None
+    next_day_move_pct: Decimal | None = None
+    five_day_move_pct: Decimal | None = None
 
     try:
-        result["five_day_close"] = nth_trading_day_close(bars, earnings_date, 5)
-        moves["five_day_move_pct"] = pct_change(before_price, result["five_day_close"][1])
+        next_day_close = nth_trading_day_close(bars, earnings_date, 1)
+        next_day_move_pct = pct_change(before_price, next_day_close[1])
     except InsufficientPriceHistory:
         pass
 
-    return {**result, **moves}
+    try:
+        five_day_close = nth_trading_day_close(bars, earnings_date, 5)
+        five_day_move_pct = pct_change(before_price, five_day_close[1])
+    except InsufficientPriceHistory:
+        pass
+
+    return {
+        "close_price_before": close_price_before,
+        "next_day_close": next_day_close,
+        "five_day_close": five_day_close,
+        "next_day_move_pct": next_day_move_pct,
+        "five_day_move_pct": five_day_move_pct,
+    }

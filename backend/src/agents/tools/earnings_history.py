@@ -15,7 +15,7 @@ class EarningsHistoryArgs(BaseModel):
     limit: int = Field(default=8, ge=1, le=20)
 
 
-class EarningsHistoryTool(Tool):
+class EarningsHistoryTool(Tool[EarningsHistoryArgs]):
     name = "get_historical_earnings"
     description = (
         "Real historical earnings results and price reactions for a covered ticker "

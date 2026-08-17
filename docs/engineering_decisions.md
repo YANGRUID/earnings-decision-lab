@@ -612,3 +612,50 @@ from Phase 8. The docker job's real assertion is that `/api/v1/health` returns 2
 frontend serves its SPA shell with *no* real keys configured at all, which is a stronger,
 not weaker, validation of the graceful-degradation behavior than skipping the check would be.
 
+## Phase 11 (audit + recruiter polish)
+
+**A real, previously-hidden material weakness, found by an audit that actually ran the tools
+already configured, not just reviewed the diff.** `mypy` has been a listed dev dependency and
+configured (`[tool.mypy]` in `pyproject.toml`) since Phase 0, and CI has run `ruff` and `pytest`
+on every push since — but never `mypy`. Running it for the first time during this phase's audit
+found 58 real errors across 27 files. None were cosmetic; each fell into one of five root
+causes, and each was fixed at the root cause rather than suppressed:
+
+1. **Every SQLAlchemy `relationship()` forward reference was genuinely unresolved** (`Mapped["Company"]`
+   etc.) — the `# noqa: F821` comments already in place silenced ruff's undefined-name check but
+   never addressed mypy's, because they're different tools checking different things. Fixed with
+   `TYPE_CHECKING`-guarded imports in every affected model file (the standard SQLAlchemy 2.0
+   pattern — avoids the real circular-import problem these models have at runtime while still
+   giving mypy something to resolve against).
+2. **`agents.tools.base.Tool.run()` narrowing its argument type per subclass violated Liskov
+   substitution** from mypy's perspective, even though it's safe in practice (the
+   orchestrator only ever calls a tool with its own matching args, validated at the JSON
+   boundary). Fixed by making `Tool` properly generic (`class Tool[ArgsT: BaseModel](ABC)`,
+   PEP 695 native syntax — this project's minimum Python version is 3.12, so there was no
+   reason to use the older `TypeVar`/`Generic[]` pattern once mypy required a real fix here
+   anyway) instead of typing `run()` against the loosest possible `BaseModel`.
+3. **`LLMProvider.generate_structured()` had the same problem** — declared to return `BaseModel`
+   (correct for the ABC, since different callers request different schemas) but every concrete
+   provider's implementation actually returns the specific requested type, and every caller
+   assigned the result to a specifically-typed variable. Fixed the same way: a generic method
+   signature (`schema: type[SchemaT]) -> SchemaT`) instead of the widest common type.
+4. **`AgentResponse.trace` was typed `ExecutionTrace | None` when it's never actually `None`** —
+   `AgentOrchestrator.run()` is the only place this dataclass is constructed, and it always
+   builds a real trace, even for a request that fails at every stage. The `Optional` understated
+   a real guarantee and forced the `/research/query` router to either null-check a value that's
+   never null, or (as it did) not null-check it and be technically wrong about what mypy could
+   prove. Narrowed the type to match the actual guarantee.
+5. **A handful of genuine, narrow gaps in ingestion scripts** where a nullable column
+   (`Company.cik`, `EarningsEvent.earnings_date`) is read after a code path that already
+   guarantees it's non-null (an explicit early return, or a query filter like
+   `date_confirmed.is_(True)` that's only ever set alongside a real date) — but nothing in the
+   code told the type checker that. Fixed with an explicit `assert` or guard at exactly the
+   point the guarantee is established, which also makes the invariant readable to a human, not
+   just satisfies the type checker.
+
+`mypy` is now clean (0 errors, 111 files) and added to CI (`backend` job, after `ruff`, before
+tests) so this can't silently regress again. The lesson generalizes past this one project: a
+configured-but-never-invoked tool is not a safety net, and "tests pass" was never a claim that
+"the type annotations are honest" — these are genuinely different properties, and only one of
+them was actually being checked.
+

@@ -41,6 +41,9 @@ def _backfill_period_end_dates(db: Session, edgar: SECEdgarProvider, company: Co
     )
     if not missing:
         return
+    if company.cik is None:
+        log.warning("skipping %s: no CIK on record", company.ticker)
+        return
     facts = edgar.get_company_facts(company.cik)
     end_date_by_period: dict[tuple[int, int], date] = {}
     for fact in facts.eps_diluted:
@@ -63,16 +66,26 @@ def _backfill_earnings_dates(db: Session, edgar: SECEdgarProvider, company: Comp
     )
     if not events:
         return
+    if company.cik is None:
+        log.warning("skipping %s: no CIK on record", company.ticker)
+        return
 
     # 200 is comfortably more than any of these companies file in the ~15-20
     # years of history we have quarterly XBRL data for; SEC's "recent" feed
     # already returns everything in one call, so this costs nothing extra.
     filings_8k = edgar.search_filings(company.cik, filing_types=["8-K"], limit=200)
     candidates = [Candidate8K(f.accession_number, f.filing_date, f.items) for f in filings_8k]
-    event_periods = [
-        EventPeriod(key=f"{e.fiscal_year}Q{e.fiscal_quarter}", period_end_date=e.period_end_date)
-        for e in events
-    ]
+    event_periods = []
+    for e in events:
+        # Guaranteed by the query filter above (period_end_date.isnot(None)),
+        # not re-checked defensively here for its own sake -- asserted so the
+        # type checker can see the same guarantee the query already makes.
+        assert e.period_end_date is not None
+        event_periods.append(
+            EventPeriod(
+                key=f"{e.fiscal_year}Q{e.fiscal_quarter}", period_end_date=e.period_end_date
+            )
+        )
     matches = match_earnings_dates(event_periods, candidates)
 
     filings_by_accn = {f.accession_number: f for f in filings_8k}

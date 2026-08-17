@@ -32,7 +32,15 @@ class ExecutionTrace:
 
 @dataclass(frozen=True)
 class AgentResponse:
+    """``trace`` is required, not optional: AgentOrchestrator.run() is the
+    only place this is constructed, and it always builds a real
+    ExecutionTrace (see agents/orchestrator.py) — even a request that fails
+    at every stage still gets a trace describing that. Making it Optional
+    understated a real guarantee and forced every consumer (the /research/query
+    router) to null-check a value that's never actually null.
+    """
+
     question: str
     answer: str
+    trace: ExecutionTrace
     citations: list[Citation] = field(default_factory=list)
-    trace: ExecutionTrace | None = None

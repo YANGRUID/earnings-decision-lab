@@ -5,10 +5,13 @@ Anthropic (or adding a new provider) never touches a caller.
 
 from abc import ABC, abstractmethod
 from collections.abc import Iterator
+from typing import TypeVar
 
 from pydantic import BaseModel
 
 from services.llm.types import Capabilities, ChatMessage, GenerateResult, ToolDefinition
+
+SchemaT = TypeVar("SchemaT", bound=BaseModel)
 
 
 class LLMProvider(ABC):
@@ -31,11 +34,11 @@ class LLMProvider(ABC):
     def generate_structured(
         self,
         messages: list[ChatMessage],
-        schema: type[BaseModel],
+        schema: type[SchemaT],
         *,
         temperature: float = 0.0,
         max_tokens: int = 1024,
-    ) -> BaseModel:
+    ) -> SchemaT:
         """A completion validated against ``schema``. Providers normalize
         this differently (JSON mode + prompt vs. forced tool call) — see
         docs/llm_providers.md for exactly what differs per provider. Raises

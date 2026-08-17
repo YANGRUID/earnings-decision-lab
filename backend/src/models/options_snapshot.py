@@ -1,5 +1,6 @@
 from datetime import date, datetime
 from decimal import Decimal
+from typing import TYPE_CHECKING
 
 from sqlalchemy import Date, DateTime, Enum, ForeignKey, Integer, Numeric, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -7,6 +8,9 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from db.base import Base
 from models.enums import GreeksSource, OptionType
 from models.mixins import TimestampMixin
+
+if TYPE_CHECKING:
+    from models.company import Company
 
 NUM = Numeric(18, 6)
 

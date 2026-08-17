@@ -25,7 +25,7 @@ class OptionsPayoffArgs(BaseModel):
     )
 
 
-class OptionsPayoffTool(Tool):
+class OptionsPayoffTool(Tool[OptionsPayoffArgs]):
     name = "calculate_strategy_payoff"
     description = (
         "Deterministic options strategy payoff calculator: given explicit legs "

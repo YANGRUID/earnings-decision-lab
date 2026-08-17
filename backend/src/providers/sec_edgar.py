@@ -181,7 +181,7 @@ def _extract_fact_values(
         if not tag_data:
             continue
         units = tag_data.get("units", {})
-        raw_values = units.get(unit) or next(iter(units.values()), [])
+        raw_values: list[dict] = units.get(unit) or next(iter(units.values()), [])
         values: list[CompanyFactValue] = []
         for entry in raw_values:
             # Only quarterly (10-Q) and annual (10-K) points tied to a fiscal

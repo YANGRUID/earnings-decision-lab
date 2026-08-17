@@ -130,7 +130,8 @@ def _find_breakevens(
         candidate = s_max + (0 - p_max) / slope_inf
         if candidate > s_max:
             breakevens.append(candidate)
-    # dedupe while preserving order, then sort
-    seen: set[Decimal] = set()
-    unique = [b for b in breakevens if not (b in seen or seen.add(b))]
-    return tuple(sorted(unique))
+    # Order doesn't need preserving -- the result is sorted regardless -- so
+    # dedup via a plain set rather than the "seen.add() in a boolean
+    # context" idiom, which is fine at runtime but reads as a bug to a
+    # type checker (set.add() returns None, not a meaningful value).
+    return tuple(sorted(set(breakevens)))

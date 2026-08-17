@@ -47,6 +47,10 @@ jobs:
         working-directory: backend
         run: uv run ruff check src tests
 
+      - name: Type check (mypy)
+        working-directory: backend
+        run: uv run mypy src
+
       - name: Apply migrations
         working-directory: backend
         run: uv run alembic upgrade head

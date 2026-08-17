@@ -105,7 +105,7 @@ def _load_close_series(db: Session, ticker: str) -> dict[date, Decimal]:
     # If both providers ever contributed rows for the same ticker, prefer
     # whichever trade_date has data — dict comprehension keeps the last
     # writer, which is fine since bars agree closely across providers.
-    return dict(rows.all())
+    return {row.trade_date: row.close for row in rows.all()}
 
 
 def _backfill_snapshots(
@@ -122,6 +122,10 @@ def _backfill_snapshots(
     )
     updated = 0
     for event in events:
+        # date_confirmed=True is only ever set alongside a real earnings_date
+        # (see ingestion.earnings_date_backfill) — asserted so the type
+        # checker can see the same guarantee the query filter establishes.
+        assert event.earnings_date is not None
         moves = price_reaction_moves(ticker_bars, event.earnings_date)
         if moves["close_price_before"] is None:
             continue

@@ -12,10 +12,21 @@ from agents.tools.types import ToolOutcome
 from services.llm.types import ToolDefinition
 
 
-class Tool(ABC):
+class Tool[ArgsT: BaseModel](ABC):
+    """Generic over its own args schema so each concrete tool's ``run``
+    can take its specific args type without violating Liskov substitution
+    from mypy's perspective — the registry/orchestrator (agents/orchestrator.py)
+    still handles tools polymorphically via ``Tool[Any]``, since which
+    concrete args type applies is only known at the JSON-validation
+    boundary (``args_schema.model_validate(arguments)``), not statically.
+    Uses PEP 695 native generic syntax (Python 3.12+, this project's
+    minimum version) rather than the older ``Generic[ArgsT]`` + module-level
+    ``TypeVar`` pattern.
+    """
+
     name: str
     description: str
-    args_schema: type[BaseModel]
+    args_schema: type[ArgsT]
 
     def to_definition(self) -> ToolDefinition:
         return ToolDefinition(
@@ -25,7 +36,7 @@ class Tool(ABC):
         )
 
     @abstractmethod
-    def run(self, args: BaseModel) -> ToolOutcome:
+    def run(self, args: ArgsT) -> ToolOutcome:
         """Execute with already-validated arguments. Must not raise for
         "no data found" conditions — that's a normal ToolOutcome(success=True,
         data={}, summary="no data available because ..."), not an exception.

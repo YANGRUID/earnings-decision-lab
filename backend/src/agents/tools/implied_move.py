@@ -19,7 +19,7 @@ class ImpliedMoveArgs(BaseModel):
     )
 
 
-class ImpliedMoveTool(Tool):
+class ImpliedMoveTool(Tool[ImpliedMoveArgs]):
     name = "calculate_implied_move"
     description = (
         "Computes the ATM-straddle implied earnings move from explicit call/put prices and "

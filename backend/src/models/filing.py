@@ -1,4 +1,5 @@
 from datetime import date, datetime
+from typing import TYPE_CHECKING
 
 from sqlalchemy import Date, DateTime, Enum, ForeignKey, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -6,6 +7,9 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from db.base import Base
 from models.enums import FilingType
 from models.mixins import TimestampMixin
+
+if TYPE_CHECKING:
+    from models.company import Company
 
 
 class Filing(TimestampMixin, Base):

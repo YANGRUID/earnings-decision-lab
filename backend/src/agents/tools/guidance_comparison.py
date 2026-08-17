@@ -15,7 +15,7 @@ class GuidanceComparisonArgs(BaseModel):
     ticker: str = Field(description="Stock ticker, e.g. 'MU'")
 
 
-class GuidanceComparisonTool(Tool):
+class GuidanceComparisonTool(Tool[GuidanceComparisonArgs]):
     name = "compare_guidance"
     description = (
         "Deterministic quarter-over-quarter comparison of a ticker's two most recent "

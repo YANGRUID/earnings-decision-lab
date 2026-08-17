@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import TYPE_CHECKING
 
 from pgvector.sqlalchemy import Vector
 from sqlalchemy import DateTime, ForeignKey, Integer, String, UniqueConstraint
@@ -6,6 +7,10 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from db.base import Base
 from models.mixins import TimestampMixin
+
+if TYPE_CHECKING:
+    from models.company import Company
+    from models.filing import Filing
 
 EMBEDDING_DIM = 384  # BAAI/bge-small-en-v1.5 — see docs/ai_architecture.md
 

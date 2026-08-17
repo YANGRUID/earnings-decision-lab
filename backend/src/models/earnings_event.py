@@ -1,4 +1,5 @@
 from datetime import date
+from typing import TYPE_CHECKING
 
 from sqlalchemy import Boolean, Date, Enum, ForeignKey, Integer, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -6,6 +7,12 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from db.base import Base
 from models.enums import AnnouncementTime
 from models.mixins import TimestampMixin
+
+if TYPE_CHECKING:
+    from models.company import Company
+    from models.earnings_expectation_snapshot import EarningsExpectationSnapshot
+    from models.earnings_result import EarningsResult
+    from models.price_reaction import PriceReaction
 
 
 class EarningsEvent(TimestampMixin, Base):

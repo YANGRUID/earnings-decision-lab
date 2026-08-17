@@ -11,7 +11,7 @@ class OptionsSnapshotArgs(BaseModel):
     ticker: str = Field(description="Stock ticker, e.g. 'MU'")
 
 
-class OptionsSnapshotTool(Tool):
+class OptionsSnapshotTool(Tool[OptionsSnapshotArgs]):
     name = "get_options_snapshot"
     description = (
         "Real-time-ish options chain snapshot for a ticker, if one has been ingested. "

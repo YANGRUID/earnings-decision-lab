@@ -15,11 +15,11 @@ import json
 from collections.abc import Iterator
 
 import httpx
-from pydantic import BaseModel, ValidationError
+from pydantic import ValidationError
 from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 
 from observability.http_client import new_http_client
-from services.llm.base import LLMProvider
+from services.llm.base import LLMProvider, SchemaT
 from services.llm.errors import LLMRequestError, StructuredOutputError
 from services.llm.types import (
     Capabilities,
@@ -150,11 +150,11 @@ class AnthropicProvider(LLMProvider):
     def generate_structured(
         self,
         messages: list[ChatMessage],
-        schema: type[BaseModel],
+        schema: type[SchemaT],
         *,
         temperature: float = 0.0,
         max_tokens: int = 1024,
-    ) -> BaseModel:
+    ) -> SchemaT:
         system, rest = self._split_system(messages)
         payload: dict = {
             "model": self._model,

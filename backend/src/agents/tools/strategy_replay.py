@@ -11,7 +11,7 @@ class StrategyReplayArgs(BaseModel):
     ticker: str = Field(description="Stock ticker, e.g. 'MU'")
 
 
-class StrategyReplayTool(Tool):
+class StrategyReplayTool(Tool[StrategyReplayArgs]):
     name = "run_strategy_replay"
     description = (
         "Historical options-strategy replay results for a ticker's past earnings events "
