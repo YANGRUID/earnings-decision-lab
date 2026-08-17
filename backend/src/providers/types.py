@@ -150,6 +150,33 @@ class OptionQuote(ProvenancedModel):
     external_contract_id: str | None = None
 
 
+class PortfolioPosition(ProvenancedModel):
+    """One real brokerage position, normalized separately from market-data
+    types above -- a position is "what I hold", never a market quote, and
+    the two are never mixed into one model or table (see
+    models/portfolio_position_snapshot.py). ``account_id_masked`` is always
+    already masked by the time this type is constructed -- see
+    providers/ibkr_client.mask_account_id; the real account ID is never
+    carried in this type at all, not just hidden at display time.
+    """
+
+    account_id_masked: str
+    conid: int
+    contract_description: str
+    asset_class: str  # e.g. "STK", "OPT", "FUT" -- IBKR's own value, unmodified
+    quantity: Decimal
+    currency: str | None = None
+    market_price: Decimal | None = None
+    market_value: Decimal | None = None
+    average_cost: Decimal | None = None
+    unrealized_pnl: Decimal | None = None
+    realized_pnl: Decimal | None = None
+    # Option-only identification fields, all None for non-option positions.
+    option_expiry: str | None = None  # IBKR's raw format, e.g. "20260919"
+    option_right: str | None = None  # "C" | "P"
+    option_strike: Decimal | None = None
+
+
 class TranscriptDocument(ProvenancedModel):
     ticker: str
     fiscal_year: int

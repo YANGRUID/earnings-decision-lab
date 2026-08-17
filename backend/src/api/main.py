@@ -18,6 +18,7 @@ from api.routers import (
     evaluations,
     health,
     options,
+    portfolio,
     replay,
     research,
     system_status,
@@ -98,6 +99,7 @@ def create_app() -> FastAPI:
     app.include_router(evaluations.router, prefix="/api/v1")
     app.include_router(replay.router, prefix="/api/v1")
     app.include_router(system_status.router, prefix="/api/v1")
+    app.include_router(portfolio.router, prefix="/api/v1")
 
     return app
 

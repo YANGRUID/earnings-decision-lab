@@ -84,6 +84,18 @@ def decode_market_data_quality(availability_code: str | None) -> str:
     return "unknown"
 
 
+def mask_account_id(account_id: str) -> str:
+    """First 3 and last 2 characters only, e.g. "U12345678" -> "U12****78"
+    -- matches the exact masking convention the user specified. The real
+    account ID must never be logged, persisted, or included in any report;
+    every caller that touches an account ID from the Gateway masks it
+    immediately, before it's used anywhere else.
+    """
+    if len(account_id) <= 5:
+        return "*" * len(account_id)
+    return f"{account_id[:3]}****{account_id[-2:]}"
+
+
 class IBKRClient:
     """Thin wrapper around the Gateway's REST API. Translates
     connection-level failures into IBKRError subclasses so callers only

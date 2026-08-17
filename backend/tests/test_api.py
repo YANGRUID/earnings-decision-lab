@@ -414,6 +414,50 @@ def test_system_status_reflects_real_counts_and_config(client, db_session):
     assert "available" in body["evaluation"]
 
 
+def test_portfolio_positions_empty_when_nothing_collected(client):
+    response = client.get("/api/v1/portfolio/positions")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["positions"] == []
+    assert body["snapshot_timestamp"] is None
+
+
+def test_portfolio_positions_reflects_latest_real_snapshot(client, db_session):
+    from datetime import UTC, datetime
+    from decimal import Decimal
+
+    from models.portfolio_position_snapshot import PortfolioPositionSnapshot
+
+    ts = datetime.now(UTC)
+    db_session.add(
+        PortfolioPositionSnapshot(
+            account_id_masked="U99****99",
+            snapshot_timestamp=ts,
+            conid=672387468,
+            contract_description="MNQ MAR2025",
+            asset_class="FUT",
+            quantity=Decimal("2"),
+            currency="USD",
+            market_value=Decimal("87081.72"),
+            unrealized_pnl=Decimal("9.48"),
+            source_provider="ibkr",
+            retrieved_at=ts,
+        )
+    )
+    db_session.flush()
+
+    response = client.get("/api/v1/portfolio/positions")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body["positions"]) == 1
+    assert body["positions"][0]["account_id_masked"] == "U99****99"
+    assert body["positions"][0]["market_value"] == "87081.720000"
+    # never the real, unmasked account number anywhere in the response
+    assert "U99999999" not in response.text
+
+
 def test_options_payoff_bull_call_spread(client):
     response = client.post(
         "/api/v1/options/strategies/payoff",

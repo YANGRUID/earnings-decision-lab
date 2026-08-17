@@ -265,3 +265,34 @@ class SystemStatusResponse(BaseModel):
     llm: LlmConfigStatusResponse
     embedding_model: str
     evaluation: EvaluationStatusResponse
+
+
+class PortfolioPositionResponse(BaseModel):
+    """A real, READ-ONLY brokerage position -- never a market quote (see
+    models/portfolio_position_snapshot.py). ``account_id_masked`` is
+    already masked before this is ever constructed.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    account_id_masked: str
+    conid: int
+    contract_description: str
+    asset_class: str
+    quantity: Decimal
+    currency: str | None
+    market_price: Decimal | None
+    market_value: Decimal | None
+    average_cost: Decimal | None
+    unrealized_pnl: Decimal | None
+    realized_pnl: Decimal | None
+    option_expiry: str | None
+    option_right: str | None
+    option_strike: Decimal | None
+    snapshot_timestamp: datetime
+    source_provider: str
+
+
+class PortfolioSnapshotResponse(BaseModel):
+    positions: list[PortfolioPositionResponse]
+    snapshot_timestamp: datetime | None

@@ -7,6 +7,7 @@ from models.earnings_expectation_snapshot import EarningsExpectationSnapshot
 from models.earnings_result import EarningsResult
 from models.filing import Filing
 from models.options_snapshot import OptionsSnapshot
+from models.portfolio_position_snapshot import PortfolioPositionSnapshot
 from models.price_bar import PriceBar
 from models.price_reaction import PriceReaction
 from models.strategy_replay import StrategyReplay
@@ -22,6 +23,7 @@ __all__ = [
     "EarningsResult",
     "Filing",
     "OptionsSnapshot",
+    "PortfolioPositionSnapshot",
     "PriceBar",
     "PriceReaction",
     "StrategyReplay",
