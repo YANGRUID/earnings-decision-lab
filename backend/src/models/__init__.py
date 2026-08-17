@@ -10,6 +10,7 @@ from models.options_snapshot import OptionsSnapshot
 from models.portfolio_position_snapshot import PortfolioPositionSnapshot
 from models.price_bar import PriceBar
 from models.price_reaction import PriceReaction
+from models.research_preparation_job import ResearchPreparationJob
 from models.strategy_replay import StrategyReplay
 from models.volatility_snapshot import VolatilitySnapshot
 
@@ -26,6 +27,7 @@ __all__ = [
     "PortfolioPositionSnapshot",
     "PriceBar",
     "PriceReaction",
+    "ResearchPreparationJob",
     "StrategyReplay",
     "VolatilitySnapshot",
 ]
