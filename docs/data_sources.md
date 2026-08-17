@@ -99,12 +99,40 @@ SEC-EDGAR-only pieces (actuals, 8-K-sourced earnings dates) were never affected 
     `{"Information": "... This is a premium endpoint ..."}` body with no data at all — checked
     live again in Phase 12 while building the Historical Replay honest-fallback screen (see
     below); the exact captured response is in `backend/tests/test_providers_alpha_vantage_options.py`.
-- **Practical consequence:** `OptionsSnapshot` is empty, and every downstream calculation that
-  depends on it (implied move, ATM IV, IV term structure, put/call ratios — all built in
-  Phase 12, see [options_methodology.md](options_methodology.md)) correctly returns null rather
-  than a fabricated value. The parsing path for a real (non-demo) response is implemented and
-  unit-tested against Alpha Vantage's documented schema, ready to verify the moment a
-  subscription exists.
+- **Practical consequence:** as an Alpha Vantage data source, `OptionsSnapshot` stays empty via
+  this provider, and every downstream calculation that depends on it (implied move, ATM IV, IV
+  term structure, put/call ratios) correctly returns null rather than a fabricated value. The
+  parsing path for a real (non-demo) response is implemented and unit-tested against Alpha
+  Vantage's documented schema, ready to verify the moment a subscription exists. **As of Phase
+  13, this is no longer the only path to real options data** — see the Interactive Brokers
+  section below, which does return real data today.
+
+### Interactive Brokers Client Portal Gateway — options chain + portfolio (Phase 13)
+
+- **What it provides:** real options-chain data (bid/ask/last/volume/Greeks/IV) and real,
+  read-only portfolio positions, sourced from the user's own IBKR account via the local Client
+  Portal Gateway they run and authenticate themselves — see
+  [ibkr_integration.md](ibkr_integration.md) for the full architecture, endpoint citations, and
+  real verification record.
+- **Confirmed live, Phase 13:** real, on the free/base account tier (no premium subscription
+  required for the endpoints used) — this is the first provider in this project that returns
+  genuine options-chain data. Verified end to end for NVDA: 22 real option contracts discovered
+  and fetched, `OptionsSnapshot` rows went from 0 to 22, `VolatilitySnapshot` rows went from 0 to
+  1 with real ATM IV (46.3%), real implied move (6.41%, $14.43), and real put/call ratios — all
+  visible on the Earnings Event page with zero frontend changes, since Phase 12 already built the
+  real display logic.
+- **Real, observed entitlement nuance:** the underlying stock quote came back `delayed`; option
+  quotes came back `frozen` (checked ~2 minutes after the regular session closed) — plausibly a
+  real options-data-subscription gap, or simply reflecting the market being closed at the moment
+  of the check; not fully disambiguated (would need a check during live market hours), and
+  reported as observed rather than assumed either way.
+- **Bounded fetch, not a full chain:** the Gateway has no bulk "return the whole chain" endpoint
+  like Alpha Vantage's `REALTIME_OPTIONS`, so `IBKROptionsProvider` fetches a deliberately bounded
+  window (nearest expiration after the real earnings date being researched, 5 strikes either side
+  of ATM) rather than walking every listed month and strike.
+- **Read-only, local-only:** no order-execution endpoint is ever called; the Gateway is never
+  assumed to run anywhere but the user's own machine (see `docs/ibkr_integration.md`'s
+  "local-first" section) — a future Azure deployment is an explicitly separate, deferred decision.
 
 ### Historical Replay — real fallback instead of a fabricated options-chain reconstruction (Phase 12)
 
@@ -119,9 +147,10 @@ data, it now shows two things that **are** real:
 2. **Implied-vs-realized move comparisons**, accumulated forward from now: each real
    `VolatilitySnapshot` computed ahead of a real earnings date (via forward snapshot
    collection — see below) is matched, once that date is actually reported, against the real
-   realized next-day move. Empty today for the reason above, but the matching logic itself is
-   real and tested (`backend/tests/test_services_options_analytics.py`), not a placeholder —
-   it populates automatically as real snapshots accumulate, no code change needed.
+   realized next-day move. Still empty today (as of 2026-08-17) -- not because the matching logic
+   is untested, but because the one real forward snapshot collected so far (NVDA, via IBKR, Phase
+   13) targets an earnings date (2026-08-26) that hasn't been reported yet. It will resolve into a
+   real comparison automatically once that date is reported, no code change needed.
 
 `GET /api/v1/replay` exposes both, plus an explicit `options_data_ingested` flag so the
 frontend states the reason implied-vs-realized is empty rather than hiding it.

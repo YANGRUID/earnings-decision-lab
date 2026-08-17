@@ -712,3 +712,42 @@ rows) and a real (currently empty, by necessity) implied-vs-realized comparison 
 automatically as forward options snapshots age into reported events — with an explicit
 `options_data_ingested` flag so the frontend states the reason rather than hiding it.
 
+## Phase 13 (Interactive Brokers integration)
+
+Full architecture, endpoint citations, and the real verification record live in
+[ibkr_integration.md](ibkr_integration.md) — this section covers the decisions and real bugs
+worth remembering independent of that reference.
+
+**The `OptionsDataProvider` interface gained one new optional parameter instead of a parallel
+interface.** Alpha Vantage's `REALTIME_OPTIONS` returns a whole chain in one call; IBKR's Gateway
+has no such endpoint and fetching "everything" (14 listed months × ~130 strikes × 2 rights for
+NVDA alone) would be both slow and pointless for earnings-move analytics. Rather than give
+`IBKROptionsProvider` its own bespoke interface (which would have required
+`services/options_analytics.py` to know which concrete provider it was talking to, defeating the
+point of the abstraction), `get_option_chain` gained one optional `reference_date` parameter: a
+hint a bounded provider can use to pick a sensible expiration/strike window, ignored by providers
+that already return everything. `collect_forward_options_snapshot` already had the real earnings
+date in scope, so threading it through was a one-line change, not a redesign.
+
+**Two real bugs, both caught by *actually running it* against the live account, not by
+inspection.** (1) The very first real fetch of NVDA's 22 target contracts came back with bid/ask/
+Greeks all null on every single one — the snapshot endpoint needs a real elapsed pause after a
+priming call before a second call returns real values, and the initial implementation called it
+twice with zero delay. Fixed with a documented, empirically-derived 2-second pause
+(`_SNAPSHOT_PRIMING_DELAY_SECONDS`). (2) A `market_data_quality`/`external_contract_id`-bearing
+`OptionQuote` was being built with `expiration_date=as_of.date()` — today's date — instead of the
+contract's real expiration, a copy-paste leftover from an earlier draft; caught by a dedicated
+unit test asserting the field, not by re-reading the code. Both are the kind of bug that a purely
+mocked test suite, written before ever touching the real API, would not have caught — the project
+avoided that here because the provider was manually exercised against the real Gateway (curl,
+then a real Python script) *before* any test was written, and the real response shapes captured
+from that exercise became the test fixtures, not invented ones.
+
+**Account IDs are masked at the provider boundary, not at display time.** `mask_account_id` is
+called inside `IBKRPortfolioProvider` itself, before the real account ID is ever attached to a
+`PortfolioPosition` or logged — the masked form is the only one that exists anywhere past that
+point, rather than trusting every downstream caller (a schema, a log statement, a future UI
+component) to remember to mask it. A dedicated test
+(`test_never_leaks_the_real_unmasked_account_id`) asserts the raw ID never appears in output, not
+just that the masked one does.
+
