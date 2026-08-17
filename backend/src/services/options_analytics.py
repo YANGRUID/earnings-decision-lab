@@ -210,38 +210,13 @@ def _already_collected_today(db: Session, company_id: int, today: date) -> bool:
     )
 
 
-def collect_forward_options_snapshot(
+def _fetch_and_persist_options_snapshot(
     db: Session,
     provider: OptionsDataProvider,
     company: Company,
     earnings_date: date,
     as_of: datetime,
-    collection_offsets: tuple[int, ...] = DEFAULT_COLLECTION_OFFSETS,
-) -> list[OptionsSnapshot] | None:
-    """Fetches and persists a real options-chain snapshot for ``company``
-    ahead of ``earnings_date``, but only when ``as_of``'s date is exactly
-    one of ``collection_offsets`` calendar days before it (see
-    analytics/options/collection_schedule.py) -- this is what makes the T-14
-    /T-7/T-3/T-1 schedule real rather than "whenever this happens to run".
-    ``as_of`` is the single source of truth for "now": both the schedule
-    check and the persisted snapshot_timestamp derive from it, so a caller
-    can never end up scheduling against one clock and stamping data with
-    another.
-
-    Returns None -- fetching nothing, spending no API quota -- when today
-    isn't a scheduled collection day, or when a snapshot was already
-    collected for this company today (safe to call more than once a day,
-    e.g. if a scheduled run is retried). The caller is responsible for
-    letting the provider's own errors (e.g. PremiumEndpointRequiredError)
-    propagate -- this function never silently swallows a real fetch
-    failure.
-    """
-    today = as_of.date()
-    if not should_collect_snapshot(earnings_date, today, collection_offsets):
-        return None
-    if _already_collected_today(db, company.id, today):
-        return None
-
+) -> list[OptionsSnapshot]:
     # reference_date lets a bounded provider (e.g. IBKR, which can't return
     # a full chain -- see providers/ibkr_options.py) pick a sensible
     # expiration/strike window; providers that already return everything
@@ -278,6 +253,65 @@ def collect_forward_options_snapshot(
     db.add_all(rows)
     db.commit()
     return rows
+
+
+def collect_forward_options_snapshot(
+    db: Session,
+    provider: OptionsDataProvider,
+    company: Company,
+    earnings_date: date,
+    as_of: datetime,
+    collection_offsets: tuple[int, ...] = DEFAULT_COLLECTION_OFFSETS,
+) -> list[OptionsSnapshot] | None:
+    """Fetches and persists a real options-chain snapshot for ``company``
+    ahead of ``earnings_date``, but only when ``as_of``'s date is exactly
+    one of ``collection_offsets`` calendar days before it (see
+    analytics/options/collection_schedule.py) -- this is what makes the T-14
+    /T-7/T-3/T-1 schedule real rather than "whenever this happens to run".
+    ``as_of`` is the single source of truth for "now": both the schedule
+    check and the persisted snapshot_timestamp derive from it, so a caller
+    can never end up scheduling against one clock and stamping data with
+    another. Used by the daily collection cron (see
+    ingestion/collect_options_snapshots.py); on-demand research preparation
+    uses ``collect_options_snapshot_now`` instead, which isn't schedule-gated.
+
+    Returns None -- fetching nothing, spending no API quota -- when today
+    isn't a scheduled collection day, or when a snapshot was already
+    collected for this company today (safe to call more than once a day,
+    e.g. if a scheduled run is retried). The caller is responsible for
+    letting the provider's own errors (e.g. PremiumEndpointRequiredError)
+    propagate -- this function never silently swallows a real fetch
+    failure.
+    """
+    today = as_of.date()
+    if not should_collect_snapshot(earnings_date, today, collection_offsets):
+        return None
+    if _already_collected_today(db, company.id, today):
+        return None
+    return _fetch_and_persist_options_snapshot(db, provider, company, earnings_date, as_of)
+
+
+def collect_options_snapshot_now(
+    db: Session,
+    provider: OptionsDataProvider,
+    company: Company,
+    earnings_date: date,
+    as_of: datetime,
+) -> list[OptionsSnapshot] | None:
+    """Fetches and persists a real options-chain snapshot for ``company``
+    right now, regardless of the T-14/T-7/T-3/T-1 cron schedule -- for the
+    on-demand research-preparation pipeline (services/research_orchestration.py),
+    where the user's own request *is* the trigger, not a daily calendar
+    check. Still refuses to double-collect the same day (same dedup as
+    ``collect_forward_options_snapshot``), since a user re-preparing the
+    same ticker twice in one day shouldn't duplicate point-in-time
+    snapshots; the freshness-policy layer (analytics/research/freshness.py)
+    is what actually decides whether this gets called again.
+    """
+    today = as_of.date()
+    if _already_collected_today(db, company.id, today):
+        return None
+    return _fetch_and_persist_options_snapshot(db, provider, company, earnings_date, as_of)
 
 
 def has_any_options_data(db: Session) -> bool:

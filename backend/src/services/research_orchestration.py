@@ -1,0 +1,452 @@
+"""Executes the on-demand research-preparation pipeline for a single ticker
+(Phase 14) -- the backend half of "prepare/refresh research data", the
+first real step in the product's core workflow. Reuses existing
+per-company ingestion helpers (ingestion.bootstrap_phase1,
+ingestion.backfill_earnings_dates, ingestion.backfill_price_data,
+ingestion.ingest_filing_chunks, services.market_expectations,
+services.options_analytics) rather than rebuilding their logic -- this
+module's own job is orchestration and freshness-gated step tracking, not
+raw data fetching.
+
+Idempotent by construction: every step first checks
+``analytics.research.freshness`` against that data class's own persisted
+timestamp and skips the real fetch when data is already fresh, so calling
+this twice in a row for the same symbol makes at most one real network
+call per data class rather than one per call.
+"""
+
+import logging
+from collections.abc import Callable
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from typing import Any
+
+from sqlalchemy import func
+from sqlalchemy.orm import Session
+
+from analytics.research.freshness import DataClass, assess_freshness, needs_refresh
+from ingestion.backfill_earnings_dates import _backfill_earnings_dates, _backfill_period_end_dates
+from ingestion.backfill_price_data import (
+    MARKET_TICKER,
+    SECTOR_TICKER,
+    _backfill_snapshots,
+    _ingest_price_bars,
+    _load_close_series,
+)
+from ingestion.bootstrap_phase1 import (
+    _FP_TO_QUARTER,
+    _index_by_period,
+    _upsert_company,
+    _upsert_earnings_event_and_result,
+    _upsert_filing,
+)
+from ingestion.ingest_filing_chunks import ingest_filing
+from models.company import Company
+from models.document_chunk import DocumentChunk
+from models.earnings_estimate_snapshot import EarningsEstimateSnapshot
+from models.earnings_event import EarningsEvent
+from models.earnings_result import EarningsResult
+from models.filing import Filing
+from models.options_snapshot import OptionsSnapshot
+from models.price_bar import PriceBar
+from models.price_reaction import PriceReaction
+from models.research_preparation_job import (
+    REQUIRED_STEPS,
+    JobStatus,
+    PreparationStep,
+    ResearchPreparationJob,
+    StepStatus,
+)
+from providers.base import EarningsEstimatesProvider, MarketDataProvider, OptionsDataProvider
+from providers.sec_edgar import SECEdgarProvider
+from rag.embeddings import EmbeddingProvider
+from services.market_expectations import (
+    collect_next_earnings_estimate,
+    get_latest_earnings_estimate,
+)
+from services.options_analytics import (
+    collect_options_snapshot_now,
+    compute_and_persist_volatility_snapshot,
+    get_implied_vs_realized_moves,
+)
+from services.symbol_resolution import SymbolResolution, resolve_symbol
+
+log = logging.getLogger("research_orchestration")
+
+
+class UnsupportedSymbolError(Exception):
+    """Raised when ``resolve_symbol`` reports a ticker this project cannot
+    honestly research -- the caller (API layer) is expected to turn this
+    into a clear 4xx response, never a fabricated result."""
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
+
+
+@dataclass
+class ResearchProviders:
+    edgar: SECEdgarProvider
+    market_data: MarketDataProvider
+    estimates: EarningsEstimatesProvider | None
+    options: OptionsDataProvider | None
+    embedder: EmbeddingProvider
+
+
+_StepResult = tuple[StepStatus, str | None]
+
+
+def _step_record(
+    step: PreparationStep, status: StepStatus, detail: str | None, now: datetime
+) -> dict[str, Any]:
+    return {
+        "step": step.value,
+        "status": status.value,
+        "detail": detail,
+        "updated_at": now.isoformat(),
+    }
+
+
+def _set_step(
+    db: Session,
+    job: ResearchPreparationJob,
+    step: PreparationStep,
+    status: StepStatus,
+    detail: str | None,
+    now: datetime,
+) -> None:
+    steps = list(job.steps)
+    for i, s in enumerate(steps):
+        if s["step"] == step.value:
+            steps[i] = _step_record(step, status, detail, now)
+            break
+    job.steps = steps
+    db.add(job)
+    db.commit()
+
+
+def _fail_job(
+    db: Session, job: ResearchPreparationJob, step: PreparationStep, exc: Exception
+) -> ResearchPreparationJob:
+    now = datetime.now(UTC)
+    detail = str(exc)[:500]
+    _set_step(db, job, step, StepStatus.FAILED, detail, now)
+    job.status = JobStatus.FAILED
+    job.error = f"{step.value}: {detail}"[:500]
+    job.completed_at = now
+    db.add(job)
+    db.commit()
+    log.error("%s: required step %s failed: %s", job.ticker, step.value, detail)
+    return job
+
+
+def _historical_earnings_last_updated(db: Session, company_id: int) -> datetime | None:
+    return (
+        db.query(func.max(EarningsResult.retrieved_at))
+        .join(EarningsEvent, EarningsResult.earnings_event_id == EarningsEvent.id)
+        .filter(EarningsEvent.company_id == company_id)
+        .scalar()
+    )
+
+
+def _price_history_last_updated(db: Session, ticker: str) -> datetime | None:
+    return db.query(func.max(PriceBar.retrieved_at)).filter(PriceBar.ticker == ticker).scalar()
+
+
+def _sec_filings_last_updated(db: Session, company_id: int) -> datetime | None:
+    return db.query(func.max(Filing.retrieved_at)).filter(Filing.company_id == company_id).scalar()
+
+
+def _earnings_estimates_last_updated(db: Session, company_id: int) -> datetime | None:
+    return (
+        db.query(func.max(EarningsEstimateSnapshot.retrieved_at))
+        .filter(EarningsEstimateSnapshot.company_id == company_id)
+        .scalar()
+    )
+
+
+def _options_chain_last_updated(db: Session, company_id: int) -> datetime | None:
+    return (
+        db.query(func.max(OptionsSnapshot.retrieved_at))
+        .filter(OptionsSnapshot.company_id == company_id)
+        .scalar()
+    )
+
+
+def _prepare_historical_earnings(
+    db: Session, edgar: SECEdgarProvider, company: Company, as_of: datetime
+) -> _StepResult:
+    if company.cik is None:
+        return StepStatus.SKIPPED, "no CIK on record"
+    status = assess_freshness(
+        DataClass.HISTORICAL_EARNINGS, _historical_earnings_last_updated(db, company.id), as_of
+    )
+    if not needs_refresh(status):
+        return StepStatus.DONE, "already fresh, reused existing data"
+
+    facts = edgar.get_company_facts(company.cik)
+    eps_by_period = _index_by_period(facts.eps_diluted)
+    revenue_by_period = _index_by_period(facts.revenues)
+    updated = 0
+    for (fiscal_year, fp), eps_value in sorted(eps_by_period.items()):
+        fiscal_quarter = _FP_TO_QUARTER.get(fp)
+        if fiscal_quarter is None:
+            continue
+        revenue_value = revenue_by_period.get((fiscal_year, fp))
+        _upsert_earnings_event_and_result(
+            db, company, fiscal_year, fiscal_quarter, eps_value, revenue_value
+        )
+        updated += 1
+    db.commit()
+
+    _backfill_period_end_dates(db, edgar, company)
+    _backfill_earnings_dates(db, edgar, company)
+    return StepStatus.DONE, f"{updated} reported quarters on record"
+
+
+def _prepare_price_history(
+    db: Session, market_data: MarketDataProvider, company: Company, as_of: datetime
+) -> _StepResult:
+    status = assess_freshness(
+        DataClass.PRICE_HISTORY, _price_history_last_updated(db, company.ticker), as_of
+    )
+    if not needs_refresh(status):
+        return StepStatus.DONE, "already fresh, reused existing data"
+
+    _ingest_price_bars(db, market_data, MARKET_TICKER)
+    # SOXX is a semiconductor-sector benchmark -- only meaningful for the
+    # companies actually in that sector. For everyone else, sector_return
+    # honestly stays null rather than reusing a benchmark that doesn't fit.
+    has_sector_benchmark = company.sector == "Semiconductors"
+    if has_sector_benchmark:
+        _ingest_price_bars(db, market_data, SECTOR_TICKER)
+    count = _ingest_price_bars(db, market_data, company.ticker)
+
+    ticker_bars = _load_close_series(db, company.ticker)
+    market_bars = _load_close_series(db, MARKET_TICKER)
+    sector_bars = _load_close_series(db, SECTOR_TICKER) if has_sector_benchmark else {}
+    updated = _backfill_snapshots(db, company, ticker_bars, market_bars, sector_bars)
+    return StepStatus.DONE, f"{count} daily bars, {updated} earnings-reaction snapshots"
+
+
+def _prepare_earnings_estimates(
+    db: Session, estimates: EarningsEstimatesProvider | None, company: Company, as_of: datetime
+) -> _StepResult:
+    if estimates is None:
+        return StepStatus.SKIPPED, "no earnings-estimates provider configured"
+    status = assess_freshness(
+        DataClass.EARNINGS_ESTIMATES, _earnings_estimates_last_updated(db, company.id), as_of
+    )
+    if not needs_refresh(status):
+        return StepStatus.DONE, "already fresh, reused existing data"
+    row = collect_next_earnings_estimate(db, estimates, company)
+    if row is None:
+        return StepStatus.SKIPPED, "provider has no upcoming earnings date"
+    return StepStatus.DONE, f"next report ~{row.estimated_report_date}"
+
+
+def _prepare_sec_filings(
+    db: Session, edgar: SECEdgarProvider, company: Company, as_of: datetime
+) -> _StepResult:
+    if company.cik is None:
+        return StepStatus.SKIPPED, "no CIK on record"
+    status = assess_freshness(
+        DataClass.SEC_FILINGS, _sec_filings_last_updated(db, company.id), as_of
+    )
+    if not needs_refresh(status):
+        return StepStatus.DONE, "already fresh, reused existing data"
+    filings = edgar.search_filings(company.cik, filing_types=["10-K", "10-Q"], limit=4)
+    for meta in filings:
+        _upsert_filing(db, company, meta)
+    db.commit()
+    return StepStatus.DONE, f"{len(filings)} recent 10-K/10-Q filings on record"
+
+
+def _prepare_filing_embeddings(
+    db: Session, edgar: SECEdgarProvider, embedder: EmbeddingProvider, company: Company
+) -> _StepResult:
+    company_filings = db.query(Filing).filter(Filing.company_id == company.id).all()
+    if not company_filings:
+        return StepStatus.SKIPPED, "no filings on record yet"
+    chunked_filing_ids = {
+        row[0]
+        for row in db.query(DocumentChunk.filing_id)
+        .filter(DocumentChunk.company_id == company.id)
+        .distinct()
+        .all()
+    }
+    targets = [f for f in company_filings if f.id not in chunked_filing_ids]
+    if not targets:
+        return StepStatus.DONE, "already fresh, reused existing data"
+    total_chunks = 0
+    for filing in targets:
+        total_chunks += ingest_filing(db, edgar, embedder, filing)
+    return StepStatus.DONE, f"{total_chunks} chunks across {len(targets)} filings"
+
+
+def _prepare_options_chain(
+    db: Session, options: OptionsDataProvider | None, company: Company, as_of: datetime
+) -> _StepResult:
+    if options is None:
+        return StepStatus.SKIPPED, "no options-data provider configured"
+    estimate = get_latest_earnings_estimate(db, company.id)
+    if estimate is None or estimate.estimated_report_date is None:
+        return StepStatus.SKIPPED, "no known upcoming earnings date to anchor a chain to"
+
+    status = assess_freshness(
+        DataClass.OPTIONS_CHAIN, _options_chain_last_updated(db, company.id), as_of
+    )
+    if not needs_refresh(status):
+        return StepStatus.DONE, "already fresh, reused existing data"
+
+    snapshots = collect_options_snapshot_now(
+        db, options, company, estimate.estimated_report_date, as_of
+    )
+    if not snapshots:
+        return StepStatus.SKIPPED, "provider returned no contracts"
+    compute_and_persist_volatility_snapshot(db, company, estimate.estimated_report_date)
+    return StepStatus.DONE, f"{len(snapshots)} option quotes"
+
+
+def _prepare_earnings_analysis(db: Session, company: Company) -> _StepResult:
+    comparisons = get_implied_vs_realized_moves(db, company.id)
+    if comparisons:
+        return StepStatus.DONE, f"{len(comparisons)} implied-vs-realized move comparisons available"
+    has_history = (
+        db.query(PriceReaction.id)
+        .join(EarningsEvent, PriceReaction.earnings_event_id == EarningsEvent.id)
+        .filter(EarningsEvent.company_id == company.id)
+        .first()
+        is not None
+    )
+    if has_history:
+        return StepStatus.DONE, "historical price-reaction data available"
+    return StepStatus.SKIPPED, "not enough data yet for earnings analysis"
+
+
+def prepare_company_research(
+    db: Session,
+    symbol: str,
+    providers: ResearchProviders,
+    now: datetime | None = None,
+) -> ResearchPreparationJob:
+    """Runs the full on-demand preparation pipeline for ``symbol`` and
+    returns the finished (or failed) job row. Raises ``UnsupportedSymbolError``
+    before creating any job row at all when the symbol itself can't be
+    honestly researched (see services.symbol_resolution) -- an unsupported
+    ticker never gets a job, a company, or any other trace in the database.
+    """
+    as_of = now if now is not None else datetime.now(UTC)
+    resolution: SymbolResolution = resolve_symbol(db, providers.edgar, symbol)
+    if not resolution.supported:
+        raise UnsupportedSymbolError(resolution.reason or f"{symbol!r} is not supported")
+
+    job = ResearchPreparationJob(
+        ticker=resolution.ticker,
+        company_id=resolution.existing_company.id if resolution.existing_company else None,
+        status=JobStatus.RUNNING,
+        steps=[_step_record(s, StepStatus.PENDING, None, as_of) for s in PreparationStep],
+        started_at=as_of,
+    )
+    db.add(job)
+    db.commit()
+
+    try:
+        if resolution.existing_company is not None:
+            company = resolution.existing_company
+            _set_step(
+                db,
+                job,
+                PreparationStep.COMPANY_IDENTIFIED,
+                StepStatus.DONE,
+                "already on record",
+                as_of,
+            )
+        else:
+            assert resolution.cik is not None  # guaranteed by resolve_symbol when supported and new
+            facts = providers.edgar.get_company_facts(resolution.cik)
+            company = _upsert_company(
+                db, resolution.ticker, resolution.cik, facts.entity_name or resolution.ticker
+            )
+            db.commit()
+            _set_step(
+                db,
+                job,
+                PreparationStep.COMPANY_IDENTIFIED,
+                StepStatus.DONE,
+                f"created new company record ({company.name})",
+                as_of,
+            )
+    except Exception as exc:  # noqa: BLE001 -- boundary: any failure here must degrade the job, never crash the caller
+        return _fail_job(db, job, PreparationStep.COMPANY_IDENTIFIED, exc)
+
+    job.company_id = company.id
+    db.add(job)
+    db.commit()
+
+    steps: list[tuple[PreparationStep, bool, Callable[[], _StepResult]]] = [
+        (
+            PreparationStep.HISTORICAL_EARNINGS,
+            True,
+            lambda: _prepare_historical_earnings(db, providers.edgar, company, as_of),
+        ),
+        (
+            PreparationStep.PRICE_HISTORY,
+            True,
+            lambda: _prepare_price_history(db, providers.market_data, company, as_of),
+        ),
+        (
+            PreparationStep.EARNINGS_ESTIMATES,
+            False,
+            lambda: _prepare_earnings_estimates(db, providers.estimates, company, as_of),
+        ),
+        (
+            PreparationStep.SEC_FILINGS,
+            False,
+            lambda: _prepare_sec_filings(db, providers.edgar, company, as_of),
+        ),
+        (
+            PreparationStep.FILING_EMBEDDINGS,
+            False,
+            lambda: _prepare_filing_embeddings(db, providers.edgar, providers.embedder, company),
+        ),
+        (
+            PreparationStep.OPTIONS_CHAIN,
+            False,
+            lambda: _prepare_options_chain(db, providers.options, company, as_of),
+        ),
+        (
+            PreparationStep.EARNINGS_ANALYSIS,
+            False,
+            lambda: _prepare_earnings_analysis(db, company),
+        ),
+    ]
+
+    warnings = False
+    for step, required, fn in steps:
+        try:
+            status, detail = fn()
+        except Exception as exc:  # noqa: BLE001 -- boundary: one step's real failure must not crash the run
+            if required:
+                return _fail_job(db, job, step, exc)
+            detail = str(exc)[:500]
+            _set_step(db, job, step, StepStatus.FAILED, detail, datetime.now(UTC))
+            warnings = True
+            log.warning("%s: optional step %s failed: %s", resolution.ticker, step.value, detail)
+            continue
+        _set_step(db, job, step, status, detail, datetime.now(UTC))
+        if status == StepStatus.FAILED:
+            warnings = True
+
+    job.status = JobStatus.COMPLETED_WITH_WARNINGS if warnings else JobStatus.COMPLETED
+    job.completed_at = datetime.now(UTC)
+    db.add(job)
+    db.commit()
+    return job
+
+
+assert REQUIRED_STEPS == {
+    PreparationStep.COMPANY_IDENTIFIED,
+    PreparationStep.HISTORICAL_EARNINGS,
+    PreparationStep.PRICE_HISTORY,
+}, "prepare_company_research's hardcoded `required` flags above must match REQUIRED_STEPS"

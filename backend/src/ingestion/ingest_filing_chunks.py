@@ -21,7 +21,7 @@ from models.document_chunk import DocumentChunk
 from models.filing import Filing
 from providers.sec_edgar import SECEdgarProvider
 from rag.chunking import chunk_sections
-from rag.embeddings import FastEmbedProvider
+from rag.embeddings import EmbeddingProvider, FastEmbedProvider
 from rag.parsing import html_to_text, split_into_sections
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -35,7 +35,7 @@ def _filings_without_chunks(db: Session) -> list[Filing]:
 
 
 def ingest_filing(
-    db: Session, edgar: SECEdgarProvider, embedder: FastEmbedProvider, filing: Filing
+    db: Session, edgar: SECEdgarProvider, embedder: EmbeddingProvider, filing: Filing
 ) -> int:
     html = edgar.get_filing_html(filing.source_url)
     text = html_to_text(html)

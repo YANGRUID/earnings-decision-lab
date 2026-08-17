@@ -38,10 +38,12 @@ TICKERS = ["NVDA", "AMD", "MU", "SNDK"]
 _FP_TO_QUARTER = {"Q1": 1, "Q2": 2, "Q3": 3}
 
 
-def _upsert_company(db: Session, ticker: str, cik: str, name: str) -> Company:
+def _upsert_company(
+    db: Session, ticker: str, cik: str, name: str, sector: str | None = None
+) -> Company:
     company = db.query(Company).filter(Company.ticker == ticker).one_or_none()
     if company is None:
-        company = Company(ticker=ticker, name=name, cik=cik, sector="Semiconductors")
+        company = Company(ticker=ticker, name=name, cik=cik, sector=sector)
         db.add(company)
         db.flush()
         log.info("created company %s (cik=%s)", ticker, cik)
@@ -138,7 +140,9 @@ def main() -> None:
                 continue
 
             facts = provider.get_company_facts(cik)
-            company = _upsert_company(db, ticker, cik, facts.entity_name or ticker)
+            company = _upsert_company(
+                db, ticker, cik, facts.entity_name or ticker, sector="Semiconductors"
+            )
 
             eps_by_period = _index_by_period(facts.eps_diluted)
             revenue_by_period = _index_by_period(facts.revenues)
