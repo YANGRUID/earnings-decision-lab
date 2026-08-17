@@ -51,6 +51,8 @@ def _seed_option_quote(
     bid: Decimal,
     ask: Decimal,
     iv: Decimal | None = None,
+    open_interest: int | None = None,
+    volume: int | None = None,
     snapshot_timestamp: datetime = SNAPSHOT_TS,
 ) -> None:
     db_session.add(
@@ -63,6 +65,8 @@ def _seed_option_quote(
             bid=bid,
             ask=ask,
             implied_volatility=iv,
+            open_interest=open_interest,
+            volume=volume,
             source_provider="test",
             retrieved_at=snapshot_timestamp,
         )
@@ -161,9 +165,76 @@ class TestComputeAndPersistVolatilitySnapshot:
         assert row.inputs["atm_iv_method"] == "average_of_call_and_put_iv"
         assert row.inputs["atm_iv_diverges"] is False
         assert row.snapshot_timestamp == SNAPSHOT_TS
+        # Only one forward expiration on record -- no term structure or
+        # ratios to compute without open_interest/volume data.
+        assert row.next_term_expiration is None
+        assert row.atm_iv_next is None
+        assert row.term_structure_slope is None
+        assert row.put_call_open_interest_ratio is None
+        assert row.put_call_volume_ratio is None
 
         persisted = db_session.query(VolatilitySnapshot).filter_by(company_id=company.id).all()
         assert len(persisted) == 1
+
+    def test_persists_term_structure_and_put_call_ratios_when_data_supports_them(self, db_session):
+        company = _seed_company(db_session)
+        next_exp = date(2025, 10, 17)
+        _seed_price_bar(db_session, company.ticker, date(2025, 9, 12), Decimal("114.50"))
+        _seed_option_quote(
+            db_session,
+            company,
+            expiration=NEAR_EXP,
+            strike=Decimal("115"),
+            option_type=OptionType.CALL,
+            bid=Decimal("4.20"),
+            ask=Decimal("4.40"),
+            iv=Decimal("0.40"),
+            open_interest=1000,
+            volume=400,
+        )
+        _seed_option_quote(
+            db_session,
+            company,
+            expiration=NEAR_EXP,
+            strike=Decimal("115"),
+            option_type=OptionType.PUT,
+            bid=Decimal("4.00"),
+            ask=Decimal("4.20"),
+            iv=Decimal("0.42"),
+            open_interest=1500,
+            volume=600,
+        )
+        _seed_option_quote(
+            db_session,
+            company,
+            expiration=next_exp,
+            strike=Decimal("115"),
+            option_type=OptionType.CALL,
+            bid=Decimal("6.00"),
+            ask=Decimal("6.20"),
+            iv=Decimal("0.50"),
+        )
+        _seed_option_quote(
+            db_session,
+            company,
+            expiration=next_exp,
+            strike=Decimal("115"),
+            option_type=OptionType.PUT,
+            bid=Decimal("5.80"),
+            ask=Decimal("6.00"),
+            iv=Decimal("0.52"),
+        )
+
+        row = compute_and_persist_volatility_snapshot(db_session, company, EARNINGS_DATE)
+
+        assert row is not None
+        assert row.near_term_expiration == NEAR_EXP
+        assert row.next_term_expiration == next_exp
+        assert row.atm_iv_near == Decimal("0.41")
+        assert row.atm_iv_next == Decimal("0.51")
+        assert row.term_structure_slope == Decimal("0.10")
+        assert row.put_call_open_interest_ratio == Decimal("1500") / Decimal("1000")
+        assert row.put_call_volume_ratio == Decimal("600") / Decimal("400")
 
     def test_uses_most_recent_snapshot_timestamp_when_multiple_exist(self, db_session):
         company = _seed_company(db_session)

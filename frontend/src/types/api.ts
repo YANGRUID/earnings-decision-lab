@@ -53,9 +53,14 @@ export interface EarningsEstimate {
 export interface VolatilitySnapshot {
   method: string;
   near_term_expiration: string | null;
+  next_term_expiration: string | null;
   atm_iv_near: string | null;
+  atm_iv_next: string | null;
+  term_structure_slope: string | null;
   implied_move_pct: string | null;
   implied_move_absolute: string | null;
+  put_call_open_interest_ratio: string | null;
+  put_call_volume_ratio: string | null;
   inputs: Record<string, unknown> | null;
   snapshot_timestamp: string;
   computed_at: string;

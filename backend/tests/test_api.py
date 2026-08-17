@@ -239,9 +239,14 @@ def test_get_earnings_event_shows_implied_move_for_most_recent_event(client, db_
             snapshot_timestamp=datetime(2026, 3, 10, tzinfo=UTC),
             method="atm_straddle",
             near_term_expiration=date(2026, 3, 20),
+            next_term_expiration=date(2026, 4, 17),
             atm_iv_near=Decimal("0.51"),
+            atm_iv_next=Decimal("0.55"),
+            term_structure_slope=Decimal("0.04"),
             implied_move_pct=Decimal("0.0734"),
             implied_move_absolute=Decimal("8.40"),
+            put_call_open_interest_ratio=Decimal("1.20"),
+            put_call_volume_ratio=Decimal("0.90"),
             inputs={"method": "atm_straddle"},
             computed_at=datetime.now(UTC),
         )
@@ -254,6 +259,9 @@ def test_get_earnings_event_shows_implied_move_for_most_recent_event(client, db_
     body = response.json()
     assert body["implied_move"]["method"] == "atm_straddle"
     assert body["implied_move"]["implied_move_absolute"] == "8.400000"
+    assert body["implied_move"]["next_term_expiration"] == "2026-04-17"
+    assert body["implied_move"]["term_structure_slope"] == "0.040000"
+    assert body["implied_move"]["put_call_open_interest_ratio"] == "1.200000"
 
 
 def test_get_earnings_event_omits_implied_move_for_older_event(client, db_session):

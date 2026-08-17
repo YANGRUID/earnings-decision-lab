@@ -47,6 +47,10 @@ class VolatilitySnapshot(TimestampMixin, Base):
     iv_percentile: Mapped[Decimal | None] = mapped_column(NUM)
     implied_move_pct: Mapped[Decimal | None] = mapped_column(NUM)
     implied_move_absolute: Mapped[Decimal | None] = mapped_column(NUM)
+    # Plain arithmetic on stored quotes, never a directional sentiment
+    # label -- see analytics/options/sentiment.py.
+    put_call_open_interest_ratio: Mapped[Decimal | None] = mapped_column(NUM)
+    put_call_volume_ratio: Mapped[Decimal | None] = mapped_column(NUM)
 
     inputs: Mapped[dict | None] = mapped_column(JSON)
     computed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))

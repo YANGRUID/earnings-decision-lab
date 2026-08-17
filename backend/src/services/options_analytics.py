@@ -26,6 +26,11 @@ from analytics.options.implied_move import (
     calculate_atm_straddle_implied_move,
     select_expiration_after,
 )
+from analytics.options.sentiment import (
+    iv_term_structure,
+    put_call_open_interest_ratio,
+    put_call_volume_ratio,
+)
 from models.company import Company
 from models.options_snapshot import OptionsSnapshot
 from models.price_bar import PriceBar
@@ -142,14 +147,32 @@ def compute_and_persist_volatility_snapshot(
     if iv.put_iv is not None:
         inputs["put_iv"] = str(iv.put_iv)
 
+    # IV term structure and put/call ratios are computed on a best-effort
+    # basis -- a chain with only one forward expiration, or with no
+    # open_interest/volume reported, still yields a real implied move and
+    # ATM IV; these fields just stay null rather than blocking the whole
+    # snapshot.
+    next_expiration = select_expiration_after(available_expirations, expiration)
+    atm_iv_next = None
+    term_structure_slope = None
+    if next_expiration is not None:
+        term_structure = iv_term_structure(quotes, expiration, next_expiration, underlying_price)
+        atm_iv_next = term_structure.next_atm_iv
+        term_structure_slope = term_structure.slope
+
     row = VolatilitySnapshot(
         company_id=company.id,
         snapshot_timestamp=snapshot_timestamp,
         method=move.method,
         near_term_expiration=expiration,
+        next_term_expiration=next_expiration,
         atm_iv_near=iv.atm_iv,
+        atm_iv_next=atm_iv_next,
+        term_structure_slope=term_structure_slope,
         implied_move_pct=move.implied_move_pct,
         implied_move_absolute=move.implied_move_absolute,
+        put_call_open_interest_ratio=put_call_open_interest_ratio(quotes),
+        put_call_volume_ratio=put_call_volume_ratio(quotes),
         inputs=inputs,
         computed_at=computed_at,
     )

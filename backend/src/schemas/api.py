@@ -76,9 +76,16 @@ class VolatilitySnapshotResponse(BaseModel):
 
     method: str
     near_term_expiration: date | None
+    next_term_expiration: date | None
     atm_iv_near: Decimal | None
+    atm_iv_next: Decimal | None
+    term_structure_slope: Decimal | None
     implied_move_pct: Decimal | None
     implied_move_absolute: Decimal | None
+    # Plain arithmetic on stored quotes, never a directional sentiment
+    # label -- see analytics/options/sentiment.py.
+    put_call_open_interest_ratio: Decimal | None
+    put_call_volume_ratio: Decimal | None
     inputs: dict | None
     snapshot_timestamp: datetime
     computed_at: datetime
