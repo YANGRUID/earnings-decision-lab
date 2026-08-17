@@ -3,6 +3,23 @@
 Honest accounting of gaps, updated as each phase lands. Nothing here is hidden in code
 comments only — anything that affects what the system can honestly claim is listed here.
 
+## Backend API (Phase 8)
+
+- **No authentication.** Intentional for a personal, locally-run research tool — see
+  [engineering_decisions.md](engineering_decisions.md). Not suitable to expose publicly as-is.
+- **Rate limiting is in-process and global**, not per-client or distributed. Fine for a single
+  developer running one instance; would need a real store (Redis) behind a real auth layer
+  before this could serve multiple users.
+- **`httpx` is deprecated in favor of `httpx2`** (confirmed live, not assumed — Starlette's
+  `TestClient` now warns on plain `httpx`). This project's entire provider layer (SEC EDGAR,
+  Tiingo, Alpha Vantage, all four LLM adapters) is built on `httpx.Client` directly. A full
+  migration is a real, scoped follow-up — deliberately not done reactively mid-phase without
+  verifying `pytest-httpx` (used throughout this project's provider tests) actually supports
+  `httpx2` yet. `httpx` remains functionally supported today, just deprecated.
+- **`/api/v1/evaluations` doesn't exist yet** — deferred until Phase 9 actually has real
+  evaluation results to serve; adding the endpoint first would mean either an empty stub or a
+  contract that has to change once real data exists.
+
 ## Data coverage (Phase 7)
 
 - **Single-round tool-calling, not a full multi-turn ReAct loop.** The planner can request

@@ -289,6 +289,8 @@ available — see docs/data_sources.md). The schema's `null`-when-absent design 
 up as an honest empty result instead of a plausible-looking fabricated number, which is exactly
 what it's for.
 
+## Phase 7
+
 **Why is planning two genuinely different code paths (native tool-calling vs. a structured
 planner) instead of always using the structured planner for consistency?** Native tool-calling
 is the better-fitting mechanism when a provider supports it — the model can request multiple
@@ -344,4 +346,45 @@ before the fix, the two indexes were manually recreated to match what the correc
 produces — verified so a fresh database and this development database end up in the identical
 state.
 
-## Phase 7
+## Phase 8 (backend)
+
+**Why does `/options/strategies/payoff` and `/options/implied-move` accept the exact same
+Pydantic models (`OptionsPayoffArgs`, `ImpliedMoveArgs`) already defined for the Phase 7 agent
+tools, instead of separate API request schemas?** The shape genuinely doesn't differ between
+"an LLM tool call" and "an HTTP POST body" — both are just validated structured input to the
+same deterministic calculator. Defining a second, parallel schema would be duplication with no
+behavioral difference, and a future field added to one would silently drift from the other.
+
+**Why a hand-rolled in-memory sliding-window rate limiter for `/research/query` instead of a
+library (e.g. `slowapi`) or a distributed store (Redis)?** This is a single-developer personal
+research tool with no auth layer and no multi-instance deployment — a distributed limiter would
+solve a problem this project doesn't have. The actual goal is a cost guardrail on the one
+endpoint that runs several real LLM calls per request; a ~20-line sliding window over a
+`deque` does that without a new dependency, and is honest about only working within one
+process (documented in `api/rate_limit.py`, not left to be discovered).
+
+**Why no authentication layer?** Per this project's own scope: it's a personal research tool
+run locally, not a multi-tenant service. Adding real auth (sessions, JWTs, user accounts) would
+be meaningful unshipped complexity solving a problem — protecting one user's data from other
+users — that doesn't exist yet. If this were ever deployed for others to use, auth would be a
+prerequisite, not an afterthought; today it would only be security theater.
+
+**Why manually wired exception handlers (`NotFoundError`, `RateLimitedError`, `LLMError`,
+generic `Exception`) instead of letting FastAPI's default error responses stand?** A caller
+(this project's own future frontend, or anyone else) needs a stable, typed error shape
+(`{error, request_id}`) to build real error handling against — FastAPI's default validation
+error body is a different shape from an unhandled-exception traceback, which is a different
+shape again. Normalizing all of them to one envelope, and logging the exception server-side by
+`request_id` rather than leaking a traceback to the client, is the actual point of a typed API.
+
+**A real finding, deliberately not acted on yet:** running the API test suite surfaced a
+`StarletteDeprecationWarning` — Starlette's `TestClient` now prefers `httpx2` over `httpx` (the
+library this entire project's provider layer is built on: every adapter from Phase 1's SEC
+EDGAR client through Phase 7's LLM providers uses `httpx.Client` directly), and treats plain
+`httpx` as deprecated as of 2026. Verified this is real (not a stale/misleading warning) via a
+live search, not assumed. A full migration to `httpx2` would touch every provider adapter and
+their mocked tests (`pytest-httpx`'s `httpx2` compatibility wasn't verified) — a large,
+cross-cutting change with real regression risk to already-verified, real functionality across
+six phases. Deliberately deferred as a tracked follow-up (see docs/limitations.md) rather than
+done reactively mid-phase without full test coverage for the new library, or silently ignored.
+
