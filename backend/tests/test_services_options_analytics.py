@@ -8,7 +8,10 @@ from models.options_snapshot import OptionsSnapshot
 from models.price_bar import PriceBar
 from models.price_reaction import PriceReaction
 from models.volatility_snapshot import VolatilitySnapshot
+from providers.base import OptionsDataProvider
+from providers.types import OptionQuote
 from services.options_analytics import (
+    collect_forward_options_snapshot,
     compute_and_persist_volatility_snapshot,
     get_implied_vs_realized_moves,
     get_latest_volatility_snapshot,
@@ -18,6 +21,31 @@ SNAPSHOT_TS = datetime(2025, 9, 15, 15, 0, tzinfo=UTC)
 EARNINGS_DATE = date(2025, 9, 22)
 NEAR_EXP = date(2025, 9, 26)
 FAR_EXP = date(2025, 9, 19)  # before earnings -- must never be selected
+
+
+class _StubOptionsProvider(OptionsDataProvider):
+    def __init__(self, quotes: list[OptionQuote]) -> None:
+        self._quotes = quotes
+        self.call_count = 0
+
+    def get_option_chain(self, ticker, as_of, expiration=None):
+        self.call_count += 1
+        return self._quotes
+
+
+def _stub_quote(ticker: str, strike: Decimal, option_type: str) -> OptionQuote:
+    now = datetime.now(UTC)
+    return OptionQuote(
+        ticker=ticker,
+        snapshot_timestamp=now,
+        expiration_date=NEAR_EXP,
+        strike=strike,
+        option_type=option_type,
+        bid=Decimal("4.00"),
+        ask=Decimal("4.20"),
+        source_provider="test",
+        retrieved_at=now,
+    )
 
 
 def _seed_company(db_session, ticker: str = "ZZOPT1") -> Company:
@@ -442,3 +470,57 @@ class TestGetImpliedVsRealizedMoves:
         assert len(results) == 2
         assert results[0].snapshot_timestamp == earlier_ts
         assert results[1].snapshot_timestamp == SNAPSHOT_TS
+
+
+class TestCollectForwardOptionsSnapshot:
+    def test_does_not_fetch_when_today_is_not_a_scheduled_collection_day(self, db_session):
+        company = _seed_company(db_session)
+        provider = _StubOptionsProvider([_stub_quote(company.ticker, Decimal("115"), "call")])
+        off_schedule_as_of = datetime(2025, 9, 10, 15, 0, tzinfo=UTC)
+
+        result = collect_forward_options_snapshot(
+            db_session, provider, company, EARNINGS_DATE, off_schedule_as_of
+        )
+
+        assert result is None
+        assert provider.call_count == 0
+        assert db_session.query(OptionsSnapshot).count() == 0
+
+    def test_fetches_and_persists_on_a_scheduled_collection_day(self, db_session):
+        company = _seed_company(db_session)
+        quotes = [
+            _stub_quote(company.ticker, Decimal("115"), "call"),
+            _stub_quote(company.ticker, Decimal("115"), "put"),
+        ]
+        provider = _StubOptionsProvider(quotes)
+        t_minus_7 = datetime(2025, 9, 15, 15, 0, tzinfo=UTC)  # EARNINGS_DATE - 7 days
+
+        result = collect_forward_options_snapshot(
+            db_session, provider, company, EARNINGS_DATE, t_minus_7
+        )
+
+        assert result is not None
+        assert len(result) == 2
+        assert provider.call_count == 1
+        persisted = db_session.query(OptionsSnapshot).filter_by(company_id=company.id).all()
+        assert len(persisted) == 2
+        assert persisted[0].snapshot_timestamp == t_minus_7
+
+    def test_does_not_refetch_if_already_collected_today(self, db_session):
+        company = _seed_company(db_session)
+        provider = _StubOptionsProvider([_stub_quote(company.ticker, Decimal("115"), "call")])
+        t_minus_1_morning = datetime(2025, 9, 21, 9, 0, tzinfo=UTC)  # EARNINGS_DATE - 1 day
+        t_minus_1_afternoon = datetime(2025, 9, 21, 16, 0, tzinfo=UTC)
+
+        first = collect_forward_options_snapshot(
+            db_session, provider, company, EARNINGS_DATE, t_minus_1_morning
+        )
+        second = collect_forward_options_snapshot(
+            db_session, provider, company, EARNINGS_DATE, t_minus_1_afternoon
+        )
+
+        assert first is not None
+        assert len(first) == 1
+        assert second is None
+        assert provider.call_count == 1
+        assert db_session.query(OptionsSnapshot).filter_by(company_id=company.id).count() == 1
