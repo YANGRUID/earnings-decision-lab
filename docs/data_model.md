@@ -97,6 +97,17 @@ reference tickers that aren't in the `company` table.
 **Status:** live — 25,046 real daily bars across NVDA/AMD/MU/SNDK/SPY/SOXX from Tiingo,
 2007-01-03 to present (SNDK from its 2025 spin-off date).
 
+### `strategy_replay` (added Phase 4)
+**Grain:** one row per `(earnings_event, strategy_name, strike_selection_rule)` — a
+deterministic reconstruction of an options strategy entered before a historical earnings event.
+**Keys:** `id` PK; `earnings_event_id` FK, indexed.
+`legs` and `breakevens` are stored as JSON for full auditability of exactly which
+strikes/premiums/rule produced the result — see
+[earnings_methodology.md](earnings_methodology.md).
+**Status:** table and engine (`analytics/options/replay.py`) exist and are unit-tested; **no
+rows exist yet** — there is no historical options-chain data to reconstruct a real strategy
+from (see [limitations.md](limitations.md)).
+
 ### `filing`
 **Grain:** one row per SEC filing, keyed by its globally-unique accession number where one
 exists.

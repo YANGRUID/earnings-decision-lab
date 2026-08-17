@@ -6,6 +6,7 @@ from models.filing import Filing
 from models.options_snapshot import OptionsSnapshot
 from models.price_bar import PriceBar
 from models.price_reaction import PriceReaction
+from models.strategy_replay import StrategyReplay
 from models.volatility_snapshot import VolatilitySnapshot
 
 __all__ = [
@@ -17,5 +18,6 @@ __all__ = [
     "OptionsSnapshot",
     "PriceBar",
     "PriceReaction",
+    "StrategyReplay",
     "VolatilitySnapshot",
 ]

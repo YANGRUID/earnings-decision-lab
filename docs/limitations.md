@@ -3,6 +3,17 @@
 Honest accounting of gaps, updated as each phase lands. Nothing here is hidden in code
 comments only — anything that affects what the system can honestly claim is listed here.
 
+## Data coverage (Phase 4)
+
+- **IV crush and event-replay engines are built and unit-tested, but have never run against
+  real data.** No historical options-chain provider is wired up (see
+  [data_sources.md](data_sources.md)) — the `strategy_replay` table exists (Phase 4 migration)
+  and has zero rows. `analytics/earnings/iv_crush.py` and `analytics/options/replay.py` are
+  tested exclusively against clearly-labeled synthetic strike/IV data. See
+  [earnings_methodology.md](earnings_methodology.md) for what this means for research use
+  today: the "how large is typical IV crush," "how often did the straddle underprice the
+  event" questions cannot be answered with real numbers yet.
+
 ## Data coverage (Phase 2)
 
 - **Stooq and Yahoo Finance (yfinance) cannot be used.** The Phase 1 plan was to use Stooq

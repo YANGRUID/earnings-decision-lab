@@ -151,3 +151,26 @@ standard, widely-cited approximation, but it is one of several defensible method
 strangle-based estimates, variance-swap-style calculations exist too). Claiming it's the only
 correct approach would be a specific, checkable claim this project doesn't want to make
 incorrectly — `docs/options_methodology.md` says outright that alternatives exist.
+
+## Phase 4
+
+**Why build the IV-crush and event-replay engines now, when there's no historical
+options-chain data to run them against?** The engines themselves (deterministic calculations,
+strike-selection rules, unit tests) don't depend on which data source eventually supplies real
+quotes — building and testing them now, against clearly-labeled synthetic data, means the
+moment a historical options provider is selected, this code runs against real data with zero
+changes. The alternative — waiting for a paid provider decision before writing any of this —
+would block real, verifiable progress on a decision that has nothing to do with whether the
+math is correct.
+
+**Why is `strategy_replay` an empty table rather than skipped entirely?** The schema and engine
+being real and tested, with zero rows, is a more honest state than either not building it (no
+architecture to show) or populating it with invented strikes and prices to make the table look
+used. `docs/earnings_methodology.md` says this directly rather than leaving it to be
+discovered by inspecting row counts.
+
+**Why is strike selection routed through one `select_strike()` entry point instead of three
+separate functions?** Every replay's strike choice needs to be auditable to the same code path
+regardless of which rule produced it — a reviewer (or this project's own tests) can check "was
+this strike chosen before or after the event's outcome was known" by reading one function, not
+three independently-written ones that could drift out of sync with each other's guarantees.
