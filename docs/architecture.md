@@ -1,21 +1,20 @@
 # Architecture (working document)
 
-This document is updated as each phase lands. It currently reflects **Phase 6**: the
-PostgreSQL schema (12 tables, including `price_bar`, `strategy_replay`, `document_chunk` with
-pgvector, and `ai_extraction`) is live via Alembic migrations; SEC EDGAR and Tiingo/Alpha
+This document is updated as each phase lands. It currently reflects **Phase 7**: the
+PostgreSQL schema (12 tables) is live via Alembic migrations; SEC EDGAR and Tiingo/Alpha
 Vantage (fallback-chained) are real, wired-up data providers; 150 real earnings events are
-seeded for NVDA/AMD/MU/SNDK, 77 with a confirmed earnings date and full price-reaction/
-expectation-snapshot backfill; a deterministic options analytics engine and IV-crush/event-
-replay engines are implemented and unit-tested; a provider-agnostic LLM layer sits under a
-real, working hybrid-RAG pipeline (2,231 chunks from 93 real SEC filings); and structured
-guidance/commentary extraction (Pydantic schemas, versioned prompts, full provenance) runs
-against real filing text, with numeric guidance comparison kept strictly separate from
-LLM-judged thematic comparison. Details: [data_model.md](data_model.md),
+seeded for NVDA/AMD/MU/SNDK; deterministic options and IV-crush/event-replay engines are
+implemented and unit-tested; a provider-agnostic LLM layer sits under a real, working
+hybrid-RAG pipeline (2,231 chunks from 93 real SEC filings); structured guidance extraction
+runs against real filing text; and an explicit agent orchestrator (intent classification,
+provider-capability-aware planning, tool execution, evidence collection, cited synthesis, and
+a separate verification step with bounded revision) ties all of it together behind seven real
+tools, verified live end-to-end against DeepSeek. Details: [data_model.md](data_model.md),
 [data_sources.md](data_sources.md), [options_methodology.md](options_methodology.md),
 [earnings_methodology.md](earnings_methodology.md), [llm_providers.md](llm_providers.md),
 [ai_architecture.md](ai_architecture.md), [limitations.md](limitations.md).
-No API endpoints or frontend exist yet — agent tool orchestration (Phase 7) is next, tying the
-deterministic analytics and RAG/extraction tools together behind a single research interface.
+No API or frontend exists yet — Phase 8 (FastAPI + React) is next, exposing this orchestrator
+and the underlying data through a real interface.
 
 ## Goal
 

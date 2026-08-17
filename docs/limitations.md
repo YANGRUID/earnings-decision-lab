@@ -3,6 +3,28 @@
 Honest accounting of gaps, updated as each phase lands. Nothing here is hidden in code
 comments only — anything that affects what the system can honestly claim is listed here.
 
+## Data coverage (Phase 7)
+
+- **Single-round tool-calling, not a full multi-turn ReAct loop.** The planner can request
+  multiple tools in one round, but the results aren't fed back for the model to request
+  further follow-up tool calls in the same turn — a real, documented scope boundary (see
+  [engineering_decisions.md](engineering_decisions.md)), not a bug. A genuine multi-turn loop
+  needs `ChatMessage` to carry enough structure to reconstruct each provider's own tool-call
+  history format (OpenAI-compatible vs. Anthropic differ), which isn't implemented yet.
+- **Token/cost accounting excludes structured (`generate_structured`) calls** — intent
+  classification and verification aren't counted in `ExecutionTrace.total_input_tokens` /
+  `total_output_tokens` / `estimated_cost_usd`, because `LLMProvider.generate_structured`
+  doesn't return usage metadata (unlike `generate()`). This understates true cost by a bounded,
+  usually-small amount. See [ai_architecture.md](ai_architecture.md).
+- **Citation marker numbering isn't globally unique if `search_filings` is called more than
+  once in a single query** (uncommon, but the native planner can request the same tool twice
+  with different queries). Each call's citations keep their own `[1]`, `[2]`... numbering in a
+  clearly separated evidence block rather than being renumbered globally — a documented
+  simplification, not a silent collision.
+- **`get_options_snapshot` and `run_strategy_replay` always report no data today** — real
+  behavior from real (empty) tables, not a hardcoded stub; see the Phase 1/4 entries above for
+  why no options-chain data exists yet.
+
 ## Data coverage (Phase 6)
 
 - **Numeric guidance extraction is frequently null, and that's expected.** Tested live against

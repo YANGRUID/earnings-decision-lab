@@ -151,8 +151,100 @@ compare_commentary_themes` is a *separate* LLM call, with its own versioned prom
 genuinely requiring semantic judgment that arithmetic can't do. Neither function calls the
 other; a numeric midpoint change is always exact, never a model's paraphrase.
 
-**Real run, unedited:** extracted guidance from MU's two most recent 10-Q MD&A sections
-(2026-03-19 and 2026-06-25) via DeepSeek. `revenue`/`eps`/`gross_margin`/`capex` came back
+## Agent orchestration (Phase 7)
+
+`agents/orchestrator.py::AgentOrchestrator` — an explicit multi-stage pipeline, not a single LLM
+call:
+
+```
+question
+   │
+   ▼
+INTENT CLASSIFICATION      generate_structured(IntentClassification)  — best-effort
+   │
+   ▼
+PLANNING                   two real, different code paths depending on
+   │                       provider.capabilities.supports_tool_calling:
+   │                         • native: generate(tools=[...]) — the LLM chooses
+   │                           which real tools to call and with what arguments
+   │                         • fallback: generate_structured(ToolPlan) — an explicit
+   │                           plan, for a provider without native tool-calling
+   ▼
+TOOL EXECUTION              each requested call is arg-validated (Pydantic) and run;
+   │                        exceptions are caught per-tool, never crash the request
+   ▼
+EVIDENCE COLLECTION         tool outputs assembled into one evidence block;
+   │                        citations from any search_filings calls preserved
+   ▼
+SYNTHESIS                   generate() — grounded answer using only the evidence
+   │
+   ▼
+VERIFICATION                generate_structured(VerificationResult) — a separate
+   │                        LLM call checks the draft against the evidence;
+   │                        unsupported claims trigger one bounded revision attempt
+   ▼
+final AgentResponse (answer, citations, full execution trace)
+```
+
+**Seven real tools**, each wrapping already-built, already-tested functionality — the agent
+layer adds orchestration, it doesn't reimplement anything:
+
+| Tool | Wraps | Data status |
+|---|---|---|
+| `get_historical_earnings` | real DB (EarningsEvent/EarningsResult/PriceReaction) | real |
+| `search_filings` | Phase 5 hybrid RAG | real (2,231 chunks) |
+| `compare_guidance` | Phase 6 extraction + deterministic comparison | real (persisted extractions) |
+| `calculate_strategy_payoff` | Phase 3 payoff engine | pure calc, always works |
+| `calculate_implied_move` | Phase 3 implied-move methodology | pure calc from supplied quotes |
+| `get_options_snapshot` | real `options_snapshot` table | honestly empty (no provider) |
+| `run_strategy_replay` | real `strategy_replay` table | honestly empty (no historical chain data) |
+
+The last two tools are a deliberate demonstration of this project's stance on missing data:
+they query the real table and report honestly that nothing is there, rather than the
+orchestrator silently omitting the capability or a tool fabricating a plausible-looking answer.
+
+**Provider capability handling is real, not cosmetic.** All three currently-implemented
+providers (DeepSeek, OpenAI, Anthropic) declare `supports_tool_calling=True`, so the native
+path is what actually runs today — but the structured-planner fallback is a genuinely
+different code path (a distinct prompt, a distinct schema, a distinct execution branch),
+exercised by dedicated tests with a scripted provider that declares
+`supports_tool_calling=False`, not just asserted to exist.
+
+**Verification is a real, separate LLM call** — not a rephrasing of the synthesis prompt. It's
+given the evidence and the draft answer and asked specifically whether every claim is
+supported; a failed verification triggers exactly one bounded revision attempt (never an
+unbounded retry loop) with the flagged unsupported claims fed back into a fresh synthesis call.
+
+**Execution traces** record: intent category, planning method used, every tool call (name,
+arguments, success/failure, duration, and — for DB tools — the compiled SQL query, safe to
+show), verification outcome, whether a revision happened, the model used, real token counts
+(from `generate()` calls only — see the known limitation below), and an estimated USD cost from
+a small, dated pricing table. No chain-of-thought is ever exposed — only these structured,
+already-final artifacts.
+
+**A known, honest limitation:** `LLMProvider.generate_structured` doesn't return token-usage
+metadata (only `generate()` does), so intent-classification and verification calls' token cost
+is not included in the trace's `total_input_tokens`/`total_output_tokens`/`estimated_cost_usd`.
+This understates the true cost by a bounded, usually-small amount (those prompts are much
+shorter than the synthesis call). Documented here and in
+[engineering_decisions.md](engineering_decisions.md) rather than papered over with a fabricated
+estimate.
+
+**Real run, unedited** (native tool-calling, live DeepSeek): *"What were MU's last two earnings
+results, and what did they say about HBM demand in their filings?"* — correctly planned two
+tool calls (`get_historical_earnings`, `search_filings`), executed both against real data,
+synthesized a cited answer (5 citations, all real retrieved sections), verification confirmed
+it was fully supported by the evidence with no revision needed. Full trace: intent
+`earnings_history`, 2 tool calls (33ms and 20ms), 5,035 input / 796 output tokens, estimated
+cost $0.0033, 8.5s total.
+
+**Real run, unedited** (no-tool-needed path): *"Hi, what can you help me with?"* — correctly
+classified as `general`, zero tool calls, direct conversational answer, verification correctly
+skipped (nothing to verify against).
+
+**Real run, unedited** (structured extraction, Phase 6): extracted guidance from MU's two most
+recent 10-Q MD&A sections (2026-03-19 and 2026-06-25) via DeepSeek.
+`revenue`/`eps`/`gross_margin`/`capex` came back
 `null` for both — a genuine, informative result, not a bug: 10-Q MD&A sections discuss
 *historical* results and qualitative commentary, not forward-looking numeric ranges in a
 directly extractable format (real forward guidance for these companies typically appears in the
