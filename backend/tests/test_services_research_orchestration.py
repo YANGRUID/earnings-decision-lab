@@ -4,7 +4,7 @@ from decimal import Decimal
 from models.company import Company
 from models.document_chunk import DocumentChunk
 from models.earnings_estimate_snapshot import EarningsEstimateSnapshot
-from models.enums import FilingType
+from models.enums import FilingType, OptionsSnapshotAnchor
 from models.filing import Filing
 from models.options_snapshot import OptionsSnapshot
 from models.price_bar import PriceBar
@@ -14,6 +14,7 @@ from models.research_preparation_job import (
     ResearchPreparationJob,
     StepStatus,
 )
+from models.volatility_snapshot import VolatilitySnapshot
 from providers.base import EarningsEstimatesProvider, MarketDataProvider, OptionsDataProvider
 from providers.types import (
     CompanyFacts,
@@ -139,7 +140,9 @@ class _FakeOptionsProvider(OptionsDataProvider):
         self._error = error
         self.calls = 0
 
-    def get_option_chain(self, ticker, as_of, expiration=None, reference_date=None):
+    def get_option_chain(
+        self, ticker, as_of, expiration=None, reference_date=None, earnings_anchored=True
+    ):
         self.calls += 1
         if self._error is not None:
             raise self._error
@@ -244,11 +247,15 @@ def test_new_ticker_creates_company_and_completes_required_steps(db_session):
     assert steps_by_name[PreparationStep.PRICE_HISTORY.value]["status"] == StepStatus.DONE.value
     assert steps_by_name[PreparationStep.SEC_FILINGS.value]["status"] == StepStatus.DONE.value
     assert steps_by_name[PreparationStep.FILING_EMBEDDINGS.value]["status"] == StepStatus.DONE.value
-    # No estimates provider entry -> no known upcoming date -> options chain skipped.
     assert (
         steps_by_name[PreparationStep.EARNINGS_ESTIMATES.value]["status"]
         == StepStatus.SKIPPED.value
     )
+    # This test's providers never configure an options provider at all (see
+    # _providers()'s default) -- skipped for that reason alone, independent
+    # of the missing earnings date. See
+    # test_options_chain_still_collects_with_no_known_earnings_date for the
+    # real behavior when a provider *is* configured but no date is known.
     assert steps_by_name[PreparationStep.OPTIONS_CHAIN.value]["status"] == StepStatus.SKIPPED.value
 
     assert db_session.query(PriceBar).filter(PriceBar.ticker == "ZZNEWC").count() > 0
@@ -390,6 +397,47 @@ def test_options_chain_fetched_when_upcoming_earnings_date_known(db_session):
         db_session.query(OptionsSnapshot).filter(OptionsSnapshot.company_id == company.id).count()
         == 2
     )
+
+
+def test_options_chain_still_collects_with_no_known_earnings_date(db_session):
+    """Regression test for the real bug found live-debugging AMD
+    (2026-08-18): options-chain collection used to hard-skip whenever no
+    earnings-estimates provider entry existed, even with a real options
+    provider configured and ready. See
+    services/research_orchestration.py::_prepare_options_chain -- an
+    options chain and an earnings date are two independently real things.
+    """
+    options = _FakeOptionsProvider(
+        quotes=[
+            _stub_option_quote(Decimal("10"), "call", NOW.date()),
+            _stub_option_quote(Decimal("10"), "put", NOW.date()),
+        ]
+    )
+    providers = _providers(estimates=_FakeEstimatesProvider(None), options=options)
+
+    job = prepare_company_research(db_session, "zzoptg", providers, now=NOW)
+
+    assert job.status == JobStatus.COMPLETED
+    steps_by_name = {s["step"]: s for s in job.steps}
+    assert (
+        steps_by_name[PreparationStep.EARNINGS_ESTIMATES.value]["status"]
+        == StepStatus.SKIPPED.value
+    )
+    assert steps_by_name[PreparationStep.OPTIONS_CHAIN.value]["status"] == StepStatus.DONE.value
+    assert "general/current" in steps_by_name[PreparationStep.OPTIONS_CHAIN.value]["detail"]
+    assert options.calls == 1
+
+    company = db_session.query(Company).filter(Company.ticker == "ZZOPTG").one()
+    persisted = db_session.query(OptionsSnapshot).filter_by(company_id=company.id).all()
+    assert len(persisted) == 2
+    assert all(row.anchor == OptionsSnapshotAnchor.GENERAL_CURRENT for row in persisted)
+
+    volatility = (
+        db_session.query(VolatilitySnapshot).filter_by(company_id=company.id).one_or_none()
+    )
+    assert volatility is not None
+    assert volatility.anchor == OptionsSnapshotAnchor.GENERAL_CURRENT
+    assert volatility.target_earnings_date is None
 
 
 def test_existing_estimate_snapshot_reused_when_fresh(db_session):

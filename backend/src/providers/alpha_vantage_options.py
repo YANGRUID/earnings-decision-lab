@@ -78,11 +78,12 @@ class AlphaVantageOptionsProvider(OptionsDataProvider):
         as_of: datetime,
         expiration: date | None = None,
         reference_date: date | None = None,
+        earnings_anchored: bool = True,
     ) -> list[OptionQuote]:
-        # reference_date is a bounding hint for providers that can't return
-        # a full chain -- irrelevant here, since this already fetches every
-        # expiration/strike in one call.
-        del reference_date
+        # reference_date/earnings_anchored are a bounding hint for providers
+        # that can't return a full chain -- irrelevant here, since this
+        # already fetches every expiration/strike in one call.
+        del reference_date, earnings_anchored
         params = {
             "function": "REALTIME_OPTIONS",
             "symbol": ticker.upper(),

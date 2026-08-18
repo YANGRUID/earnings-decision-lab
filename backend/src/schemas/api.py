@@ -57,6 +57,11 @@ class EarningsEstimateResponse(BaseModel):
     fiscal_period_end_date: date
     horizon: str
     estimated_report_date: date | None
+    date_source: str
+    """Provenance of estimated_report_date: alpha_vantage (provider-
+    confirmed), manual (owner override), estimated, or unknown. Never
+    inferred by the client -- always read this before treating a date as
+    provider-confirmed."""
     eps_estimate_average: Decimal | None
     eps_estimate_high: Decimal | None
     eps_estimate_low: Decimal | None
@@ -71,10 +76,24 @@ class EarningsEstimateResponse(BaseModel):
     source_provider: str
 
 
+class ManualEarningsDateRequest(BaseModel):
+    """Owner/admin override for a company's next earnings report date --
+    see services/market_expectations.py::set_manual_earnings_date."""
+
+    estimated_report_date: date
+    fiscal_period_end_date: date | None = None
+
+
 class VolatilitySnapshotResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     method: str
+    target_earnings_date: date | None
+    anchor: str
+    """earnings_anchored or general_current -- see
+    models/enums.py::OptionsSnapshotAnchor. When general_current,
+    target_earnings_date is None: this snapshot is a current market read,
+    not a prediction anchored to a specific earnings date."""
     near_term_expiration: date | None
     next_term_expiration: date | None
     atm_iv_near: Decimal | None
@@ -420,6 +439,20 @@ class StrategyLabResponse(BaseModel):
     implied_move_pct: Decimal | None
     strategies: list[RankedStrategyResponse]
     chain: list[OptionQuoteResponse]
+    anchor: str | None = None
+    """earnings_anchored or general_current, mirroring the VolatilitySnapshot
+    this was built from -- set whenever real strategies/chain are returned,
+    so the frontend never has to guess whether "next earnings date" applies
+    to what's shown. None only when there's no chain at all."""
+    reason: str | None = None
+    """Explanatory context, in two distinct situations that must never be
+    confused with each other: (1) ``strategies`` is empty -- *why* (no
+    known upcoming earnings date yet, vs. a date is known but no
+    options-chain snapshot has been collected for it); (2) ``strategies``
+    is real and non-empty but ``anchor="general_current"`` -- a disclaimer
+    that what's shown isn't tied to a specific earnings date. ``None`` only
+    when real, earnings-anchored strategies are returned with nothing to
+    disclaim."""
 
 
 class EarningsThesisResponse(BaseModel):

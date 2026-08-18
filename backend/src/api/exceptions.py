@@ -20,6 +20,16 @@ class RateLimitedError(Exception):
         self.message = message
 
 
+class InvalidRequestError(Exception):
+    """A request that's well-formed JSON but fails a domain-level validation
+    rule (e.g. a manual earnings-date override in the past) -- distinct from
+    pydantic's own ValidationError (malformed shape), which FastAPI already
+    turns into a 422 before a handler body ever runs."""
+
+    def __init__(self, message: str) -> None:
+        self.message = message
+
+
 def _error_body(request: Request, message: str) -> dict:
     return {"error": message, "request_id": getattr(request.state, "request_id", None)}
 
@@ -32,6 +42,10 @@ def register_exception_handlers(app: FastAPI) -> None:
     @app.exception_handler(RateLimitedError)
     async def rate_limited_handler(request: Request, exc: RateLimitedError):
         return JSONResponse(status_code=429, content=_error_body(request, exc.message))
+
+    @app.exception_handler(InvalidRequestError)
+    async def invalid_request_handler(request: Request, exc: InvalidRequestError):
+        return JSONResponse(status_code=422, content=_error_body(request, exc.message))
 
     @app.exception_handler(UnsupportedSymbolError)
     async def unsupported_symbol_handler(request: Request, exc: UnsupportedSymbolError):

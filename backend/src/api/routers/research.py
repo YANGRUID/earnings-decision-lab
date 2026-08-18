@@ -1,11 +1,12 @@
 import logging
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, BackgroundTasks, Query, Request
 
 from analytics.options.move_compatibility import assess_move_compatibility
 from analytics.options.strategy_ranking import rank_strategy_candidates
 from api.deps import LLM, DbSession, Embedder, Orchestrator
-from api.exceptions import NotFoundError, RateLimitedError
+from api.exceptions import InvalidRequestError, NotFoundError, RateLimitedError
 from core.config import get_settings
 from db.session import SessionLocal
 from models.company import Company
@@ -25,6 +26,7 @@ from schemas.api import (
     EarningsThesisResponse,
     ExecutionTraceResponse,
     FilingSearchResponse,
+    ManualEarningsDateRequest,
     MoveCompatibilityResponse,
     OptionLegResponse,
     OptionQuoteResponse,
@@ -43,7 +45,7 @@ from schemas.api import (
 from services.earnings_thesis import ThesisGenerationError, generate_earnings_thesis
 from services.historical_moves import get_historical_move_pcts
 from services.llm.errors import LLMError
-from services.market_expectations import get_latest_earnings_estimate
+from services.market_expectations import get_latest_earnings_estimate, set_manual_earnings_date
 from services.options_analytics import get_latest_options_chain, get_latest_volatility_snapshot
 from services.research_orchestration import (
     UnsupportedSymbolError,
@@ -248,6 +250,37 @@ def research_overview(symbol: str, db: DbSession) -> ResearchOverviewResponse:
     )
 
 
+@router.post("/{symbol}/earnings-date", response_model=EarningsEstimateResponse)
+def set_earnings_date_override(
+    symbol: str, request: ManualEarningsDateRequest, db: DbSession
+) -> EarningsEstimateResponse:
+    """Owner/admin-only manual override for a company's next earnings
+    report date -- for when no provider (Alpha Vantage) has published one
+    yet, so options-chain collection and Strategy Lab aren't left
+    permanently blocked on a date the provider simply hasn't listed (see
+    services/research_orchestration.py::_prepare_options_chain). Persists a
+    new EarningsEstimateSnapshot with date_source=manual and every
+    consensus field null; never overwrites or relabels an existing row as
+    provider-confirmed. See services/market_expectations.py.
+    """
+    ticker = normalize_ticker(symbol)
+    company = db.query(Company).filter(Company.ticker == ticker).one_or_none()
+    if company is None:
+        raise NotFoundError(f"no research on record yet for {ticker!r}")
+
+    today = datetime.now(UTC).date()
+    if request.estimated_report_date < today:
+        raise InvalidRequestError(
+            f"estimated_report_date {request.estimated_report_date} is in the past "
+            f"(today is {today}) -- this is an upcoming earnings date, not a historical one"
+        )
+
+    row = set_manual_earnings_date(
+        db, company, request.estimated_report_date, request.fiscal_period_end_date
+    )
+    return EarningsEstimateResponse.model_validate(row)
+
+
 def _option_quote_response(quote: OptionQuote) -> OptionQuoteResponse:
     return OptionQuoteResponse(
         expiration_date=quote.expiration_date,
@@ -270,13 +303,20 @@ def _option_quote_response(quote: OptionQuote) -> OptionQuoteResponse:
 
 @router.get("/{symbol}/strategies", response_model=StrategyLabResponse)
 def get_strategy_lab(symbol: str, db: DbSession) -> StrategyLabResponse:
-    """Real, ranked strategy candidates for ``symbol``'s upcoming earnings,
-    built entirely from the most recently ingested real options-chain
-    snapshot -- see services/strategy_generation.py and
-    analytics/options/strategy_ranking.py. Honestly empty (never
-    fabricated) when no such snapshot exists yet, regardless of whether
-    that's because the company hasn't been researched or because no
-    options provider has real data for it.
+    """Real, ranked strategy candidates built from the most recently
+    ingested real options-chain snapshot -- see
+    services/strategy_generation.py and
+    analytics/options/strategy_ranking.py.
+
+    Never blocked on a known upcoming earnings date: when one is on
+    record, the snapshot is earnings-anchored; when it isn't, collection
+    still runs (see services/research_orchestration.py) and produces a
+    general/current snapshot, which this endpoint still turns into real
+    strategies -- just labeled ``anchor="general_current"`` with a
+    ``reason`` disclaiming that it isn't tied to a specific earnings date,
+    rather than hiding real data behind a false "nothing here" state.
+    Honestly empty only when no options-chain snapshot has been collected
+    at all yet.
     """
     ticker = normalize_ticker(symbol)
     company = db.query(Company).filter(Company.ticker == ticker).one_or_none()
@@ -286,7 +326,35 @@ def get_strategy_lab(symbol: str, db: DbSession) -> StrategyLabResponse:
     chain_response = [_option_quote_response(q) for q in get_latest_options_chain(db, company)]
     volatility = get_latest_volatility_snapshot(db, company.id)
 
-    if volatility is None or volatility.target_earnings_date is None:
+    if volatility is None:
+        if chain_response:
+            # A real chain was collected (visible in `chain` below), but no
+            # VolatilitySnapshot exists -- compute_and_persist_volatility_snapshot
+            # returned None, almost always because no contract in the chain
+            # has any bid/ask/last to price a straddle from at all (real,
+            # observed live: AMD pre-market, 2026-08-18 -- every contract
+            # was FROZEN with real IV/Greeks but null bid/ask/last).
+            reason = (
+                f"A real options-chain snapshot exists for {ticker} ({len(chain_response)} "
+                "contracts, shown below), but no live or last-known price (bid/ask/last) "
+                "exists on any contract yet to compute an implied move or generate strategy "
+                "candidates from -- common before market open, when quotes are frozen with a "
+                "quality/Greeks read but no tradable price."
+            )
+        else:
+            estimate = get_latest_earnings_estimate(db, company.id)
+            if estimate is None or estimate.estimated_report_date is None:
+                reason = (
+                    f"{ticker}'s next earnings date isn't known yet -- the analyst-estimates "
+                    "provider has no upcoming report date on record for this company right now. "
+                    "No options-chain snapshot has been collected yet either."
+                )
+            else:
+                reason = (
+                    f"{ticker}'s next earnings date is expected around "
+                    f"{estimate.estimated_report_date}, but no real options-chain snapshot has "
+                    "been collected for it yet."
+                )
         return StrategyLabResponse(
             ticker=ticker,
             expiration=None,
@@ -294,8 +362,10 @@ def get_strategy_lab(symbol: str, db: DbSession) -> StrategyLabResponse:
             implied_move_pct=None,
             strategies=[],
             chain=chain_response,
+            reason=reason,
         )
 
+    is_general = volatility.target_earnings_date is None
     candidates = generate_strategy_candidates(db, company, volatility.target_earnings_date)
     ranked = rank_strategy_candidates(candidates, ticker, volatility.implied_move_pct)
     historical_moves = get_historical_move_pcts(db, company.id)
@@ -348,13 +418,36 @@ def get_strategy_lab(symbol: str, db: DbSession) -> StrategyLabResponse:
             )
         )
 
+    if not candidates:
+        return StrategyLabResponse(
+            ticker=ticker,
+            expiration=None,
+            underlying_price=None,
+            implied_move_pct=volatility.implied_move_pct,
+            strategies=[],
+            chain=chain_response,
+            anchor=volatility.anchor.value,
+            reason=(
+                f"A real options-chain snapshot exists for {ticker}, but no strategy "
+                "candidates could be generated from it -- possibly no underlying price is "
+                "on record as of the snapshot, or no expiration in the chain matches."
+            ),
+        )
+
     return StrategyLabResponse(
         ticker=ticker,
-        expiration=candidates[0].expiration if candidates else None,
-        underlying_price=candidates[0].underlying_price if candidates else None,
+        expiration=candidates[0].expiration,
+        underlying_price=candidates[0].underlying_price,
         implied_move_pct=volatility.implied_move_pct,
         strategies=strategies,
         chain=chain_response,
+        anchor=volatility.anchor.value,
+        reason=(
+            "Next earnings date is not currently confirmed, so this option snapshot is not "
+            "earnings-anchored."
+        )
+        if is_general
+        else None,
     )
 
 

@@ -3,7 +3,7 @@ from decimal import ROUND_HALF_UP, Decimal
 
 from models.company import Company
 from models.earnings_event import EarningsEvent
-from models.enums import OptionType
+from models.enums import OptionsSnapshotAnchor, OptionType
 from models.options_snapshot import OptionsSnapshot
 from models.price_bar import PriceBar
 from models.price_reaction import PriceReaction
@@ -12,6 +12,7 @@ from providers.base import OptionsDataProvider
 from providers.types import OptionQuote
 from services.options_analytics import (
     collect_forward_options_snapshot,
+    collect_options_snapshot_now,
     compute_and_persist_volatility_snapshot,
     get_implied_vs_realized_moves,
     get_latest_options_chain,
@@ -29,7 +30,9 @@ class _StubOptionsProvider(OptionsDataProvider):
         self._quotes = quotes
         self.call_count = 0
 
-    def get_option_chain(self, ticker, as_of, expiration=None, reference_date=None):
+    def get_option_chain(
+        self, ticker, as_of, expiration=None, reference_date=None, earnings_anchored=True
+    ):
         self.call_count += 1
         return self._quotes
 
@@ -351,6 +354,84 @@ class TestComputeAndPersistVolatilitySnapshot:
         assert row.snapshot_timestamp == SNAPSHOT_TS
 
 
+class TestComputeAndPersistVolatilitySnapshotGeneralMode:
+    """``earnings_date=None`` -- the general/current path added to unblock
+    a ticker with no known upcoming earnings date (real bug: AMD,
+    2026-08-18 -- see services/research_orchestration.py).
+    """
+
+    def test_uses_nearest_expiration_on_or_after_snapshot_date_and_labels_general(
+        self, db_session
+    ):
+        company = _seed_company(db_session)
+        _seed_price_bar(db_session, company.ticker, date(2025, 9, 12), Decimal("114.50"))
+        # Snapshot taken 2025-09-15 (SNAPSHOT_TS); an expiration exactly on
+        # that date must be a valid candidate in general mode -- unlike
+        # earnings-anchored mode's strictly-after rule.
+        _seed_option_quote(
+            db_session,
+            company,
+            expiration=date(2025, 9, 15),
+            strike=Decimal("115"),
+            option_type=OptionType.CALL,
+            bid=Decimal("4.20"),
+            ask=Decimal("4.40"),
+        )
+        _seed_option_quote(
+            db_session,
+            company,
+            expiration=date(2025, 9, 15),
+            strike=Decimal("115"),
+            option_type=OptionType.PUT,
+            bid=Decimal("4.00"),
+            ask=Decimal("4.20"),
+        )
+        _seed_option_quote(
+            db_session,
+            company,
+            expiration=NEAR_EXP,
+            strike=Decimal("115"),
+            option_type=OptionType.CALL,
+            bid=Decimal("6.00"),
+            ask=Decimal("6.20"),
+        )
+
+        row = compute_and_persist_volatility_snapshot(db_session, company, None)
+
+        assert row is not None
+        assert row.near_term_expiration == date(2025, 9, 15)
+        assert row.target_earnings_date is None
+        assert row.anchor == OptionsSnapshotAnchor.GENERAL_CURRENT
+
+    def test_earnings_anchored_mode_still_labels_earnings_anchored(self, db_session):
+        company = _seed_company(db_session)
+        _seed_price_bar(db_session, company.ticker, date(2025, 9, 12), Decimal("114.50"))
+        _seed_option_quote(
+            db_session,
+            company,
+            expiration=NEAR_EXP,
+            strike=Decimal("115"),
+            option_type=OptionType.CALL,
+            bid=Decimal("4.20"),
+            ask=Decimal("4.40"),
+        )
+        _seed_option_quote(
+            db_session,
+            company,
+            expiration=NEAR_EXP,
+            strike=Decimal("115"),
+            option_type=OptionType.PUT,
+            bid=Decimal("4.00"),
+            ask=Decimal("4.20"),
+        )
+
+        row = compute_and_persist_volatility_snapshot(db_session, company, EARNINGS_DATE)
+
+        assert row is not None
+        assert row.anchor == OptionsSnapshotAnchor.EARNINGS_ANCHORED
+        assert row.target_earnings_date == EARNINGS_DATE
+
+
 class TestGetLatestVolatilitySnapshot:
     def test_returns_none_when_no_snapshots_exist(self, db_session):
         company = _seed_company(db_session)
@@ -564,6 +645,35 @@ class TestCollectForwardOptionsSnapshot:
         assert second is None
         assert provider.call_count == 1
         assert db_session.query(OptionsSnapshot).filter_by(company_id=company.id).count() == 1
+
+
+class TestCollectOptionsSnapshotNowAnchorLabeling:
+    def test_earnings_date_known_stamps_earnings_anchored(self, db_session):
+        company = _seed_company(db_session)
+        provider = _StubOptionsProvider([_stub_quote(company.ticker, Decimal("115"), "call")])
+        as_of = datetime(2025, 9, 15, 15, 0, tzinfo=UTC)
+
+        result = collect_options_snapshot_now(db_session, provider, company, EARNINGS_DATE, as_of)
+
+        assert result is not None
+        assert len(result) == 1
+        assert result[0].anchor == OptionsSnapshotAnchor.EARNINGS_ANCHORED
+
+    def test_no_earnings_date_still_collects_and_stamps_general_current(self, db_session):
+        """Regression test for the real bug this architecture replaces:
+        collection must never be skipped just because no earnings date is
+        known -- see services/research_orchestration.py::_prepare_options_chain.
+        """
+        company = _seed_company(db_session)
+        provider = _StubOptionsProvider([_stub_quote(company.ticker, Decimal("115"), "call")])
+        as_of = datetime(2025, 9, 15, 15, 0, tzinfo=UTC)
+
+        result = collect_options_snapshot_now(db_session, provider, company, None, as_of)
+
+        assert result is not None
+        assert len(result) == 1
+        assert result[0].anchor == OptionsSnapshotAnchor.GENERAL_CURRENT
+        assert provider.call_count == 1
 
 
 def test_get_latest_options_chain_preserves_market_data_quality_and_contract_id(db_session):

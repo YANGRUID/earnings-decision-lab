@@ -12,7 +12,10 @@ from analytics.options.implied_move import (
     find_atm_strike,
     mid_price,
     select_expiration_after,
+    select_nearest_listed_expiration,
+    select_target_expiration_and_anchor,
 )
+from models.enums import OptionsSnapshotAnchor
 from providers.types import OptionQuote
 
 NOW = datetime(2025, 9, 22, 20, 0, 0)
@@ -108,6 +111,43 @@ def test_select_expiration_after_returns_none_when_all_expirations_are_before():
 
 def test_select_expiration_after_returns_none_for_empty_set():
     assert select_expiration_after(set(), date(2025, 9, 22)) is None
+
+
+def test_select_nearest_listed_expiration_allows_same_day():
+    # Unlike select_expiration_after, a general/current snapshot has no
+    # earnings event a same-day expiration would need to outlive.
+    expirations = {date(2025, 9, 22), date(2025, 9, 26)}
+    assert select_nearest_listed_expiration(expirations, date(2025, 9, 22)) == date(2025, 9, 22)
+
+
+def test_select_nearest_listed_expiration_picks_nearest_after_reference():
+    expirations = {date(2025, 9, 19), date(2025, 9, 26), date(2025, 10, 3)}
+    assert select_nearest_listed_expiration(expirations, date(2025, 9, 22)) == date(2025, 9, 26)
+
+
+def test_select_nearest_listed_expiration_returns_none_when_all_before():
+    expirations = {date(2025, 9, 1), date(2025, 9, 10)}
+    assert select_nearest_listed_expiration(expirations, date(2025, 9, 22)) is None
+
+
+def test_select_target_expiration_and_anchor_earnings_anchored_when_date_known():
+    expirations = {date(2025, 9, 19), date(2025, 9, 26)}
+    expiration, anchor = select_target_expiration_and_anchor(
+        expirations, date(2025, 9, 22), date(2025, 9, 15)
+    )
+    assert expiration == date(2025, 9, 26)
+    assert anchor == OptionsSnapshotAnchor.EARNINGS_ANCHORED
+
+
+def test_select_target_expiration_and_anchor_general_when_date_unknown():
+    expirations = {date(2025, 9, 19), date(2025, 9, 26)}
+    # reference_date (the snapshot's own date) allows the same-day 9/19
+    # expiration -- general mode, no earnings event to outlive.
+    expiration, anchor = select_target_expiration_and_anchor(
+        expirations, None, date(2025, 9, 19)
+    )
+    assert expiration == date(2025, 9, 19)
+    assert anchor == OptionsSnapshotAnchor.GENERAL_CURRENT
 
 
 def test_calculate_atm_iv_averages_call_and_put():

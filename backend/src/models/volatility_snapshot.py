@@ -2,10 +2,11 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import TYPE_CHECKING
 
-from sqlalchemy import JSON, Date, DateTime, ForeignKey, Numeric, String, UniqueConstraint
+from sqlalchemy import JSON, Date, DateTime, Enum, ForeignKey, Numeric, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from db.base import Base
+from models.enums import OptionsSnapshotAnchor
 from models.mixins import TimestampMixin
 
 if TYPE_CHECKING:
@@ -62,5 +63,15 @@ class VolatilitySnapshot(TimestampMixin, Base):
 
     inputs: Mapped[dict | None] = mapped_column(JSON)
     computed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+    # Mirrors OptionsSnapshot.anchor for the chain this was computed from --
+    # duplicated here (rather than requiring a join) since this is exactly
+    # what Strategy Lab and the Upcoming Earnings tab need to decide how to
+    # present a result with no target_earnings_date. See
+    # OptionsSnapshot.anchor for why the default below is test/ad-hoc-only.
+    anchor: Mapped[OptionsSnapshotAnchor] = mapped_column(
+        Enum(OptionsSnapshotAnchor, name="options_snapshot_anchor"),
+        default=OptionsSnapshotAnchor.EARNINGS_ANCHORED,
+    )
 
     company: Mapped["Company"] = relationship()  # noqa: F821

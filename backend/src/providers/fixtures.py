@@ -67,8 +67,9 @@ class FixtureOptionsDataProvider(OptionsDataProvider):
         as_of: datetime,
         expiration: date | None = None,
         reference_date: date | None = None,
+        earnings_anchored: bool = True,
     ) -> list[OptionQuote]:
-        del reference_date  # this fixture already returns the full canned chain
+        del reference_date, earnings_anchored  # fixture already returns the full canned chain
         return [
             OptionQuote(**row, source_provider="fixture", retrieved_at=datetime.now())
             for row in self._chain

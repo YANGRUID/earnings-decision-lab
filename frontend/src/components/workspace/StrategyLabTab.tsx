@@ -296,14 +296,15 @@ export function StrategyLabTab({ ticker }: { ticker: string }) {
       {lab.data.strategies.length === 0 ? (
         <div className="card">
           <p className="text-sm text-muted" style={{ margin: 0 }}>
-            No real options-chain data is available yet for {ticker}'s upcoming earnings, so no
-            deterministic strategy candidates can be generated. This requires a real options-chain
-            snapshot (see the Options chain step in preparation) and a known upcoming earnings
-            date.
+            {lab.data.reason ??
+              `No real options-chain data is available yet for ${ticker}'s upcoming earnings, so no deterministic strategy candidates can be generated. This requires a real options-chain snapshot (see the Options chain step in preparation) and a known upcoming earnings date.`}
           </p>
         </div>
       ) : (
         <>
+          {lab.data.anchor === "general_current" && lab.data.reason && (
+            <div className="notice">{lab.data.reason}</div>
+          )}
           <p className="text-sm text-muted" style={{ marginTop: 0 }}>
             {lab.data.strategies.length} deterministic candidates, ranked by real payoff at the
             market's own implied move (±{pct(lab.data.implied_move_pct)}) relative to each

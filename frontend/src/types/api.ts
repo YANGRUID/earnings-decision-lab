@@ -36,6 +36,7 @@ export interface EarningsEstimate {
   fiscal_period_end_date: string;
   horizon: string;
   estimated_report_date: string | null;
+  date_source: string;
   eps_estimate_average: string | null;
   eps_estimate_high: string | null;
   eps_estimate_low: string | null;
@@ -52,6 +53,8 @@ export interface EarningsEstimate {
 
 export interface VolatilitySnapshot {
   method: string;
+  target_earnings_date: string | null;
+  anchor: string;
   near_term_expiration: string | null;
   next_term_expiration: string | null;
   atm_iv_near: string | null;
@@ -376,6 +379,8 @@ export interface StrategyLab {
   implied_move_pct: string | null;
   strategies: RankedStrategy[];
   chain: OptionQuote[];
+  anchor: string | null;
+  reason: string | null;
 }
 
 export interface EarningsThesis {

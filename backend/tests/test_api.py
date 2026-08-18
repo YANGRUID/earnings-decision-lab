@@ -638,7 +638,15 @@ def test_strategy_lab_unknown_company_returns_404(client):
     assert response.status_code == 404
 
 
-def test_strategy_lab_no_volatility_snapshot_returns_honest_empty_state(client, db_session):
+def test_strategy_lab_no_earnings_estimate_explains_missing_anchor_date(client, db_session):
+    """Regression test for a real bug found live-debugging AMD (2026-08-18):
+    the endpoint returned an empty ``strategies``/``chain`` shell with no
+    field explaining why, identical whether the cause was "no known
+    upcoming earnings date" or "date known but no chain collected yet" --
+    see the endpoint's old docstring, which admitted as much. This is the
+    "no upcoming earnings date on record at all" branch (AMD's real state:
+    Alpha Vantage's EARNINGS_CALENDAR had zero rows for it at any horizon).
+    """
     from models.company import Company
 
     db_session.add(Company(ticker="ZZSLAB", name="ZZ Strategy Lab Co", cik="0009999915"))
@@ -650,6 +658,148 @@ def test_strategy_lab_no_volatility_snapshot_returns_honest_empty_state(client, 
     body = response.json()
     assert body["strategies"] == []
     assert body["expiration"] is None
+    assert body["reason"] is not None
+    assert "next earnings date isn't known yet" in body["reason"]
+
+
+def test_strategy_lab_real_chain_but_no_priceable_quotes_explains_why(client, db_session):
+    """Regression test for a real bug found live-verifying the AMD fix
+    (2026-08-18, pre-market): a real 22-contract chain had been collected
+    (every contract FROZEN with real IV/Greeks) but every bid/ask/last was
+    null -- compute_and_persist_volatility_snapshot correctly returned None
+    (NoQuoteAvailable, nothing to price a straddle from), but the endpoint's
+    reason text falsely claimed "no options-chain snapshot has been
+    collected yet either" even though `chain` in the same response was
+    non-empty. The reason must reflect what `chain` actually shows.
+    """
+    from datetime import UTC, date, datetime
+    from decimal import Decimal
+
+    from models.company import Company
+    from models.enums import OptionsSnapshotAnchor, OptionType
+    from models.options_snapshot import OptionsSnapshot
+
+    company = Company(ticker="ZZSLAB5", name="ZZ Strategy Lab Co 5", cik="0009999921")
+    db_session.add(company)
+    db_session.flush()
+
+    now = datetime.now(UTC)
+    for option_type in (OptionType.CALL, OptionType.PUT):
+        db_session.add(
+            OptionsSnapshot(
+                company_id=company.id,
+                snapshot_timestamp=now,
+                expiration_date=date(2026, 8, 19),
+                strike=Decimal("490"),
+                option_type=option_type,
+                bid=None,
+                ask=None,
+                last_price=None,
+                implied_volatility=Decimal("0.56"),
+                market_data_quality="frozen",
+                source_provider="ibkr",
+                retrieved_at=now,
+                anchor=OptionsSnapshotAnchor.GENERAL_CURRENT,
+            )
+        )
+    db_session.flush()
+
+    response = client.get("/api/v1/research/zzslab5/strategies")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["strategies"] == []
+    assert len(body["chain"]) == 2
+    assert body["reason"] is not None
+    assert "real options-chain snapshot exists" in body["reason"]
+    assert "no options-chain snapshot has been collected" not in body["reason"]
+
+
+def test_strategy_lab_known_estimate_but_no_chain_explains_missing_snapshot(client, db_session):
+    """The other empty-state branch: an upcoming earnings date *is* known
+    (a real EarningsEstimateSnapshot exists) but no options-chain snapshot
+    has been collected for it -- must not be confused with "no date known
+    at all" (see the sibling test above)."""
+    from datetime import UTC, date, datetime
+
+    from models.company import Company
+    from models.earnings_estimate_snapshot import EarningsEstimateSnapshot
+
+    company = Company(ticker="ZZSLAB3", name="ZZ Strategy Lab Co 3", cik="0009999917")
+    db_session.add(company)
+    db_session.flush()
+
+    now = datetime.now(UTC)
+    db_session.add(
+        EarningsEstimateSnapshot(
+            company_id=company.id,
+            fiscal_period_end_date=date(2026, 10, 31),
+            horizon="fiscal quarter",
+            snapshot_timestamp=now,
+            estimated_report_date=date(2026, 11, 15),
+            source_provider="alpha_vantage",
+            retrieved_at=now,
+        )
+    )
+    db_session.flush()
+
+    response = client.get("/api/v1/research/zzslab3/strategies")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["strategies"] == []
+    assert body["reason"] is not None
+    assert "2026-11-15" in body["reason"]
+    assert "no real options-chain snapshot has been collected" in body["reason"]
+
+
+def test_earnings_date_override_unknown_company_returns_404(client):
+    response = client.post(
+        "/api/v1/research/ZZNODATE/earnings-date",
+        json={"estimated_report_date": "2099-01-01"},
+    )
+    assert response.status_code == 404
+
+
+def test_earnings_date_override_rejects_a_past_date(client, db_session):
+    from models.company import Company
+
+    db_session.add(Company(ticker="ZZPASTD", name="ZZ Past Date Co", cik="0009999919"))
+    db_session.flush()
+
+    response = client.post(
+        "/api/v1/research/zzpastd/earnings-date",
+        # Definitely in the past regardless of when this test runs.
+        json={"estimated_report_date": "2020-01-01"},
+    )
+
+    assert response.status_code == 422
+    assert "in the past" in response.json()["error"]
+
+
+def test_earnings_date_override_persists_with_manual_provenance(client, db_session):
+    from models.company import Company
+
+    db_session.add(Company(ticker="ZZMANUAL", name="ZZ Manual Override Co", cik="0009999920"))
+    db_session.flush()
+
+    response = client.post(
+        "/api/v1/research/zzmanual/earnings-date",
+        json={"estimated_report_date": "2099-06-15"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["estimated_report_date"] == "2099-06-15"
+    assert body["date_source"] == "manual"
+    assert body["eps_estimate_average"] is None
+    assert body["source_provider"] == "manual"
+
+    # And it's now what Strategy Lab / Upcoming Earnings would read as "the"
+    # upcoming date for this company.
+    overview = client.get("/api/v1/research/zzmanual/overview").json()
+    assert overview["latest_earnings_estimate"]["date_source"] == "manual"
+    assert overview["latest_earnings_estimate"]["estimated_report_date"] == "2099-06-15"
 
 
 def test_strategy_lab_returns_real_ranked_strategies_from_a_real_chain(client, db_session):
@@ -718,9 +868,92 @@ def test_strategy_lab_returns_real_ranked_strategies_from_a_real_chain(client, d
     assert body["strategies"] != []
     assert body["chain"] != []
     assert body["implied_move_pct"] == "0.050000"
+    assert body["anchor"] == "earnings_anchored"
+    assert body["reason"] is None
     top = body["strategies"][0]
     assert top["rank"] == 1
     assert "ZZSLAB2" in top["explanation"]
+
+
+def test_strategy_lab_general_current_still_returns_real_strategies(client, db_session):
+    """Regression test for the real bug found live-debugging AMD
+    (2026-08-18): Strategy Lab must not be an all-or-nothing gate on a
+    known earnings date. When a real options-chain snapshot exists but
+    isn't earnings-anchored (no reliable date on record), this must still
+    return real strategies/chain -- just labeled anchor="general_current"
+    with a disclaimer, never an empty result. See
+    api/routers/research.py::get_strategy_lab.
+    """
+    from datetime import UTC, date, datetime
+    from decimal import Decimal
+
+    from models.company import Company
+    from models.enums import OptionsSnapshotAnchor, OptionType
+    from models.options_snapshot import OptionsSnapshot
+    from models.price_bar import PriceBar
+    from models.volatility_snapshot import VolatilitySnapshot
+
+    company = Company(ticker="ZZSLAB4", name="ZZ Strategy Lab Co 4", cik="0009999918")
+    db_session.add(company)
+    db_session.flush()
+
+    now = datetime.now(UTC)
+    db_session.add(
+        PriceBar(
+            ticker="ZZSLAB4",
+            company_id=company.id,
+            trade_date=date(2026, 8, 1),
+            source_provider="test",
+            open=Decimal("100"),
+            high=Decimal("101"),
+            low=Decimal("99"),
+            close=Decimal("100"),
+            volume=1000,
+            retrieved_at=now,
+        )
+    )
+    snapshot_ts = now
+    for strike in (Decimal("95"), Decimal("100"), Decimal("105")):
+        for option_type in (OptionType.CALL, OptionType.PUT):
+            db_session.add(
+                OptionsSnapshot(
+                    company_id=company.id,
+                    snapshot_timestamp=snapshot_ts,
+                    expiration_date=date(2026, 9, 18),
+                    strike=strike,
+                    option_type=option_type,
+                    bid=Decimal("1.90"),
+                    ask=Decimal("2.10"),
+                    source_provider="test",
+                    retrieved_at=snapshot_ts,
+                    anchor=OptionsSnapshotAnchor.GENERAL_CURRENT,
+                )
+            )
+    db_session.add(
+        VolatilitySnapshot(
+            company_id=company.id,
+            snapshot_timestamp=snapshot_ts,
+            method="atm_straddle",
+            target_earnings_date=None,
+            anchor=OptionsSnapshotAnchor.GENERAL_CURRENT,
+            near_term_expiration=date(2026, 9, 18),
+            implied_move_pct=Decimal("0.05"),
+            implied_move_absolute=Decimal("5.00"),
+            computed_at=now,
+        )
+    )
+    db_session.flush()
+
+    response = client.get("/api/v1/research/zzslab4/strategies")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["strategies"] != []
+    assert body["chain"] != []
+    assert body["anchor"] == "general_current"
+    assert body["reason"] is not None
+    assert "not currently confirmed" in body["reason"]
+    assert "not earnings-anchored" in body["reason"]
 
 
 def test_thesis_unknown_company_returns_404(client):

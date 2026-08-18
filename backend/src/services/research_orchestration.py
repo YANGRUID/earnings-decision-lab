@@ -379,11 +379,24 @@ def _prepare_options_chain(
     as_of: datetime,
     force: bool = False,
 ) -> _StepResult:
+    """Collects a real options-chain snapshot for ``company`` -- earnings-
+    anchored when a reliable upcoming earnings date is on record,
+    general/current (nearest practical expiration, honestly labeled as not
+    earnings-anchored) otherwise. Never skips collection just because no
+    provider (Alpha Vantage or a manual override -- see
+    services/market_expectations.py) has published a date yet: an options
+    chain and an earnings date are two independently real things, and one
+    missing must not silently block the other. See
+    docs/ibkr_integration.md and analytics/options/implied_move.py.
+    """
     if options is None:
         return StepStatus.SKIPPED, "no options-data provider configured"
     estimate = get_latest_earnings_estimate(db, company.id)
-    if estimate is None or estimate.estimated_report_date is None:
-        return StepStatus.SKIPPED, "no known upcoming earnings date to anchor a chain to"
+    earnings_date = (
+        estimate.estimated_report_date
+        if estimate is not None and estimate.estimated_report_date is not None
+        else None
+    )
 
     status = assess_freshness(
         DataClass.OPTIONS_CHAIN, _options_chain_last_updated(db, company.id), as_of
@@ -391,13 +404,14 @@ def _prepare_options_chain(
     if not force and not needs_refresh(status):
         return StepStatus.DONE, "already fresh, reused existing data"
 
-    snapshots = collect_options_snapshot_now(
-        db, options, company, estimate.estimated_report_date, as_of
-    )
+    snapshots = collect_options_snapshot_now(db, options, company, earnings_date, as_of)
     if not snapshots:
         return StepStatus.SKIPPED, "provider returned no contracts"
-    compute_and_persist_volatility_snapshot(db, company, estimate.estimated_report_date)
-    return StepStatus.DONE, f"{len(snapshots)} option quotes"
+    compute_and_persist_volatility_snapshot(db, company, earnings_date)
+    anchor_note = (
+        f"earnings-anchored to {earnings_date}" if earnings_date is not None else "general/current"
+    )
+    return StepStatus.DONE, f"{len(snapshots)} option quotes ({anchor_note})"
 
 
 def _prepare_earnings_analysis(db: Session, company: Company) -> _StepResult:

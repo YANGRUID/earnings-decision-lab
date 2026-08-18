@@ -37,6 +37,7 @@ class OptionsDataProvider(ABC):
         as_of: datetime,
         expiration: date | None = None,
         reference_date: date | None = None,
+        earnings_anchored: bool = True,
     ) -> list[OptionQuote]:
         """Full (or single-expiration) option chain quoted at/near ``as_of``.
 
@@ -53,6 +54,17 @@ class OptionsDataProvider(ABC):
         near-that-date expiration and a bounded ATM strike window instead of
         everything. Providers that already return a full chain (e.g. Alpha
         Vantage) ignore it.
+
+        ``earnings_anchored`` tells a bounded provider which expiration-
+        selection rule ``reference_date`` should be interpreted under:
+        ``True`` (the default) means "nearest expiration strictly *after*
+        reference_date" (reference_date is a real earnings date -- an
+        expiration on or before it wouldn't outlive the event). ``False``
+        means "nearest expiration on or after reference_date" (there is no
+        earnings date; reference_date is just "now", and a same-day
+        expiration is still a valid, usable data point). See
+        analytics/options/implied_move.py's two selection functions.
+        Providers that ignore ``reference_date`` also ignore this.
         """
 
 

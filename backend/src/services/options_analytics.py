@@ -34,6 +34,7 @@ from analytics.options.implied_move import (
     calculate_atm_iv,
     calculate_atm_straddle_implied_move,
     select_expiration_after,
+    select_target_expiration_and_anchor,
 )
 from analytics.options.sentiment import (
     iv_term_structure,
@@ -42,7 +43,7 @@ from analytics.options.sentiment import (
 )
 from models.company import Company
 from models.earnings_event import EarningsEvent
-from models.enums import MarketDataQuality, OptionType
+from models.enums import MarketDataQuality, OptionsSnapshotAnchor, OptionType
 from models.options_snapshot import OptionsSnapshot
 from models.price_bar import PriceBar
 from models.price_reaction import PriceReaction
@@ -96,18 +97,21 @@ def _to_option_quote(row: OptionsSnapshot, ticker: str) -> OptionQuote:
 
 
 def compute_and_persist_volatility_snapshot(
-    db: Session, company: Company, earnings_date: date
+    db: Session, company: Company, earnings_date: date | None
 ) -> VolatilitySnapshot | None:
     """Computes implied move + ATM IV from the most recently ingested
-    options-chain snapshot for ``company``, using the nearest expiration
-    strictly after ``earnings_date``. Persists and returns a new
-    VolatilitySnapshot row.
+    options-chain snapshot for ``company``. When ``earnings_date`` is known,
+    uses the nearest expiration strictly after it (earnings-anchored);
+    when it's ``None``, uses the nearest expiration on or after the
+    snapshot's own date instead (general/current -- see
+    select_target_expiration_and_anchor). Persists and returns a new
+    VolatilitySnapshot row, labeled with which of the two this was.
 
     Returns None -- never a fabricated result -- when: no options quotes
-    have been ingested for this company yet, no expiration after
-    ``earnings_date`` is present in the chain, no ATM call+put pair exists
-    at the chosen expiration, or no price data exists to determine the
-    underlying price as of the options snapshot.
+    have been ingested for this company yet, no matching expiration is
+    present in the chain, no ATM call+put pair exists at the chosen
+    expiration, or no price data exists to determine the underlying price
+    as of the options snapshot.
     """
     snapshot_timestamp = _latest_snapshot_timestamp(db, company.id)
     if snapshot_timestamp is None:
@@ -126,7 +130,9 @@ def compute_and_persist_volatility_snapshot(
 
     quotes = [_to_option_quote(r, company.ticker) for r in rows]
     available_expirations = {q.expiration_date for q in quotes}
-    expiration = select_expiration_after(available_expirations, earnings_date)
+    expiration, anchor = select_target_expiration_and_anchor(
+        available_expirations, earnings_date, snapshot_timestamp.date()
+    )
     if expiration is None:
         return None
 
@@ -180,6 +186,7 @@ def compute_and_persist_volatility_snapshot(
         snapshot_timestamp=snapshot_timestamp,
         method=move.method,
         target_earnings_date=earnings_date,
+        anchor=anchor,
         near_term_expiration=expiration,
         next_term_expiration=next_expiration,
         atm_iv_near=iv.atm_iv,
@@ -216,15 +223,29 @@ def _fetch_and_persist_options_snapshot(
     db: Session,
     provider: OptionsDataProvider,
     company: Company,
-    earnings_date: date,
+    earnings_date: date | None,
     as_of: datetime,
 ) -> list[OptionsSnapshot]:
     # reference_date lets a bounded provider (e.g. IBKR, which can't return
     # a full chain -- see providers/ibkr_options.py) pick a sensible
     # expiration/strike window; providers that already return everything
-    # (e.g. Alpha Vantage) ignore it. Always the real earnings date this
-    # snapshot is being collected ahead of, never a guess.
-    quotes = provider.get_option_chain(company.ticker, as_of, reference_date=earnings_date)
+    # (e.g. Alpha Vantage) ignore it. When earnings_date is known, it's the
+    # real earnings date this snapshot is being collected ahead of, never a
+    # guess; when it's None, the provider falls back to "now" and picks the
+    # nearest listed expiration instead of pretending one is tied to an
+    # earnings date that doesn't exist yet -- see
+    # IBKROptionsProvider.get_option_chain's earnings_anchored parameter.
+    anchor = (
+        OptionsSnapshotAnchor.EARNINGS_ANCHORED
+        if earnings_date is not None
+        else OptionsSnapshotAnchor.GENERAL_CURRENT
+    )
+    quotes = provider.get_option_chain(
+        company.ticker,
+        as_of,
+        reference_date=earnings_date,
+        earnings_anchored=earnings_date is not None,
+    )
 
     rows = [
         OptionsSnapshot(
@@ -249,6 +270,7 @@ def _fetch_and_persist_options_snapshot(
             external_contract_id=quote.external_contract_id,
             source_provider=quote.source_provider,
             retrieved_at=quote.retrieved_at,
+            anchor=anchor,
         )
         for quote in quotes
     ]
@@ -297,7 +319,7 @@ def collect_options_snapshot_now(
     db: Session,
     provider: OptionsDataProvider,
     company: Company,
-    earnings_date: date,
+    earnings_date: date | None,
     as_of: datetime,
 ) -> list[OptionsSnapshot] | None:
     """Fetches and persists a real options-chain snapshot for ``company``
@@ -309,6 +331,13 @@ def collect_options_snapshot_now(
     same ticker twice in one day shouldn't duplicate point-in-time
     snapshots; the freshness-policy layer (analytics/research/freshness.py)
     is what actually decides whether this gets called again.
+
+    ``earnings_date`` is ``None`` when no reliable upcoming earnings date is
+    on record -- collection still proceeds (never skipped just because
+    Alpha Vantage hasn't published a date yet), producing a general/current
+    snapshot instead of an earnings-anchored one. See
+    _fetch_and_persist_options_snapshot and
+    IBKROptionsProvider.get_option_chain's earnings_anchored parameter.
     """
     today = as_of.date()
     if _already_collected_today(db, company.id, today):

@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal
 
+from models.enums import OptionsSnapshotAnchor
 from providers.types import OptionQuote
 
 METHOD_ATM_STRADDLE = "atm_straddle"
@@ -128,6 +129,44 @@ def select_expiration_after(available_expirations: set[date], earnings_date: dat
     """
     candidates = [exp for exp in available_expirations if exp > earnings_date]
     return min(candidates) if candidates else None
+
+
+def select_nearest_listed_expiration(
+    available_expirations: set[date], reference_date: date
+) -> date | None:
+    """Nearest available expiration *on or after* ``reference_date`` — the
+    documented fallback rule for a general/current (non-earnings-anchored)
+    options snapshot, where there is no earnings date to require
+    strictly-after semantics for (see ``select_expiration_after``, which
+    this deliberately does NOT reuse: a same-day expiration is a real,
+    usable "current" data point when there's no earnings event it needs to
+    outlive). Returns ``None`` if every available expiration is before
+    ``reference_date``.
+    """
+    candidates = [exp for exp in available_expirations if exp >= reference_date]
+    return min(candidates) if candidates else None
+
+
+def select_target_expiration_and_anchor(
+    available_expirations: set[date],
+    earnings_date: date | None,
+    reference_date: date,
+) -> tuple[date | None, OptionsSnapshotAnchor]:
+    """Single, shared rule for picking which expiration in an
+    already-collected chain represents "the" snapshot expiration, and
+    whether that selection is earnings-anchored or general/current — used
+    identically everywhere a persisted chain needs both an expiration and
+    an anchor label derived from it (compute_and_persist_volatility_snapshot,
+    generate_strategy_candidates), so two call sites can never disagree
+    about what a given chain represents.
+    """
+    if earnings_date is not None:
+        return select_expiration_after(available_expirations, earnings_date), (
+            OptionsSnapshotAnchor.EARNINGS_ANCHORED
+        )
+    return select_nearest_listed_expiration(available_expirations, reference_date), (
+        OptionsSnapshotAnchor.GENERAL_CURRENT
+    )
 
 
 @dataclass(frozen=True)

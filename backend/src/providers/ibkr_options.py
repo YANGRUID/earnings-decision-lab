@@ -15,19 +15,26 @@ Unlike Alpha Vantage's REALTIME_OPTIONS (which returns an entire chain in
 one call), the Client Portal Gateway has no such bulk endpoint -- fetching
 "everything" would mean walking every listed month and strike, which is
 both slow and unnecessary for earnings-move analytics. This adapter
-deliberately fetches a bounded window instead: the nearest expiration on or
-after a reference date (typically the earnings date being researched, via
-``reference_date``; the current moment otherwise), and
+deliberately fetches a bounded window instead: an expiration near a
+reference date (``reference_date``; the current moment when absent), and
 ``STRIKES_AROUND_ATM`` strikes on each side of the current at-the-money
 strike, both calls and puts. See docs/ibkr_integration.md for the worked
 example this rule was derived from (NVDA, 2026-08-17).
+
+Two documented expiration-selection rules, chosen by ``earnings_anchored``:
+when a real earnings date is known, the nearest expiration strictly *after*
+it (an expiration on or before wouldn't outlive the event); when none is
+known, the nearest expiration on or after *now* -- a general, current
+snapshot, not pretending to be anchored to an earnings date that doesn't
+exist yet. Collection never silently skips just because no earnings date is
+known -- see services/research_orchestration.py.
 """
 
 import time
 from datetime import UTC, date, datetime
 from decimal import Decimal, InvalidOperation
 
-from analytics.options.implied_move import select_expiration_after
+from analytics.options.implied_move import select_expiration_after, select_nearest_listed_expiration
 from providers.base import OptionsDataProvider
 from providers.ibkr_client import IBKRClient, IBKRError, decode_market_data_quality
 from providers.types import OptionQuote
@@ -173,6 +180,7 @@ class IBKROptionsProvider(OptionsDataProvider):
         as_of: datetime,
         expiration: date | None = None,
         reference_date: date | None = None,
+        earnings_anchored: bool = True,
     ) -> list[OptionQuote]:
         self._client.ensure_authenticated()
 
@@ -189,7 +197,7 @@ class IBKROptionsProvider(OptionsDataProvider):
             month = _month_code(expiration)
         else:
             target_expiration, month = self._resolve_target_expiration(
-                conid, available_months, underlying_price, ref
+                conid, available_months, underlying_price, ref, earnings_anchored
             )
         if target_expiration is None or month is None:
             return []
@@ -248,7 +256,18 @@ class IBKROptionsProvider(OptionsDataProvider):
         available_months: list[str],
         underlying_price: Decimal,
         reference_date: date,
+        earnings_anchored: bool = True,
     ) -> tuple[date | None, str | None]:
+        """``earnings_anchored=True`` (a real earnings date in
+        ``reference_date``) requires the expiration strictly *after* it, so
+        the event falls inside the contract's remaining life --
+        ``select_expiration_after``. ``earnings_anchored=False`` (no known
+        earnings date -- ``reference_date`` is just "now") allows an
+        expiration on the reference date itself, since there's no event it
+        needs to outlive -- ``select_nearest_listed_expiration``. See
+        docs/ibkr_integration.md and analytics/options/implied_move.py.
+        """
+        select = select_expiration_after if earnings_anchored else select_nearest_listed_expiration
         candidate_month = _month_code(reference_date)
         for _ in range(_MAX_MONTHS_TO_TRY):
             if candidate_month in available_months:
@@ -256,7 +275,7 @@ class IBKROptionsProvider(OptionsDataProvider):
                 if strikes:
                     probe_strike = min(strikes, key=lambda k: abs(k - underlying_price))
                     expirations = self._expirations_for_strike(conid, candidate_month, probe_strike)
-                    target = select_expiration_after(expirations, reference_date)
+                    target = select(expirations, reference_date)
                     if target is not None:
                         return target, candidate_month
             candidate_month = _next_month_code(candidate_month)

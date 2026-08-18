@@ -6,7 +6,7 @@ docs/engineering_decisions.md (Phase 12) for the full design rationale.
 """
 
 import time
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 
 from sqlalchemy.orm import Session
 
@@ -16,6 +16,7 @@ from analytics.earnings.estimate_revisions import (
 )
 from models.company import Company
 from models.earnings_estimate_snapshot import EarningsEstimateSnapshot
+from models.enums import RevisionDirection, UpcomingEarningsDateSource
 from providers.base import EarningsEstimatesProvider
 from providers.types import EarningsEstimatePeriod, UpcomingEarningsCalendarEntry
 
@@ -112,6 +113,50 @@ def collect_next_earnings_estimate(
         ),
         estimated_report_date=calendar_entry.estimated_report_date,
         source_provider="alpha_vantage",
+        retrieved_at=snapshot_timestamp,
+    )
+    db.add(row)
+    db.commit()
+    return row
+
+
+def set_manual_earnings_date(
+    db: Session,
+    company: Company,
+    estimated_report_date: date,
+    fiscal_period_end_date: date | None = None,
+) -> EarningsEstimateSnapshot:
+    """Owner/admin action: records ``company``'s next earnings report date
+    by hand, for when no provider has published one yet (or to correct a
+    provider's date). Persisted with date_source=MANUAL and every
+    consensus field (EPS/revenue estimate, analyst count, revision
+    direction) null -- a manual date is not analyst consensus and must
+    never be read as one. Never overwrites or relabels an existing row;
+    always inserts a new snapshot, exactly like a real provider collection
+    would, so ``get_latest_earnings_estimate`` picks it up through the same
+    ordering every other snapshot uses.
+
+    ``fiscal_period_end_date`` defaults to ``estimated_report_date`` itself
+    when not given -- a real, non-fabricated placeholder (no fiscal-period
+    consensus is being claimed to match it either way; that field only
+    matters for matching against detailed EARNINGS_ESTIMATES rows, which a
+    manual entry has none of).
+
+    Callers are responsible for validating ``estimated_report_date`` (e.g.
+    that it isn't in the past) before calling this -- see
+    api/routers/research.py's set_earnings_date_override.
+    """
+    snapshot_timestamp = datetime.now(UTC)
+    row = EarningsEstimateSnapshot(
+        company_id=company.id,
+        fiscal_period_end_date=fiscal_period_end_date or estimated_report_date,
+        horizon="manual",
+        snapshot_timestamp=snapshot_timestamp,
+        eps_revision_direction=RevisionDirection.UNKNOWN,
+        revenue_revision_direction=RevisionDirection.UNKNOWN,
+        estimated_report_date=estimated_report_date,
+        date_source=UpcomingEarningsDateSource.MANUAL,
+        source_provider="manual",
         retrieved_at=snapshot_timestamp,
     )
     db.add(row)

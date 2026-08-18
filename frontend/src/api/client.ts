@@ -1,5 +1,6 @@
 import type {
   Company,
+  EarningsEstimate,
   EarningsEventDetail,
   EarningsEventSummary,
   EarningsThesis,
@@ -99,6 +100,14 @@ export const api = {
   getStrategyLab: (ticker: string) => request<StrategyLab>(`/research/${ticker}/strategies`),
   getEarningsThesis: (ticker: string) =>
     request<EarningsThesis>(`/research/${ticker}/thesis`, { method: "POST" }),
+  setEarningsDateOverride: (
+    ticker: string,
+    body: { estimated_report_date: string; fiscal_period_end_date?: string | null }
+  ) =>
+    request<EarningsEstimate>(`/research/${ticker}/earnings-date`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
 
   getLatestEvaluation: () => request<EvaluationStatusResponse>("/evaluations/latest"),
 

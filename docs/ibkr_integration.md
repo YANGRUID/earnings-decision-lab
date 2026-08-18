@@ -175,20 +175,21 @@ current exposure to this company" — this phase is backend/data integration onl
 
 ```
 OPTIONS_PROVIDER=ibkr          # alpha_vantage | ibkr, see providers/factory.py
-IBKR_BASE_URL=https://localhost:5001/v1/api
+IBKR_BASE_URL=https://host.docker.internal:5001/v1/api
 ```
 
 `IBKR_BASE_URL` is never hard-coded elsewhere in the codebase — always read from `Settings`.
 
-**Confirmed live, Docker Compose (Phase 13):** the dockerized backend container's `localhost` is
-the container itself, not the host machine, so `IBKR_BASE_URL=https://localhost:5001/v1/api`
-cannot reach a Gateway running on the host from inside `docker compose`. Verified this fails
-exactly as designed — `IBKRGatewayUnavailableError`, reported cleanly, no crash — rather than
-assuming it. Running the IBKR integration against a dockerized backend requires pointing
-`IBKR_BASE_URL` at something the container can actually reach (e.g. `host.docker.internal` on
-Docker Desktop); not solved here, since this project's supported architecture for Phase 13 is
-Mac → local Gateway → local (non-Docker) backend — see "Local-first design" above. A future Azure
-deployment is an explicitly separate, deferred decision.
+**Docker Compose networking (Phase 13, fixed in the on-demand-options-collection work):** the
+dockerized backend container's `localhost` is the container itself, not the host machine, so
+`IBKR_BASE_URL=https://localhost:5001/v1/api` cannot reach a Gateway running on the host from
+inside `docker compose` — confirmed live as `IBKRGatewayUnavailableError`, reported cleanly, no
+crash, rather than assumed. `docker-compose.yml`'s `backend` service now maps
+`host.docker.internal` to the host on every platform (`extra_hosts: host-gateway`, not just a
+Docker Desktop built-in), and `.env.example` defaults `IBKR_BASE_URL` to
+`https://host.docker.internal:5001/v1/api` accordingly. Running the backend directly on the host
+instead (no Docker) still needs plain `localhost` — change `IBKR_BASE_URL` back if that's your
+setup. A future Azure deployment remains an explicitly separate, deferred decision.
 
 ## Error handling
 

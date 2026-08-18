@@ -6,7 +6,7 @@ from sqlalchemy import Date, DateTime, Enum, ForeignKey, Integer, Numeric, Strin
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from db.base import Base
-from models.enums import GreeksSource, MarketDataQuality, OptionType
+from models.enums import GreeksSource, MarketDataQuality, OptionsSnapshotAnchor, OptionType
 from models.mixins import TimestampMixin
 
 if TYPE_CHECKING:
@@ -73,5 +73,17 @@ class OptionsSnapshot(TimestampMixin, Base):
 
     source_provider: Mapped[str] = mapped_column(String(64))
     retrieved_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+    # Whether this contract's expiration was chosen relative to a known
+    # earnings date, or as a general "nearest practical" snapshot taken
+    # with no reliable earnings date on record -- see
+    # services/options_analytics.py, which always sets this explicitly at
+    # collection time. The default below only covers direct ORM
+    # construction that doesn't care about the distinction (tests, ad hoc
+    # scripts) -- never relied on by the real collection path.
+    anchor: Mapped[OptionsSnapshotAnchor] = mapped_column(
+        Enum(OptionsSnapshotAnchor, name="options_snapshot_anchor"),
+        default=OptionsSnapshotAnchor.EARNINGS_ANCHORED,
+    )
 
     company: Mapped["Company"] = relationship()  # noqa: F821

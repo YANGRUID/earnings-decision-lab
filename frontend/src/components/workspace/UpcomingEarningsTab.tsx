@@ -1,6 +1,7 @@
+import { useState } from "react";
 import { Link } from "react-router-dom";
 import { useAsync } from "../../hooks/useAsync";
-import { api } from "../../api/client";
+import { api, ApiError } from "../../api/client";
 import { formatMoney, formatPercent } from "../../lib/format";
 import { LoadingState } from "../StatusStates";
 import type { ResearchOverview } from "../../types/api";
@@ -10,12 +11,74 @@ function formatPlainPercent(value: string | null): string {
   return formatPercent(Number(value), 1);
 }
 
+const DATE_SOURCE_LABEL: Record<string, string> = {
+  alpha_vantage: "provider-confirmed",
+  manual: "manually entered by owner",
+  estimated: "estimated, not confirmed",
+  unknown: "unknown provenance",
+};
+
+function ManualEarningsDateOverride({
+  ticker,
+  onSaved,
+}: {
+  ticker: string;
+  onSaved: () => void;
+}) {
+  const [reportDate, setReportDate] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const submit = async () => {
+    if (!reportDate) return;
+    setSaving(true);
+    setError(null);
+    try {
+      await api.setEarningsDateOverride(ticker, { estimated_report_date: reportDate });
+      setReportDate("");
+      onSaved();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Could not save this date.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <details className="card" style={{ marginTop: 12 }}>
+      <summary style={{ cursor: "pointer", fontWeight: 600 }}>
+        Owner override: set next earnings date manually
+      </summary>
+      <div style={{ marginTop: 14 }}>
+        <p className="text-sm text-muted" style={{ marginTop: 0 }}>
+          For when no provider has published {ticker}'s next report date yet. Stored as a
+          manually entered date — never shown as provider-confirmed.
+        </p>
+        <div className="field">
+          <label>Estimated report date</label>
+          <input
+            type="date"
+            value={reportDate}
+            onChange={(e) => setReportDate(e.target.value)}
+          />
+        </div>
+        <button className="btn" disabled={saving || !reportDate} onClick={submit}>
+          {saving ? "Saving…" : "Save date"}
+        </button>
+        {error && <div className="notice" style={{ marginTop: 10 }}>{error}</div>}
+      </div>
+    </details>
+  );
+}
+
 export function UpcomingEarningsTab({
   ticker,
   overview,
+  onOverviewChanged,
 }: {
   ticker: string;
   overview: ResearchOverview;
+  onOverviewChanged: () => void;
 }) {
   const replay = useAsync(() => api.getReplaySummary(), []);
   const est = overview.latest_earnings_estimate;
@@ -59,7 +122,8 @@ export function UpcomingEarningsTab({
                 </div>
               </div>
               <p className="text-sm text-muted" style={{ marginTop: 10, marginBottom: 0 }}>
-                Estimated report date: {est.estimated_report_date ?? "unknown"} · consensus as of{" "}
+                Estimated report date: {est.estimated_report_date ?? "unknown"} (
+                {DATE_SOURCE_LABEL[est.date_source] ?? est.date_source}) · consensus as of{" "}
                 {new Date(est.snapshot_timestamp).toLocaleDateString()} ({est.source_provider}).
               </p>
             </>
@@ -69,6 +133,7 @@ export function UpcomingEarningsTab({
               <span className="mono">Refresh</span> above to fetch one.
             </p>
           )}
+          <ManualEarningsDateOverride ticker={ticker} onSaved={onOverviewChanged} />
         </div>
 
         <div className="card">

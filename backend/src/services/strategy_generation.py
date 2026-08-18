@@ -11,7 +11,7 @@ from datetime import date
 
 from sqlalchemy.orm import Session
 
-from analytics.options.implied_move import select_expiration_after
+from analytics.options.implied_move import select_target_expiration_and_anchor
 from analytics.options.strategy_candidates import StrategyCandidate, generate_candidates
 from models.company import Company
 from services.options_analytics import (
@@ -22,15 +22,20 @@ from services.options_analytics import (
 
 
 def generate_strategy_candidates(
-    db: Session, company: Company, earnings_date: date
+    db: Session, company: Company, earnings_date: date | None
 ) -> list[StrategyCandidate]:
     """Every strategy candidate the most recently ingested options-chain
-    snapshot supports for ``company``'s upcoming ``earnings_date``.
+    snapshot supports. When ``earnings_date`` is known, anchored to it
+    (nearest expiration strictly after); when ``None``, uses the nearest
+    listed expiration on or after the snapshot's own date instead -- the
+    same shared rule compute_and_persist_volatility_snapshot uses (see
+    select_target_expiration_and_anchor), so the two can never disagree
+    about which expiration a given chain represents.
 
     Returns an empty list -- never fabricated data -- when no options
-    snapshot has been ingested yet for this company, no expiration after
-    ``earnings_date`` exists in that snapshot's chain, or no underlying
-    price is on record as of the snapshot.
+    snapshot has been ingested yet for this company, no matching expiration
+    exists in that snapshot's chain, or no underlying price is on record as
+    of the snapshot.
     """
     snapshot_timestamp = _latest_snapshot_timestamp(db, company.id)
     if snapshot_timestamp is None:
@@ -41,7 +46,9 @@ def generate_strategy_candidates(
         return []
 
     available_expirations = {q.expiration_date for q in quotes}
-    expiration = select_expiration_after(available_expirations, earnings_date)
+    expiration, _anchor = select_target_expiration_and_anchor(
+        available_expirations, earnings_date, snapshot_timestamp.date()
+    )
     if expiration is None:
         return []
 

@@ -41,6 +41,14 @@ services:
       - .env
     environment:
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-change_me}@db:5432/${POSTGRES_DB:-earnings_decision_lab}
+    # host.docker.internal resolves natively on Docker Desktop (Mac/Windows);
+    # this extra_hosts entry is what makes it also resolve on Linux Docker,
+    # so IBKR_BASE_URL=https://host.docker.internal:5001/... (see
+    # .env.example) reaches a Gateway running on the host from inside the
+    # container on every supported platform -- previously undocumented as a
+    # deliberately deferred gap (see docs/ibkr_integration.md), now fixed.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     ports:
       - "${BACKEND_PORT:-8000}:8000"
     depends_on:

@@ -127,6 +127,45 @@ def test_real_chain_and_price_produce_real_candidates(db_session):
     assert long_call.legs[0].strike == Decimal("100")
 
 
+def test_general_mode_still_produces_real_candidates_with_no_earnings_date(db_session):
+    """Regression test for the real bug this architecture replaces: a
+    ticker with no known upcoming earnings date (Alpha Vantage's real
+    behavior for AMD, 2026-08-18) must still get real Strategy Lab
+    candidates from its options chain, not an empty result -- see
+    services/research_orchestration.py::_prepare_options_chain and
+    api/routers/research.py::get_strategy_lab.
+    """
+    company = _seed_company(db_session)
+    _seed_price_bar(db_session, company.ticker, date(2026, 9, 12), Decimal("100"))
+    # An expiration exactly on the snapshot's own date -- valid in general
+    # mode (nearest on-or-after), unlike earnings-anchored mode.
+    for strike in (Decimal("95"), Decimal("100"), Decimal("105"), Decimal("110")):
+        _seed_option_quote(
+            db_session,
+            company,
+            expiration=SNAPSHOT_TS.date(),
+            strike=strike,
+            option_type=OptionType.CALL,
+            bid=Decimal("1.90"),
+            ask=Decimal("2.10"),
+        )
+        _seed_option_quote(
+            db_session,
+            company,
+            expiration=SNAPSHOT_TS.date(),
+            strike=strike,
+            option_type=OptionType.PUT,
+            bid=Decimal("1.90"),
+            ask=Decimal("2.10"),
+        )
+
+    candidates = generate_strategy_candidates(db_session, company, None)
+
+    assert candidates != []
+    assert all(c.expiration == SNAPSHOT_TS.date() for c in candidates)
+    assert all(c.underlying_price == Decimal("100") for c in candidates)
+
+
 def test_uses_only_the_latest_snapshot_not_stale_ones(db_session):
     company = _seed_company(db_session)
     _seed_price_bar(db_session, company.ticker, date(2026, 9, 12), Decimal("100"))

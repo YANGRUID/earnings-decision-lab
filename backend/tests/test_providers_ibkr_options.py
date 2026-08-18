@@ -283,3 +283,19 @@ class TestGetOptionChainFullFlow:
         quotes = provider.get_option_chain("NVDA", AS_OF, reference_date=date(2026, 8, 17))
 
         assert all(q.expiration_date != date(2026, 8, 17) for q in quotes)
+
+    def test_general_mode_allows_same_day_expiration(self):
+        """Regression test for the general/current (non-earnings-anchored)
+        collection path added to unblock a ticker with no known upcoming
+        earnings date (real bug: AMD, 2026-08-18) -- earnings_anchored=False
+        must use the on-or-after rule, not silently keep the
+        strictly-after earnings rule.
+        """
+        provider = self._provider(strikes_window=2)
+
+        quotes = provider.get_option_chain(
+            "NVDA", AS_OF, reference_date=date(2026, 8, 17), earnings_anchored=False
+        )
+
+        assert len(quotes) >= 1
+        assert all(q.expiration_date == date(2026, 8, 17) for q in quotes)

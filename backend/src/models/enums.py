@@ -44,3 +44,29 @@ class FilingType(enum.StrEnum):
     EARNINGS_RELEASE = "earnings_release"
     INVESTOR_PRESENTATION = "investor_presentation"
     OTHER = "other"
+
+
+class OptionsSnapshotAnchor(enum.StrEnum):
+    """Whether an options-chain snapshot's expiration was chosen relative to
+    a known upcoming earnings date, or as a general "nearest practical"
+    snapshot taken when no reliable earnings date exists yet -- see the two
+    expiration-selection rules in analytics/options/implied_move.py
+    (select_expiration_after vs select_nearest_listed_expiration). Set once,
+    at collection time, from which rule actually ran -- never inferred
+    after the fact from expiration_date alone."""
+
+    EARNINGS_ANCHORED = "earnings_anchored"
+    GENERAL_CURRENT = "general_current"
+
+
+class UpcomingEarningsDateSource(enum.StrEnum):
+    """Provenance of an upcoming earnings report date. A provider-confirmed
+    date, a manually entered one, and an algorithmically estimated one
+    carry different reliability and must never be silently conflated --
+    anything downstream that reads an EarningsEstimateSnapshot's date must
+    read this field too, not assume the date is provider-confirmed."""
+
+    ALPHA_VANTAGE = "alpha_vantage"
+    MANUAL = "manual"
+    ESTIMATED = "estimated"
+    UNKNOWN = "unknown"

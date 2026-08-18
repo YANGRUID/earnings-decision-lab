@@ -3,12 +3,13 @@ from decimal import Decimal
 
 from models.company import Company
 from models.earnings_estimate_snapshot import EarningsEstimateSnapshot
-from models.enums import RevisionDirection
+from models.enums import RevisionDirection, UpcomingEarningsDateSource
 from providers.base import EarningsEstimatesProvider
 from providers.types import EarningsEstimatePeriod, UpcomingEarningsCalendarEntry
 from services.market_expectations import (
     collect_next_earnings_estimate,
     get_latest_earnings_estimate,
+    set_manual_earnings_date,
 )
 
 NOW = datetime.now(UTC)
@@ -174,6 +175,77 @@ class TestCollectNextEarningsEstimate:
 
         assert row2.revenue_estimate_average == Decimal("5200000000")
         assert row2.revenue_revision_direction == RevisionDirection.UP
+
+
+class TestSetManualEarningsDate:
+    """Regression tests for the owner/admin manual override that unblocks
+    Strategy Lab / options collection when Alpha Vantage has no upcoming
+    earnings date on record -- see api/routers/research.py's
+    set_earnings_date_override and the real bug this replaces (AMD,
+    2026-08-18).
+    """
+
+    def test_persists_with_manual_provenance_and_null_consensus(self, db_session):
+        company = _seed_company(db_session)
+
+        row = set_manual_earnings_date(db_session, company, date(2026, 11, 4))
+
+        assert row.estimated_report_date == date(2026, 11, 4)
+        assert row.date_source == UpcomingEarningsDateSource.MANUAL
+        # A manual date is not analyst consensus -- every consensus field
+        # must stay null, never fabricated to look like real estimates.
+        assert row.eps_estimate_average is None
+        assert row.revenue_estimate_average is None
+        assert row.eps_estimate_analyst_count is None
+        assert row.source_provider == "manual"
+
+    def test_defaults_fiscal_period_end_date_to_report_date_when_not_given(self, db_session):
+        company = _seed_company(db_session)
+
+        row = set_manual_earnings_date(db_session, company, date(2026, 11, 4))
+
+        assert row.fiscal_period_end_date == date(2026, 11, 4)
+
+    def test_respects_explicit_fiscal_period_end_date(self, db_session):
+        company = _seed_company(db_session)
+
+        row = set_manual_earnings_date(
+            db_session, company, date(2026, 11, 4), fiscal_period_end_date=date(2026, 9, 27)
+        )
+
+        assert row.fiscal_period_end_date == date(2026, 9, 27)
+        assert row.estimated_report_date == date(2026, 11, 4)
+
+    def test_never_overwrites_or_relabels_an_existing_row(self, db_session):
+        """A manual override always inserts a new snapshot -- it must never
+        mutate a prior row's date_source, e.g. silently turning an existing
+        alpha_vantage-confirmed row into one that looks manual."""
+        company = _seed_company(db_session)
+        provider_row = collect_next_earnings_estimate(
+            db_session,
+            _StubEstimatesProvider(
+                calendar_entry=_calendar_entry(date(2026, 8, 31), date(2026, 9, 22)),
+                periods=[_period(date(2026, 8, 31))],
+            ),
+            company,
+        )
+        assert provider_row is not None
+
+        set_manual_earnings_date(db_session, company, date(2026, 11, 4))
+
+        db_session.refresh(provider_row)
+        assert provider_row.date_source == UpcomingEarningsDateSource.ALPHA_VANTAGE
+        assert provider_row.estimated_report_date == date(2026, 9, 22)
+
+    def test_latest_earnings_estimate_picks_up_the_manual_row(self, db_session):
+        company = _seed_company(db_session)
+
+        set_manual_earnings_date(db_session, company, date(2026, 11, 4))
+
+        latest = get_latest_earnings_estimate(db_session, company.id)
+        assert latest is not None
+        assert latest.date_source == UpcomingEarningsDateSource.MANUAL
+        assert latest.estimated_report_date == date(2026, 11, 4)
 
 
 class TestGetLatestEarningsEstimate:

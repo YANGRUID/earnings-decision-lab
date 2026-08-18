@@ -172,7 +172,13 @@ export function CompanyWorkspace() {
 
       <div className="tab-panel">
         {tab === "overview" && <OverviewTab overview={data} />}
-        {tab === "upcoming" && <UpcomingEarningsTab ticker={ticker} overview={data} />}
+        {tab === "upcoming" && (
+          <UpcomingEarningsTab
+            ticker={ticker}
+            overview={data}
+            onOverviewChanged={() => setRefreshKey((k) => k + 1)}
+          />
+        )}
         {tab === "strategy" && <StrategyLabTab ticker={ticker} />}
         {tab === "thesis" && <ThesisTab ticker={ticker} />}
         {tab === "exposure" && <ExposureTab ticker={ticker} />}

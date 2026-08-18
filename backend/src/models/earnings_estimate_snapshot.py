@@ -6,7 +6,7 @@ from sqlalchemy import Date, DateTime, Enum, ForeignKey, Integer, Numeric, Strin
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from db.base import Base
-from models.enums import RevisionDirection
+from models.enums import RevisionDirection, UpcomingEarningsDateSource
 from models.mixins import TimestampMixin
 
 if TYPE_CHECKING:
@@ -88,6 +88,16 @@ class EarningsEstimateSnapshot(TimestampMixin, Base):
 
     # --- Provider's own next-report-date prediction, not SEC-confirmed ---
     estimated_report_date: Mapped[date | None] = mapped_column(Date)
+    # Provenance of estimated_report_date specifically -- distinct from
+    # source_provider (generic metadata already used elsewhere) because a
+    # date needs its own, closed reliability classification: never let a
+    # manual or algorithmically-estimated date be read as provider-
+    # confirmed just because a row exists. See
+    # services/market_expectations.py.
+    date_source: Mapped[UpcomingEarningsDateSource] = mapped_column(
+        Enum(UpcomingEarningsDateSource, name="upcoming_earnings_date_source"),
+        default=UpcomingEarningsDateSource.ALPHA_VANTAGE,
+    )
 
     source_provider: Mapped[str] = mapped_column(String(64))
     retrieved_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
