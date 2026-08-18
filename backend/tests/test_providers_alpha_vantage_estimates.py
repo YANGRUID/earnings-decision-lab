@@ -58,6 +58,18 @@ MALFORMED_RATE_LIMIT_CSV = (
     "symbol,name,reportDate,fiscalDateEnding,estimate,currency\r\nI,n,f,o,r,m\r\n"
 )
 
+# The exact 7-column live payload observed during Phase 14.9 AAPL root-cause
+# investigation (this project's Alpha Vantage key at its 25-requests/day
+# cap) -- confirmed via a direct live call, not synthesized. This is the
+# actual root cause of the real AAPL "no next earnings date" / "no analyst
+# consensus" preparation-step failure the user reported: EARNINGS_CALENDAR
+# degrades to this malformed CSV row instead of the JSON error body every
+# other Alpha Vantage endpoint returns under the same rate limit.
+LIVE_RATE_LIMIT_CSV = (
+    "symbol,name,reportDate,fiscalDateEnding,estimate,currency,timeOfTheDay\r\n"
+    "I,n,f,o,r,m,a\r\n"
+)
+
 
 def test_requires_api_key():
     with pytest.raises(ValueError):
@@ -89,8 +101,9 @@ def test_get_earnings_estimates_raises_on_rate_limit_note(httpx_mock):
     )
     provider = AlphaVantageEarningsEstimatesProvider(api_key="test-key")
 
-    with pytest.raises(AlphaVantageError):
+    with pytest.raises(AlphaVantageError) as exc_info:
         provider.get_earnings_estimates("MU")
+    assert exc_info.value.rate_limited is True
 
 
 def test_get_next_earnings_date_parses_real_csv(httpx_mock):
@@ -140,8 +153,9 @@ def test_get_next_earnings_date_raises_on_json_error_response(httpx_mock):
     )
     provider = AlphaVantageEarningsEstimatesProvider(api_key="test-key")
 
-    with pytest.raises(AlphaVantageError):
+    with pytest.raises(AlphaVantageError) as exc_info:
         provider.get_next_earnings_date("MU")
+    assert exc_info.value.rate_limited is True
 
 
 def test_get_next_earnings_date_raises_on_malformed_rate_limit_csv(httpx_mock):
@@ -152,5 +166,33 @@ def test_get_next_earnings_date_raises_on_malformed_rate_limit_csv(httpx_mock):
     )
     provider = AlphaVantageEarningsEstimatesProvider(api_key="test-key")
 
-    with pytest.raises(AlphaVantageError):
+    with pytest.raises(AlphaVantageError) as exc_info:
         provider.get_next_earnings_date("MU")
+    assert exc_info.value.rate_limited is True
+
+
+def test_get_next_earnings_date_raises_rate_limited_on_live_observed_payload(httpx_mock):
+    """Regression test for the confirmed real AAPL root cause (Phase 14.9):
+    reproduces, byte-for-byte, the malformed CSV this project's Alpha
+    Vantage key actually returned live for EARNINGS_CALENDAR once its
+    25-requests/day quota was exhausted -- a syntactically valid header
+    followed by one data row whose single-character values spell
+    "Informa[tion]". Before this phase, this fell through to the generic
+    `except (KeyError, ValueError)` date-parsing branch and was reported as
+    an opaque parse failure; it must now be caught earlier and classified
+    as a rate limit, not a generic malformed-row error."""
+    httpx_mock.add_response(
+        url=URL_PATTERN,
+        text=LIVE_RATE_LIMIT_CSV,
+        headers={"content-type": "application/x-download"},
+    )
+    provider = AlphaVantageEarningsEstimatesProvider(api_key="test-key")
+
+    with pytest.raises(AlphaVantageError) as exc_info:
+        provider.get_next_earnings_date("AAPL")
+    assert exc_info.value.rate_limited is True
+    assert "rate-limit-degraded" in str(exc_info.value)
+
+
+def test_alpha_vantage_error_defaults_to_not_rate_limited():
+    assert AlphaVantageError("some other failure").rate_limited is False

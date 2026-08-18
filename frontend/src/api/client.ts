@@ -1,7 +1,10 @@
 import type {
+  AIDecisionVersion,
   AIResearchHistoryItem,
   AIThesisVersion,
   Company,
+  DecisionDirection,
+  DecisionVolatilityView,
   EarningsEstimate,
   EarningsEventDetail,
   EarningsEventSummary,
@@ -23,6 +26,7 @@ import type {
   StrategyPayoffResponse,
   SystemStatus,
   TestConnectionResult,
+  TrackRecord,
 } from "../types/api";
 
 const BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000/api/v1";
@@ -160,5 +164,37 @@ export const api = {
     if (params.ticker) qs.set("ticker", params.ticker);
     const suffix = qs.toString() ? `?${qs.toString()}` : "";
     return request<PortfolioSnapshotResponse>(`/portfolio/positions${suffix}`);
+  },
+
+  generateDecision: (
+    ticker: string,
+    override?: { direction: DecisionDirection; volatility_view: DecisionVolatilityView }
+  ) =>
+    request<AIDecisionVersion>(`/research/${ticker}/decision`, {
+      method: "POST",
+      body: override ? JSON.stringify(override) : undefined,
+    }),
+  getDecisionHistory: (ticker: string, params: { limit?: number; offset?: number } = {}) => {
+    const qs = new URLSearchParams();
+    if (params.limit) qs.set("limit", String(params.limit));
+    if (params.offset) qs.set("offset", String(params.offset));
+    const suffix = qs.toString() ? `?${qs.toString()}` : "";
+    return request<AIDecisionVersion[]>(`/research/${ticker}/decisions${suffix}`);
+  },
+  getDecision: (ticker: string, id: number) =>
+    request<AIDecisionVersion>(`/research/${ticker}/decisions/${id}`),
+  deleteDecision: (ticker: string, id: number) =>
+    request<void>(`/research/${ticker}/decisions/${id}`, { method: "DELETE" }),
+  markDecisionFinal: (ticker: string, id: number) =>
+    request<AIDecisionVersion>(`/research/${ticker}/decisions/${id}/final`, { method: "POST" }),
+  settleDecision: (ticker: string, id: number) =>
+    request<AIDecisionVersion>(`/research/${ticker}/decisions/${id}/settle`, { method: "POST" }),
+
+  getTrackRecord: (params: { ticker?: string; window?: "all_time" | "last_10" } = {}) => {
+    const qs = new URLSearchParams();
+    if (params.ticker) qs.set("ticker", params.ticker);
+    if (params.window) qs.set("window", params.window);
+    const suffix = qs.toString() ? `?${qs.toString()}` : "";
+    return request<TrackRecord>(`/research/track-record${suffix}`);
   },
 };

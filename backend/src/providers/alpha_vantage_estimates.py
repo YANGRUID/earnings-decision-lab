@@ -17,7 +17,7 @@ import httpx
 from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 
 from observability.http_client import new_http_client
-from providers.alpha_vantage import AlphaVantageError
+from providers.alpha_vantage import AlphaVantageError, is_rate_limit_note
 from providers.base import EarningsEstimatesProvider
 from providers.types import EarningsEstimatePeriod, UpcomingEarningsCalendarEntry
 
@@ -30,6 +30,16 @@ def _retryable(exc: BaseException) -> bool:
     if isinstance(exc, httpx.HTTPStatusError):
         return exc.response.status_code == 429 or exc.response.status_code >= 500
     return False
+
+
+def _looks_like_degraded_rate_limit_row(row: dict[str, str | None]) -> bool:
+    """A real EARNINGS_CALENDAR row always has multi-character values
+    (a ticker, an ISO date, a currency code, ...). A row where every
+    present value is a single character is not a shape real calendar data
+    can take -- see the caller for the confirmed live rate-limit case this
+    guards against."""
+    values = [v for v in row.values() if v is not None and v != ""]
+    return bool(values) and all(len(v) <= 1 for v in values)
 
 
 def _decimal_or_none(value) -> Decimal | None:
@@ -73,7 +83,10 @@ class AlphaVantageEarningsEstimatesProvider(EarningsEstimatesProvider):
         estimates = payload.get("estimates")
         if estimates is None:
             note = payload.get("Note") or payload.get("Information") or payload.get("Error Message")
-            raise AlphaVantageError(note or f"unexpected response shape: {list(payload)}")
+            raise AlphaVantageError(
+                note or f"unexpected response shape: {list(payload)}",
+                rate_limited=is_rate_limit_note(note),
+            )
 
         retrieved_at = datetime.now(UTC)
         periods: list[EarningsEstimatePeriod] = []
@@ -142,7 +155,8 @@ class AlphaVantageEarningsEstimatesProvider(EarningsEstimatesProvider):
                 payload.get("Note") or payload.get("Information") or payload.get("Error Message")
             )
             raise AlphaVantageError(
-                note or f"unexpected JSON response for EARNINGS_CALENDAR: {payload}"
+                note or f"unexpected JSON response for EARNINGS_CALENDAR: {payload}",
+                rate_limited=is_rate_limit_note(note),
             )
 
         expected_header = {
@@ -166,6 +180,22 @@ class AlphaVantageEarningsEstimatesProvider(EarningsEstimatesProvider):
         # rare cases (e.g. an estimate revision published mid-quarter) --
         # the nearest reportDate is the one this project treats as "next".
         row = min(rows, key=lambda r: r["reportDate"])
+        if _looks_like_degraded_rate_limit_row(row):
+            # Confirmed live (Phase 14.9): when this key is rate-limited,
+            # EARNINGS_CALENDAR does *not* fall back to the documented JSON
+            # error body like every other endpoint. It instead serves a
+            # real CSV header followed by one data row whose comma-joined
+            # single-character values spell "Informa[tion...]" -- i.e. the
+            # provider appears to CSV-encode its own rate-limit message
+            # character-by-character rather than field-by-field. That
+            # response still has HTTP 200 + a valid header, so only content
+            # inspection (every field <=1 char, an otherwise-impossible
+            # shape for a real symbol/date/currency row) can catch it.
+            raise AlphaVantageError(
+                "Alpha Vantage EARNINGS_CALENDAR returned a malformed row that matches its "
+                f"known rate-limit-degraded CSV shape rather than real calendar data: {row!r}",
+                rate_limited=True,
+            )
         try:
             report_date = date.fromisoformat(row["reportDate"])
             period_end = date.fromisoformat(row["fiscalDateEnding"])

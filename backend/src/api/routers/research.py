@@ -11,10 +11,10 @@ from api.deps import LLM, DbSession, Embedder, Orchestrator
 from api.exceptions import InvalidRequestError, NotFoundError, RateLimitedError
 from core.config import get_settings
 from db.session import SessionLocal
-from models.ai_thesis_version import AIThesisVersion
 from models.company import Company
 from models.document_chunk import DocumentChunk
 from models.earnings_event import EarningsEvent
+from models.enums import DecisionDirection, DecisionSource, DecisionVolatilityView
 from models.filing import Filing
 from models.price_bar import PriceBar
 from providers.sec_edgar import SECEdgarProvider
@@ -23,10 +23,13 @@ from rag.context import assemble_context
 from rag.embeddings import EmbeddingProvider
 from rag.retrieval import RetrievalFilters, hybrid_search
 from schemas.api import (
+    AIDecisionVersionResponse,
     AIResearchHistoryItemResponse,
     AIThesisVersionResponse,
     CitationResponse,
     CompanyResponse,
+    ConfidenceBucketResponse,
+    DecisionGenerateRequest,
     EarningsEstimateResponse,
     EarningsThesisResponse,
     ExecutionTraceResponse,
@@ -38,6 +41,7 @@ from schemas.api import (
     OptionQuoteResponse,
     OptionsMarketStateResponse,
     RankedStrategyResponse,
+    RateResponse,
     ResearchJobQueuedResponse,
     ResearchJobResponse,
     ResearchOverviewResponse,
@@ -47,8 +51,18 @@ from schemas.api import (
     StrategyAnalysisResponse,
     StrategyLabResponse,
     ToolCallResponse,
+    TrackRecordResponse,
     VolatilitySnapshotResponse,
 )
+from services.decision_engine import DecisionGenerationError, generate_decision
+from services.decision_history import (
+    delete_decision,
+    get_decision,
+    list_decisions,
+    mark_final,
+    persist_decision,
+)
+from services.decision_settlement import settle_decision
 from services.earnings_thesis import ThesisGenerationError, generate_earnings_thesis
 from services.historical_moves import get_historical_move_pcts, get_historical_move_stats
 from services.llm.errors import LLMError
@@ -65,6 +79,7 @@ from services.research_history import (
     delete_thesis_version,
     get_research_query,
     get_thesis_version,
+    is_thesis_stale,
     list_research_queries,
     list_thesis_versions,
     persist_research_query,
@@ -79,6 +94,7 @@ from services.research_orchestration import (
 )
 from services.strategy_generation import generate_strategy_candidates
 from services.symbol_resolution import normalize_ticker, resolve_symbol
+from services.track_record import compute_track_record
 
 log = logging.getLogger("api.research")
 
@@ -618,21 +634,6 @@ def get_earnings_thesis(
     )
 
 
-def _thesis_is_stale(db: DbSession, company: Company, version: AIThesisVersion) -> bool:
-    """True when the real *current* latest consensus/options snapshot for
-    ``company`` is a different row than what this version was grounded in
-    -- never inferred from a fixed time window, only from an actual change
-    in which snapshot is now the latest."""
-    current_estimate = get_latest_earnings_estimate(db, company.id)
-    current_volatility = get_latest_volatility_snapshot(db, company.id)
-    current_estimate_id = current_estimate.id if current_estimate is not None else None
-    current_volatility_id = current_volatility.id if current_volatility is not None else None
-    return (
-        version.earnings_estimate_snapshot_id != current_estimate_id
-        or version.volatility_snapshot_id != current_volatility_id
-    )
-
-
 @router.get("/{symbol}/theses", response_model=list[AIThesisVersionResponse])
 def get_thesis_history(
     symbol: str,
@@ -649,7 +650,7 @@ def get_thesis_history(
     responses = []
     for v in versions:
         response = AIThesisVersionResponse.model_validate(v)
-        response.is_stale = _thesis_is_stale(db, company, v)
+        response.is_stale = is_thesis_stale(db, company, v)
         responses.append(response)
     return responses
 
@@ -667,7 +668,7 @@ def get_thesis_version_item(
     if version is None or version.company_id != company.id:
         raise NotFoundError(f"no thesis version {version_id} for {ticker!r}")
     response = AIThesisVersionResponse.model_validate(version)
-    response.is_stale = _thesis_is_stale(db, company, version)
+    response.is_stale = is_thesis_stale(db, company, version)
     return response
 
 
@@ -682,3 +683,185 @@ def delete_thesis_version_item(symbol: str, version_id: int, db: DbSession) -> N
     if version is None or version.company_id != company.id:
         raise NotFoundError(f"no thesis version {version_id} for {ticker!r}")
     delete_thesis_version(db, version_id)
+
+
+@router.post("/{symbol}/decision", response_model=AIDecisionVersionResponse)
+def generate_decision_endpoint(
+    symbol: str,
+    request: Request,
+    db: DbSession,
+    llm: LLM,
+    embedder: Embedder,
+    body: DecisionGenerateRequest | None = None,
+) -> AIDecisionVersionResponse:
+    if not request.app.state.research_rate_limiter.allow():
+        raise RateLimitedError(
+            "Too many AI requests in a short window — a decision runs several real LLM calls. "
+            "Please wait a moment and try again."
+        )
+    ticker = normalize_ticker(symbol)
+    company = db.query(Company).filter(Company.ticker == ticker).one_or_none()
+    if company is None:
+        raise NotFoundError(f"no research on record yet for {ticker!r} — prepare it first")
+
+    direction_override = None
+    volatility_view_override = None
+    decision_source = DecisionSource.AI
+    if body is not None and body.direction is not None and body.volatility_view is not None:
+        try:
+            direction_override = DecisionDirection(body.direction)
+            volatility_view_override = DecisionVolatilityView(body.volatility_view)
+        except ValueError as exc:
+            raise InvalidRequestError(f"unrecognized direction or volatility_view: {exc}") from exc
+        decision_source = DecisionSource.MANUAL_OVERRIDE
+
+    try:
+        result = generate_decision(
+            db,
+            llm,
+            embedder,
+            company,
+            direction_override=direction_override,
+            volatility_view_override=volatility_view_override,
+        )
+    except DecisionGenerationError as exc:
+        raise LLMError(f"decision generation failed: {exc}") from exc
+
+    row = persist_decision(db, company=company, result=result, decision_source=decision_source)
+    return AIDecisionVersionResponse.model_validate(row)
+
+
+@router.get("/{symbol}/decisions", response_model=list[AIDecisionVersionResponse])
+def get_decision_history(
+    symbol: str,
+    db: DbSession,
+    limit: int = Query(default=20, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+) -> list[AIDecisionVersionResponse]:
+    ticker = normalize_ticker(symbol)
+    company = db.query(Company).filter(Company.ticker == ticker).one_or_none()
+    if company is None:
+        raise NotFoundError(f"no research on record yet for {ticker!r}")
+
+    decisions = list_decisions(db, company.id, limit=limit, offset=offset)
+    return [AIDecisionVersionResponse.model_validate(d) for d in decisions]
+
+
+@router.get("/{symbol}/decisions/{decision_id}", response_model=AIDecisionVersionResponse)
+def get_decision_item(symbol: str, decision_id: int, db: DbSession) -> AIDecisionVersionResponse:
+    ticker = normalize_ticker(symbol)
+    company = db.query(Company).filter(Company.ticker == ticker).one_or_none()
+    if company is None:
+        raise NotFoundError(f"no research on record yet for {ticker!r}")
+
+    decision = get_decision(db, decision_id)
+    if decision is None or decision.company_id != company.id:
+        raise NotFoundError(f"no decision {decision_id} for {ticker!r}")
+    return AIDecisionVersionResponse.model_validate(decision)
+
+
+@router.delete("/{symbol}/decisions/{decision_id}", status_code=204)
+def delete_decision_item(symbol: str, decision_id: int, db: DbSession) -> None:
+    ticker = normalize_ticker(symbol)
+    company = db.query(Company).filter(Company.ticker == ticker).one_or_none()
+    if company is None:
+        raise NotFoundError(f"no research on record yet for {ticker!r}")
+
+    decision = get_decision(db, decision_id)
+    if decision is None or decision.company_id != company.id:
+        raise NotFoundError(f"no decision {decision_id} for {ticker!r}")
+    delete_decision(db, decision_id)
+
+
+@router.post("/{symbol}/decisions/{decision_id}/final", response_model=AIDecisionVersionResponse)
+def mark_decision_final(
+    symbol: str, decision_id: int, db: DbSession
+) -> AIDecisionVersionResponse:
+    """Marks ``decision_id`` as the Final Decision for this company (Phase
+    14.9 Part F section 22) -- the one used for post-event track-record
+    evaluation. Unmarks any other decision that was previously final for
+    the same company; does not touch decisions for other companies."""
+    ticker = normalize_ticker(symbol)
+    company = db.query(Company).filter(Company.ticker == ticker).one_or_none()
+    if company is None:
+        raise NotFoundError(f"no research on record yet for {ticker!r}")
+
+    decision = get_decision(db, decision_id)
+    if decision is None or decision.company_id != company.id:
+        raise NotFoundError(f"no decision {decision_id} for {ticker!r}")
+    updated = mark_final(db, decision_id)
+    assert updated is not None
+    return AIDecisionVersionResponse.model_validate(updated)
+
+
+@router.post("/{symbol}/decisions/{decision_id}/settle", response_model=AIDecisionVersionResponse)
+def settle_decision_item(symbol: str, decision_id: int, db: DbSession) -> AIDecisionVersionResponse:
+    """Attempts settlement now rather than waiting for the next scheduled
+    pass (see services/decision_settlement.py) -- a no-op that returns the
+    decision unchanged when no real post-earnings data exists yet."""
+    ticker = normalize_ticker(symbol)
+    company = db.query(Company).filter(Company.ticker == ticker).one_or_none()
+    if company is None:
+        raise NotFoundError(f"no research on record yet for {ticker!r}")
+
+    decision = get_decision(db, decision_id)
+    if decision is None or decision.company_id != company.id:
+        raise NotFoundError(f"no decision {decision_id} for {ticker!r}")
+    settle_decision(db, decision)
+    db.refresh(decision)
+    return AIDecisionVersionResponse.model_validate(decision)
+
+
+@router.get("/track-record", response_model=TrackRecordResponse)
+def get_track_record(
+    db: DbSession,
+    ticker: str | None = None,
+    window: str = Query(default="all_time", pattern="^(all_time|last_10)$"),
+) -> TrackRecordResponse:
+    normalized = normalize_ticker(ticker) if ticker else None
+    summary = compute_track_record(db, ticker=normalized, window=window)  # type: ignore[arg-type]
+    return TrackRecordResponse(
+        window=summary.window,
+        evaluated_count=summary.evaluated_count,
+        directional_accuracy=RateResponse(
+            correct=summary.directional_accuracy.correct,
+            total=summary.directional_accuracy.total,
+            pct=summary.directional_accuracy.pct,
+        ),
+        bullish_accuracy=RateResponse(
+            correct=summary.bullish_accuracy.correct,
+            total=summary.bullish_accuracy.total,
+            pct=summary.bullish_accuracy.pct,
+        ),
+        bearish_accuracy=RateResponse(
+            correct=summary.bearish_accuracy.correct,
+            total=summary.bearish_accuracy.total,
+            pct=summary.bearish_accuracy.pct,
+        ),
+        average_confidence=summary.average_confidence,
+        high_confidence_accuracy=RateResponse(
+            correct=summary.high_confidence_accuracy.correct,
+            total=summary.high_confidence_accuracy.total,
+            pct=summary.high_confidence_accuracy.pct,
+        ),
+        volatility_view_accuracy=RateResponse(
+            correct=summary.volatility_view_accuracy.correct,
+            total=summary.volatility_view_accuracy.total,
+            pct=summary.volatility_view_accuracy.pct,
+        ),
+        breakeven_success=RateResponse(
+            correct=summary.breakeven_success.correct,
+            total=summary.breakeven_success.total,
+            pct=summary.breakeven_success.pct,
+        ),
+        strategy_win_rate_available=summary.strategy_win_rate_available,
+        confidence_calibration=[
+            ConfidenceBucketResponse(
+                label=b.label,
+                lower=b.lower,
+                upper=b.upper,
+                rate=RateResponse(correct=b.rate.correct, total=b.rate.total, pct=b.rate.pct),
+            )
+            for b in summary.confidence_calibration
+        ],
+    )

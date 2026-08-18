@@ -355,6 +355,7 @@ class DomainStatusResponse(BaseModel):
 
 class ProviderDashboardResponse(BaseModel):
     domains: list[DomainStatusResponse]
+    strategy_risk_preference: str = "defined_risk_only"
 
 
 class SystemStatusResponse(BaseModel):
@@ -404,6 +405,7 @@ class PreparationStepResponse(BaseModel):
     status: str
     detail: str | None
     updated_at: datetime
+    retryable: bool | None = None
 
 
 class ResearchJobResponse(BaseModel):
@@ -636,6 +638,104 @@ class AIThesisVersionResponse(BaseModel):
     is_stale: bool = False
 
 
+class DecisionGenerateRequest(BaseModel):
+    """Both fields must be given together, or neither -- a manual view
+    override (Phase 14.9 Part K) replaces the AI's own direction/
+    volatility_view classification but leaves every downstream
+    deterministic step (strategy generation, scoring, reasoning)
+    unchanged."""
+
+    direction: str | None = None
+    volatility_view: str | None = None
+
+
+class AIDecisionVersionResponse(BaseModel):
+    """A real, persisted AI Options Decision -- see
+    models/ai_decision_version.py. Append-only: a new generation is
+    always a new row (Phase 14.9 Part F), never an edit to a prior one.
+    Settlement fields (actual_*, direction_correct, breakeven_met,
+    strategy_pnl*) stay null until services/decision_settlement.py has
+    real post-earnings data to settle against."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    company_id: int
+    direction: str
+    volatility_view: str
+    confidence_score: int
+    confidence_components: dict[str, int]
+    rationale: str
+    bull_case: str
+    bear_case: str
+    key_catalysts: str
+    key_risks: str
+    disclaimer: str
+    citations: list[dict]
+    decision_source: str
+    risk_preference: str
+    recommended_strategy_category: str | None
+    recommended_strategy_legs: list[dict] | None
+    recommended_strategy_analysis: dict | None
+    recommended_strategy_score: int | None
+    recommended_strategy_score_components: dict[str, int] | None
+    recommended_strategy_why: list[str] | None
+    recommended_strategy_risks: list[str] | None
+    alternative_strategies: list[dict] | None
+    expiration: date | None
+    underlying_price: Decimal | None
+    implied_move_pct: Decimal | None
+    provider: str
+    model: str
+    earnings_estimate_snapshot_id: int | None
+    volatility_snapshot_id: int | None
+    status: str
+    is_final: bool
+    earnings_event_id: int | None
+    actual_next_day_move_pct: Decimal | None
+    actual_five_day_move_pct: Decimal | None
+    direction_correct: bool | None
+    actual_move_exceeded_implied: bool | None
+    breakeven_met: bool | None
+    strategy_pnl: Decimal | None
+    strategy_pnl_available: bool
+    settled_at: datetime | None
+    created_at: datetime
+
+
+class RateResponse(BaseModel):
+    correct: int
+    total: int
+    pct: Decimal | None
+
+
+class ConfidenceBucketResponse(BaseModel):
+    label: str
+    lower: int
+    upper: int
+    rate: RateResponse
+
+
+class TrackRecordResponse(BaseModel):
+    """Honest reliability metrics for the AI Options Decision journal --
+    see services/track_record.py's module docstring for the precise
+    definition of each rate (Directional Accuracy != Breakeven Success !=
+    Strategy Win Rate) and why every rate carries its own real sample
+    size rather than a bare percentage."""
+
+    window: str
+    evaluated_count: int
+    directional_accuracy: RateResponse
+    bullish_accuracy: RateResponse
+    bearish_accuracy: RateResponse
+    average_confidence: Decimal | None
+    high_confidence_accuracy: RateResponse
+    volatility_view_accuracy: RateResponse
+    breakeven_success: RateResponse
+    strategy_win_rate_available: bool
+    confidence_calibration: list[ConfidenceBucketResponse]
+
+
 class ProviderSettingsUpdateRequest(BaseModel):
     """Every field optional -- only supplied fields are changed. Setting a
     field to null explicitly is not the same as omitting it; use the
@@ -653,6 +753,7 @@ class ProviderSettingsUpdateRequest(BaseModel):
     clear_options_fallback: bool = False
     llm_provider: str | None = None
     llm_model: str | None = None
+    strategy_risk_preference: str | None = None
 
 
 class TestConnectionResponse(BaseModel):

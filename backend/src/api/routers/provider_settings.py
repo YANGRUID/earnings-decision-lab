@@ -23,7 +23,11 @@ from schemas.api import (
     ProviderSettingsUpdateRequest,
     TestConnectionResponse,
 )
-from services.provider_settings import ProviderSettingsUpdate, UnknownProviderSelectionError
+from services.provider_settings import (
+    ProviderSettingsUpdate,
+    UnknownProviderSelectionError,
+    get_strategy_risk_preference,
+)
 from services.provider_settings import update_app_provider_settings as _update_settings
 from services.provider_status import DOMAIN_PROVIDERS, get_provider_dashboard, record_health_event
 from services.provider_test_connection import UnknownTestConnectionTargetError, test_connection
@@ -35,7 +39,8 @@ router = APIRouter(prefix="/settings/providers", tags=["provider-settings"])
 def get_dashboard(db: DbSession) -> ProviderDashboardResponse:
     domains = get_provider_dashboard(db, get_settings())
     return ProviderDashboardResponse(
-        domains=[DomainStatusResponse.model_validate(d) for d in domains]
+        domains=[DomainStatusResponse.model_validate(d) for d in domains],
+        strategy_risk_preference=get_strategy_risk_preference(db).value,
     )
 
 
@@ -52,6 +57,7 @@ def update_settings(
         clear_options_fallback=request.clear_options_fallback,
         llm_provider=request.llm_provider,
         llm_model=request.llm_model,
+        strategy_risk_preference=request.strategy_risk_preference,
     )
     try:
         _update_settings(db, update)
@@ -60,7 +66,8 @@ def update_settings(
 
     domains = get_provider_dashboard(db, get_settings())
     return ProviderDashboardResponse(
-        domains=[DomainStatusResponse.model_validate(d) for d in domains]
+        domains=[DomainStatusResponse.model_validate(d) for d in domains],
+        strategy_risk_preference=get_strategy_risk_preference(db).value,
     )
 
 

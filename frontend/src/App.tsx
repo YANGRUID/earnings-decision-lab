@@ -5,6 +5,7 @@ import { CompanyWorkspace } from "./pages/CompanyWorkspace";
 import { EarningsEvent } from "./pages/EarningsEvent";
 import { Research } from "./pages/Research";
 import { HistoricalReplay } from "./pages/HistoricalReplay";
+import { TrackRecord } from "./pages/TrackRecord";
 import { DataStatus } from "./pages/DataStatus";
 import { DataProviders } from "./pages/Settings/DataProviders";
 import { AiProvider } from "./pages/Settings/AiProvider";
@@ -20,6 +21,7 @@ export default function App() {
           <Route path="earnings/:id" element={<EarningsEvent />} />
           <Route path="research" element={<Research />} />
           <Route path="historical-replay" element={<HistoricalReplay />} />
+          <Route path="track-record" element={<TrackRecord />} />
           <Route path="settings/providers" element={<DataProviders />} />
           <Route path="settings/ai-provider" element={<AiProvider />} />
           <Route path="settings/ibkr" element={<Ibkr />} />

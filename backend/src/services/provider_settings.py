@@ -18,10 +18,22 @@ from datetime import UTC, datetime
 from sqlalchemy.orm import Session
 
 from models.app_provider_settings import AppProviderSettings
+from models.enums import StrategyRiskPreference
 
 KNOWN_PRICE_HISTORY_PROVIDERS = ("tiingo", "alpha_vantage")
 KNOWN_OPTIONS_PROVIDERS = ("ibkr", "alpha_vantage")
 KNOWN_LLM_PROVIDERS = ("deepseek", "openai", "anthropic", "openai_compatible")
+KNOWN_RISK_PREFERENCES = tuple(v.value for v in StrategyRiskPreference)
+
+
+def get_strategy_risk_preference(db: Session) -> StrategyRiskPreference:
+    """The owner's configured ceiling on which strategy categories may be
+    surfaced, defaulting to the most conservative tier when never set --
+    see Phase 14.9 Part D."""
+    row = get_app_provider_settings(db)
+    if row.strategy_risk_preference is None:
+        return StrategyRiskPreference.DEFINED_RISK_ONLY
+    return StrategyRiskPreference(row.strategy_risk_preference)
 
 
 class UnknownProviderSelectionError(Exception):
@@ -55,6 +67,7 @@ class ProviderSettingsUpdate:
     options_fallback: str | None = None
     llm_provider: str | None = None
     llm_model: str | None = None
+    strategy_risk_preference: str | None = None
     # Distinguishes "leave this field alone" from "explicitly clear it back
     # to the env-var default (None)" -- a plain dataclass with all-Optional
     # fields can't tell those apart, since None is a valid target value.
@@ -78,6 +91,10 @@ def update_app_provider_settings(
         _validate("options", update.options_fallback, KNOWN_OPTIONS_PROVIDERS)
     if update.llm_provider is not None:
         _validate("llm", update.llm_provider, KNOWN_LLM_PROVIDERS)
+    if update.strategy_risk_preference is not None:
+        _validate(
+            "strategy_risk_preference", update.strategy_risk_preference, KNOWN_RISK_PREFERENCES
+        )
 
     row = get_app_provider_settings(db)
     if update.price_history_primary is not None:
@@ -96,6 +113,8 @@ def update_app_provider_settings(
         row.llm_provider = update.llm_provider
     if update.llm_model is not None:
         row.llm_model = update.llm_model
+    if update.strategy_risk_preference is not None:
+        row.strategy_risk_preference = update.strategy_risk_preference
     row.updated_at = datetime.now(UTC)
     db.commit()
     db.refresh(row)

@@ -38,6 +38,7 @@ class _StubLLM(LLMProvider):
         self, messages, schema: type[BaseModel], *, temperature=0.0, max_tokens=1024
     ):
         from schemas.agent import IntentCategory, IntentClassification, VerificationResult
+        from schemas.decision import DecisionView
         from schemas.thesis import EarningsThesis
 
         if schema is IntentClassification:
@@ -51,6 +52,17 @@ class _StubLLM(LLMProvider):
                 guidance_trend="Stub guidance trend.",
                 key_risks="Stub key risks [1].",
                 market_setup="Stub market setup.",
+                disclaimer="This is not investment advice and no outcome is assured.",
+            )
+        if schema is DecisionView:
+            return DecisionView(
+                direction="bullish",
+                volatility_view="long_vol",
+                rationale="Stub rationale [1].",
+                bull_case="Stub bull case.",
+                bear_case="Stub bear case.",
+                key_catalysts="Stub catalysts.",
+                key_risks="Stub key risks.",
                 disclaimer="This is not investment advice and no outcome is assured.",
             )
         raise NotImplementedError(schema)
@@ -1297,6 +1309,185 @@ def test_thesis_becomes_stale_once_newer_consensus_data_exists(client, db_sessio
 
     versions = client.get("/api/v1/research/zzthstale/theses").json()
     assert versions[0]["is_stale"] is True
+
+
+def test_decision_unknown_company_returns_404(client):
+    response = client.post("/api/v1/research/ZZNODEC/decision")
+    assert response.status_code == 404
+
+
+def test_decision_generates_from_stub_llm(client, db_session):
+    from models.company import Company
+
+    db_session.add(Company(ticker="ZZDECAPI", name="ZZ Decision API Co", cik="0009999930"))
+    db_session.flush()
+
+    response = client.post("/api/v1/research/zzdecapi/decision")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["direction"] == "bullish"
+    assert body["volatility_view"] == "long_vol"
+    assert body["decision_source"] == "ai"
+    assert body["status"] == "open"
+    assert body["is_final"] is False
+    assert 0 <= body["confidence_score"] <= 100
+    assert "not investment advice" in body["disclaimer"]
+
+
+def test_decision_generation_persists_a_real_row(client, db_session):
+    from models.ai_decision_version import AIDecisionVersion
+    from models.company import Company
+
+    company = Company(ticker="ZZDECVER", name="ZZ Decision Version Co", cik="0009999931")
+    db_session.add(company)
+    db_session.flush()
+
+    response = client.post("/api/v1/research/zzdecver/decision")
+    assert response.status_code == 200
+
+    rows = (
+        db_session.query(AIDecisionVersion)
+        .filter(AIDecisionVersion.company_id == company.id)
+        .all()
+    )
+    assert len(rows) == 1
+    assert rows[0].provider == "stub"
+
+
+def test_decision_generating_twice_creates_two_versions_never_overwrites(client, db_session):
+    from models.company import Company
+
+    db_session.add(Company(ticker="ZZDECV2", name="ZZ Decision Version Co 2", cik="0009999932"))
+    db_session.flush()
+
+    first = client.post("/api/v1/research/zzdecv2/decision")
+    second = client.post("/api/v1/research/zzdecv2/decision")
+    assert first.status_code == 200
+    assert second.status_code == 200
+
+    versions = client.get("/api/v1/research/zzdecv2/decisions").json()
+    assert len(versions) == 2
+    assert versions[0]["id"] != versions[1]["id"]
+
+
+def test_decision_manual_override_records_manual_source(client, db_session):
+    from models.company import Company
+
+    db_session.add(Company(ticker="ZZDECOV", name="ZZ Decision Override Co", cik="0009999933"))
+    db_session.flush()
+
+    response = client.post(
+        "/api/v1/research/zzdecov/decision",
+        json={"direction": "bearish", "volatility_view": "short_vol"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["direction"] == "bearish"
+    assert body["volatility_view"] == "short_vol"
+    assert body["decision_source"] == "manual_override"
+
+
+def test_decision_history_unknown_ticker_returns_404(client):
+    response = client.get("/api/v1/research/ZZNODECHIST/decisions")
+    assert response.status_code == 404
+
+
+def test_decision_can_be_fetched_by_id(client, db_session):
+    from models.company import Company
+
+    db_session.add(Company(ticker="ZZDECFETCH", name="ZZ Decision Fetch Co", cik="0009999934"))
+    db_session.flush()
+
+    client.post("/api/v1/research/zzdecfetch/decision")
+    versions = client.get("/api/v1/research/zzdecfetch/decisions").json()
+    decision_id = versions[0]["id"]
+
+    response = client.get(f"/api/v1/research/zzdecfetch/decisions/{decision_id}")
+    assert response.status_code == 200
+    assert response.json()["direction"] == "bullish"
+
+
+def test_decision_for_a_different_company_returns_404(client, db_session):
+    from models.company import Company
+
+    company_a = Company(ticker="ZZDECA", name="ZZ Decision Co A", cik="0009999935")
+    company_b = Company(ticker="ZZDECB", name="ZZ Decision Co B", cik="0009999936")
+    db_session.add_all([company_a, company_b])
+    db_session.flush()
+
+    client.post("/api/v1/research/zzdeca/decision")
+    versions_a = client.get("/api/v1/research/zzdeca/decisions").json()
+    decision_id = versions_a[0]["id"]
+
+    response = client.get(f"/api/v1/research/zzdecb/decisions/{decision_id}")
+    assert response.status_code == 404
+
+
+def test_decision_can_be_deleted(client, db_session):
+    from models.company import Company
+
+    db_session.add(Company(ticker="ZZDECDEL", name="ZZ Decision Delete Co", cik="0009999937"))
+    db_session.flush()
+
+    client.post("/api/v1/research/zzdecdel/decision")
+    versions = client.get("/api/v1/research/zzdecdel/decisions").json()
+    decision_id = versions[0]["id"]
+
+    delete_response = client.delete(f"/api/v1/research/zzdecdel/decisions/{decision_id}")
+    assert delete_response.status_code == 204
+
+    get_response = client.get(f"/api/v1/research/zzdecdel/decisions/{decision_id}")
+    assert get_response.status_code == 404
+
+
+def test_decision_mark_final_unmarks_prior_final(client, db_session):
+    from models.company import Company
+
+    db_session.add(Company(ticker="ZZDECFIN", name="ZZ Decision Final Co", cik="0009999938"))
+    db_session.flush()
+
+    client.post("/api/v1/research/zzdecfin/decision")
+    client.post("/api/v1/research/zzdecfin/decision")
+    versions = client.get("/api/v1/research/zzdecfin/decisions").json()
+    newest_id = versions[0]["id"]
+    oldest_id = versions[1]["id"]
+
+    client.post(f"/api/v1/research/zzdecfin/decisions/{oldest_id}/final")
+    response = client.post(f"/api/v1/research/zzdecfin/decisions/{newest_id}/final")
+
+    assert response.status_code == 200
+    assert response.json()["is_final"] is True
+    oldest = client.get(f"/api/v1/research/zzdecfin/decisions/{oldest_id}").json()
+    assert oldest["is_final"] is False
+
+
+def test_decision_settle_is_a_noop_without_real_post_earnings_data(client, db_session):
+    from models.company import Company
+
+    db_session.add(Company(ticker="ZZDECSETL", name="ZZ Decision Settle Co", cik="0009999939"))
+    db_session.flush()
+
+    client.post("/api/v1/research/zzdecsetl/decision")
+    versions = client.get("/api/v1/research/zzdecsetl/decisions").json()
+    decision_id = versions[0]["id"]
+
+    response = client.post(f"/api/v1/research/zzdecsetl/decisions/{decision_id}/settle")
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "open"  # no real earnings event yet -- untouched
+
+
+def test_track_record_with_no_settled_decisions_returns_honest_empty_state(client):
+    response = client.get("/api/v1/research/track-record")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["evaluated_count"] == 0
+    assert body["directional_accuracy"]["total"] == 0
+    assert body["directional_accuracy"]["pct"] is None
+    assert body["strategy_win_rate_available"] is False
 
 
 def test_portfolio_positions_filtered_by_ticker(client, db_session):

@@ -17,6 +17,8 @@ from models.ai_thesis_version import AIThesisVersion
 from models.company import Company
 from rag.context import Citation
 from services.earnings_thesis import EarningsThesisResult
+from services.market_expectations import get_latest_earnings_estimate
+from services.options_analytics import get_latest_volatility_snapshot
 
 DEFAULT_HISTORY_LIMIT = 20
 MAX_HISTORY_LIMIT = 100
@@ -178,3 +180,20 @@ def delete_thesis_version(db: Session, version_id: int) -> bool:
     db.delete(row)
     db.commit()
     return True
+
+
+def is_thesis_stale(db: Session, company: Company, version: AIThesisVersion) -> bool:
+    """True when the real *current* latest consensus/options snapshot for
+    ``company`` is a different row than what this version was grounded in
+    -- never inferred from a fixed time window, only from an actual change
+    in which snapshot is now the latest. Shared by the theses history
+    endpoints and services/decision_engine.py (which reuses the latest
+    non-stale thesis rather than regenerating one on every decision)."""
+    current_estimate = get_latest_earnings_estimate(db, company.id)
+    current_volatility = get_latest_volatility_snapshot(db, company.id)
+    current_estimate_id = current_estimate.id if current_estimate is not None else None
+    current_volatility_id = current_volatility.id if current_volatility is not None else None
+    return (
+        version.earnings_estimate_snapshot_id != current_estimate_id
+        or version.volatility_snapshot_id != current_volatility_id
+    )

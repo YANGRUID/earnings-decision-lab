@@ -132,6 +132,20 @@ class _FakeEstimatesProvider(EarningsEstimatesProvider):
         )
 
 
+class _RateLimitedEstimatesProvider(EarningsEstimatesProvider):
+    """Real shape of the confirmed AAPL root cause (Phase 14.9 Part A):
+    Alpha Vantage's own key-quota exhaustion, surfaced as an
+    AlphaVantageError with rate_limited=True."""
+
+    def get_earnings_estimates(self, ticker: str) -> list:
+        return []
+
+    def get_next_earnings_date(self, ticker: str) -> UpcomingEarningsCalendarEntry | None:
+        from providers.alpha_vantage import AlphaVantageError
+
+        raise AlphaVantageError("rate limited", rate_limited=True)
+
+
 class _FakeOptionsProvider(OptionsDataProvider):
     def __init__(
         self, quotes: list[OptionQuote] | None = None, error: Exception | None = None
@@ -373,6 +387,34 @@ def test_optional_provider_failure_completes_with_warnings(db_session):
     )
     # Required steps still ran to completion despite the later optional failure.
     assert steps_by_name[PreparationStep.PRICE_HISTORY.value]["status"] == StepStatus.DONE.value
+
+
+def test_rate_limited_step_is_marked_not_retryable(db_session):
+    """Confirms the real AAPL root cause (Phase 14.9 Part A) is reflected
+    in the step's retryable field: an Alpha Vantage rate-limit error should
+    never invite "just retry it" -- retrying today won't help."""
+    providers = _providers(estimates=_RateLimitedEstimatesProvider())
+
+    job = prepare_company_research(db_session, "zzrate", providers, now=NOW)
+
+    assert job.status == JobStatus.COMPLETED_WITH_WARNINGS
+    steps_by_name = {s["step"]: s for s in job.steps}
+    estimates_step = steps_by_name[PreparationStep.EARNINGS_ESTIMATES.value]
+    assert estimates_step["status"] == StepStatus.FAILED.value
+    assert estimates_step["retryable"] is False
+
+
+def test_transient_step_failure_is_marked_retryable(db_session):
+    options = _FakeOptionsProvider(error=RuntimeError("options gateway unreachable"))
+    providers = _providers(
+        estimates=_FakeEstimatesProvider(date(2026, 9, 1)),
+        options=options,
+    )
+
+    job = prepare_company_research(db_session, "zzrtry", providers, now=NOW)
+
+    steps_by_name = {s["step"]: s for s in job.steps}
+    assert steps_by_name[PreparationStep.OPTIONS_CHAIN.value]["retryable"] is True
 
 
 def test_options_chain_fetched_when_upcoming_earnings_date_known(db_session):

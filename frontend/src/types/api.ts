@@ -351,6 +351,7 @@ export interface DomainStatus {
 
 export interface ProviderDashboard {
   domains: DomainStatus[];
+  strategy_risk_preference: string;
 }
 
 export interface ProviderSettingsUpdate {
@@ -362,6 +363,7 @@ export interface ProviderSettingsUpdate {
   clear_options_fallback?: boolean;
   llm_provider?: string | null;
   llm_model?: string | null;
+  strategy_risk_preference?: string | null;
 }
 
 export interface TestConnectionResult {
@@ -388,6 +390,7 @@ export interface PreparationStep {
   status: "pending" | "running" | "done" | "failed" | "skipped";
   detail: string | null;
   updated_at: string;
+  retryable: boolean | null;
 }
 
 export interface ResearchJob {
@@ -566,4 +569,98 @@ export interface PortfolioSnapshotResponse {
 export interface ApiError {
   error: string;
   request_id: string | null;
+}
+
+// --- AI Options Decision Engine (Phase 14.9) ---
+
+export type DecisionDirection =
+  | "strong_bullish"
+  | "bullish"
+  | "neutral"
+  | "bearish"
+  | "strong_bearish";
+export type DecisionVolatilityView = "long_vol" | "neutral_vol" | "short_vol";
+
+export interface ScoredStrategy {
+  category: string;
+  legs: OptionLeg[];
+  analysis: StrategyAnalysis;
+  score: number;
+  score_components: Record<string, number>;
+  why: string[];
+  risks: string[];
+  target_price: string | null;
+  payoff_at_target: string | null;
+}
+
+export interface AIDecisionVersion {
+  id: number;
+  company_id: number;
+  direction: DecisionDirection;
+  volatility_view: DecisionVolatilityView;
+  confidence_score: number;
+  confidence_components: Record<string, number>;
+  rationale: string;
+  bull_case: string;
+  bear_case: string;
+  key_catalysts: string;
+  key_risks: string;
+  disclaimer: string;
+  citations: Citation[];
+  decision_source: "ai" | "manual_override";
+  risk_preference: string;
+  recommended_strategy_category: string | null;
+  recommended_strategy_legs: OptionLeg[] | null;
+  recommended_strategy_analysis: StrategyAnalysis | null;
+  recommended_strategy_score: number | null;
+  recommended_strategy_score_components: Record<string, number> | null;
+  recommended_strategy_why: string[] | null;
+  recommended_strategy_risks: string[] | null;
+  alternative_strategies: ScoredStrategy[] | null;
+  expiration: string | null;
+  underlying_price: string | null;
+  implied_move_pct: string | null;
+  provider: string;
+  model: string;
+  earnings_estimate_snapshot_id: number | null;
+  volatility_snapshot_id: number | null;
+  status: "open" | "settled" | "void";
+  is_final: boolean;
+  earnings_event_id: number | null;
+  actual_next_day_move_pct: string | null;
+  actual_five_day_move_pct: string | null;
+  direction_correct: boolean | null;
+  actual_move_exceeded_implied: boolean | null;
+  breakeven_met: boolean | null;
+  strategy_pnl: string | null;
+  strategy_pnl_available: boolean;
+  settled_at: string | null;
+  created_at: string;
+}
+
+export interface Rate {
+  correct: number;
+  total: number;
+  pct: string | null;
+}
+
+export interface ConfidenceBucket {
+  label: string;
+  lower: number;
+  upper: number;
+  rate: Rate;
+}
+
+export interface TrackRecord {
+  window: "all_time" | "last_10";
+  evaluated_count: number;
+  directional_accuracy: Rate;
+  bullish_accuracy: Rate;
+  bearish_accuracy: Rate;
+  average_confidence: string | null;
+  high_confidence_accuracy: Rate;
+  volatility_view_accuracy: Rate;
+  breakeven_success: Rate;
+  strategy_win_rate_available: boolean;
+  confidence_calibration: ConfidenceBucket[];
 }

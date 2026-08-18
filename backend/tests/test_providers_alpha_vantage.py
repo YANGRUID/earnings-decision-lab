@@ -62,5 +62,6 @@ def test_rate_limit_note_raises(httpx_mock):
     )
     provider = AlphaVantageMarketDataProvider(api_key="test-key")
 
-    with pytest.raises(AlphaVantageError):
+    with pytest.raises(AlphaVantageError) as exc_info:
         provider.get_daily_bars("MU", date(2025, 9, 22), date(2025, 9, 23))
+    assert exc_info.value.rate_limited is True

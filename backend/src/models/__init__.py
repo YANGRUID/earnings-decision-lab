@@ -1,3 +1,4 @@
+from models.ai_decision_version import AIDecisionVersion
 from models.ai_extraction import AIExtraction
 from models.ai_research_query import AIResearchQuery
 from models.ai_thesis_version import AIThesisVersion
@@ -19,6 +20,7 @@ from models.strategy_replay import StrategyReplay
 from models.volatility_snapshot import VolatilitySnapshot
 
 __all__ = [
+    "AIDecisionVersion",
     "AIExtraction",
     "AIResearchQuery",
     "AIThesisVersion",

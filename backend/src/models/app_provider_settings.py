@@ -38,6 +38,10 @@ class AppProviderSettings(Base):
     llm_provider: Mapped[str | None] = mapped_column(String(32))
     llm_model: Mapped[str | None] = mapped_column(String(128))
 
+    # Null = the most conservative default (defined_risk_only) -- see
+    # models/enums.py::StrategyRiskPreference and Phase 14.9 Part D.
+    strategy_risk_preference: Mapped[str | None] = mapped_column(String(32))
+
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )

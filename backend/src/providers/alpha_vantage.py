@@ -24,6 +24,15 @@ class AlphaVantageError(Exception):
     instead of a time series (its API reports failures in the JSON body,
     not via HTTP status)."""
 
+    def __init__(self, message: str, *, rate_limited: bool = False) -> None:
+        super().__init__(message)
+        # Set when the response itself identifies this as the free-tier
+        # 25-requests/day cap (or the docs recommend one of the premium
+        # plans) -- not retryable within the same day, unlike a transient
+        # network/5xx error, so callers can label this distinctly instead
+        # of a generic "failed" (see providers/alpha_vantage_estimates.py).
+        self.rate_limited = rate_limited
+
 
 def _retryable(exc: BaseException) -> bool:
     if isinstance(exc, httpx.TransportError):
@@ -31,6 +40,18 @@ def _retryable(exc: BaseException) -> bool:
     if isinstance(exc, httpx.HTTPStatusError):
         return exc.response.status_code == 429 or exc.response.status_code >= 500
     return False
+
+
+def is_rate_limit_note(note: str | None) -> bool:
+    """True for Alpha Vantage's own free-tier rate-limit wording (both the
+    "standard API rate limit is 25 requests per day" note and the
+    "spreading out your free API requests" note observed live) -- used to
+    label a failure as a quota problem rather than a generic provider
+    error, since the two need different retry/user-messaging treatment."""
+    if not note:
+        return False
+    lowered = note.lower()
+    return "rate limit" in lowered or "requests per day" in lowered or "premium" in lowered
 
 
 class AlphaVantageMarketDataProvider(MarketDataProvider):
@@ -61,7 +82,10 @@ class AlphaVantageMarketDataProvider(MarketDataProvider):
         series = payload.get("Time Series (Daily)")
         if series is None:
             note = payload.get("Note") or payload.get("Information") or payload.get("Error Message")
-            raise AlphaVantageError(note or f"unexpected response shape: {list(payload)}")
+            raise AlphaVantageError(
+                note or f"unexpected response shape: {list(payload)}",
+                rate_limited=is_rate_limit_note(note),
+            )
 
         retrieved_at = datetime.now(UTC)
         bars: list[OHLCBar] = []

@@ -27,7 +27,7 @@ import httpx
 from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 
 from observability.http_client import new_http_client
-from providers.alpha_vantage import AlphaVantageError
+from providers.alpha_vantage import AlphaVantageError, is_rate_limit_note
 from providers.base import OptionsDataProvider
 from providers.types import OptionQuote
 
@@ -106,7 +106,10 @@ class AlphaVantageOptionsProvider(OptionsDataProvider):
         contracts = payload.get("data")
         if contracts is None:
             note = payload.get("Note") or payload.get("Information") or payload.get("Error Message")
-            raise AlphaVantageError(note or f"unexpected response shape: {list(payload)}")
+            raise AlphaVantageError(
+                note or f"unexpected response shape: {list(payload)}",
+                rate_limited=is_rate_limit_note(note),
+            )
 
         retrieved_at = datetime.now(UTC)
         quotes: list[OptionQuote] = []

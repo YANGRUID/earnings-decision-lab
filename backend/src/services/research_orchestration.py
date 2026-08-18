@@ -175,14 +175,33 @@ _StepResult = tuple[StepStatus, str | None]
 
 
 def _step_record(
-    step: PreparationStep, status: StepStatus, detail: str | None, now: datetime
+    step: PreparationStep,
+    status: StepStatus,
+    detail: str | None,
+    now: datetime,
+    retryable: bool | None = None,
 ) -> dict[str, Any]:
     return {
         "step": step.value,
         "status": status.value,
         "detail": detail,
         "updated_at": now.isoformat(),
+        # None for pending/running/done/skipped (the question doesn't
+        # apply); True/False only set on a real failure, so the frontend
+        # can tell "retrying now would plausibly help" (a transient
+        # network/provider error) from "retrying now will just fail the
+        # same way again" (e.g. Alpha Vantage's daily quota already spent
+        # -- see providers/alpha_vantage.py::AlphaVantageError.rate_limited).
+        "retryable": retryable,
     }
+
+
+def _retryable_for_exception(exc: Exception) -> bool:
+    from providers.alpha_vantage import AlphaVantageError
+
+    if isinstance(exc, AlphaVantageError):
+        return not exc.rate_limited
+    return True
 
 
 def _set_step(
@@ -192,11 +211,12 @@ def _set_step(
     status: StepStatus,
     detail: str | None,
     now: datetime,
+    retryable: bool | None = None,
 ) -> None:
     steps = list(job.steps)
     for i, s in enumerate(steps):
         if s["step"] == step.value:
-            steps[i] = _step_record(step, status, detail, now)
+            steps[i] = _step_record(step, status, detail, now, retryable)
             break
     job.steps = steps
     db.add(job)
@@ -208,7 +228,9 @@ def _fail_job(
 ) -> ResearchPreparationJob:
     now = datetime.now(UTC)
     detail = str(exc)[:500]
-    _set_step(db, job, step, StepStatus.FAILED, detail, now)
+    _set_step(
+        db, job, step, StepStatus.FAILED, detail, now, retryable=_retryable_for_exception(exc)
+    )
     job.status = JobStatus.FAILED
     job.error = f"{step.value}: {detail}"[:500]
     job.completed_at = now
@@ -558,7 +580,15 @@ def prepare_company_research(
             if required:
                 return _fail_job(db, job, step, exc)
             detail = str(exc)[:500]
-            _set_step(db, job, step, StepStatus.FAILED, detail, datetime.now(UTC))
+            _set_step(
+                db,
+                job,
+                step,
+                StepStatus.FAILED,
+                detail,
+                datetime.now(UTC),
+                retryable=_retryable_for_exception(exc),
+            )
             warnings = True
             log.warning("%s: optional step %s failed: %s", resolution.ticker, step.value, detail)
             continue

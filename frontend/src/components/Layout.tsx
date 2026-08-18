@@ -11,6 +11,7 @@ const NAV_ITEMS = [
   { to: "/", label: "Search", end: true },
   { to: "/research", label: "AI Research" },
   { to: "/historical-replay", label: "Cross-Company Replay" },
+  { to: "/track-record", label: "AI Track Record" },
 ];
 
 const SETTINGS_NAV_ITEMS = [

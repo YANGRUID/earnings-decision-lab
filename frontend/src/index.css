@@ -439,6 +439,9 @@ label {
 .progress-failed .progress-icon {
   color: var(--color-negative);
 }
+.progress-warning .progress-icon {
+  color: var(--color-warning-text);
+}
 .progress-skipped .progress-icon {
   color: var(--color-text-faint);
 }
@@ -449,6 +452,25 @@ label {
 .progress-detail {
   color: var(--color-text-muted);
   font-size: 12px;
+}
+
+.preparation-result {
+  border-left: 3px solid var(--color-border);
+}
+.preparation-result summary {
+  list-style: none;
+}
+.preparation-result summary::-webkit-details-marker {
+  display: none;
+}
+.preparation-result-completed_with_warnings {
+  border-left-color: var(--color-warning-text);
+}
+.preparation-result-failed {
+  border-left-color: var(--color-negative);
+}
+.preparation-result-completed {
+  border-left-color: var(--color-positive);
 }
 
 /* --- Workspace tabs --- */
