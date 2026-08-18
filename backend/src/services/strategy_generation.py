@@ -14,11 +14,10 @@ from sqlalchemy.orm import Session
 from analytics.options.implied_move import select_expiration_after
 from analytics.options.strategy_candidates import StrategyCandidate, generate_candidates
 from models.company import Company
-from models.options_snapshot import OptionsSnapshot
 from services.options_analytics import (
     _latest_close_price_on_or_before,
     _latest_snapshot_timestamp,
-    _to_option_quote,
+    get_latest_options_chain,
 )
 
 
@@ -37,18 +36,10 @@ def generate_strategy_candidates(
     if snapshot_timestamp is None:
         return []
 
-    rows = (
-        db.query(OptionsSnapshot)
-        .filter(
-            OptionsSnapshot.company_id == company.id,
-            OptionsSnapshot.snapshot_timestamp == snapshot_timestamp,
-        )
-        .all()
-    )
-    if not rows:
+    quotes = get_latest_options_chain(db, company)
+    if not quotes:
         return []
 
-    quotes = [_to_option_quote(r, company.ticker) for r in rows]
     available_expirations = {q.expiration_date for q in quotes}
     expiration = select_expiration_after(available_expirations, earnings_date)
     if expiration is None:

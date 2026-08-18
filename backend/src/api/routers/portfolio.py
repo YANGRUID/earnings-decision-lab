@@ -16,9 +16,17 @@ router = APIRouter(prefix="/portfolio", tags=["portfolio"])
 
 
 @router.get("/positions", response_model=PortfolioSnapshotResponse)
-def get_portfolio_positions(db: DbSession) -> PortfolioSnapshotResponse:
+def get_portfolio_positions(db: DbSession, ticker: str | None = None) -> PortfolioSnapshotResponse:
     positions = get_latest_portfolio_snapshot(db)
     snapshot_timestamp = positions[0].snapshot_timestamp if positions else None
+    if ticker:
+        # IBKR contract descriptions start with the underlying ticker for
+        # both equity and option positions (e.g. "NVDA" or a real option
+        # contract description beginning with it) -- real string prefix
+        # matching, never a guessed conid mapping.
+        positions = [
+            p for p in positions if p.contract_description.upper().startswith(ticker.upper())
+        ]
     return PortfolioSnapshotResponse.model_validate(
         {"positions": positions, "snapshot_timestamp": snapshot_timestamp}
     )

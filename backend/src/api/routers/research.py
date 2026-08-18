@@ -2,7 +2,9 @@ import logging
 
 from fastapi import APIRouter, BackgroundTasks, Query, Request
 
-from api.deps import DbSession, Embedder, Orchestrator
+from analytics.options.move_compatibility import assess_move_compatibility
+from analytics.options.strategy_ranking import rank_strategy_candidates
+from api.deps import LLM, DbSession, Embedder, Orchestrator
 from api.exceptions import NotFoundError, RateLimitedError
 from core.config import get_settings
 from db.session import SessionLocal
@@ -12,6 +14,7 @@ from models.earnings_event import EarningsEvent
 from models.filing import Filing
 from models.price_bar import PriceBar
 from providers.sec_edgar import SECEdgarProvider
+from providers.types import OptionQuote
 from rag.context import assemble_context
 from rag.embeddings import EmbeddingProvider
 from rag.retrieval import RetrievalFilters, hybrid_search
@@ -19,18 +22,29 @@ from schemas.api import (
     CitationResponse,
     CompanyResponse,
     EarningsEstimateResponse,
+    EarningsThesisResponse,
     ExecutionTraceResponse,
     FilingSearchResponse,
+    MoveCompatibilityResponse,
+    OptionLegResponse,
+    OptionQuoteResponse,
+    RankedStrategyResponse,
     ResearchJobQueuedResponse,
     ResearchJobResponse,
     ResearchOverviewResponse,
     ResearchQueryRequest,
     ResearchQueryResponse,
+    ScenarioPnlResponse,
+    StrategyAnalysisResponse,
+    StrategyLabResponse,
     ToolCallResponse,
     VolatilitySnapshotResponse,
 )
+from services.earnings_thesis import ThesisGenerationError, generate_earnings_thesis
+from services.historical_moves import get_historical_move_pcts
+from services.llm.errors import LLMError
 from services.market_expectations import get_latest_earnings_estimate
-from services.options_analytics import get_latest_volatility_snapshot
+from services.options_analytics import get_latest_options_chain, get_latest_volatility_snapshot
 from services.research_orchestration import (
     UnsupportedSymbolError,
     build_research_providers,
@@ -38,6 +52,7 @@ from services.research_orchestration import (
     get_running_research_job,
     prepare_company_research,
 )
+from services.strategy_generation import generate_strategy_candidates
 from services.symbol_resolution import normalize_ticker, resolve_symbol
 
 log = logging.getLogger("api.research")
@@ -230,4 +245,146 @@ def research_overview(symbol: str, db: DbSession) -> ResearchOverviewResponse:
             if latest_volatility
             else None
         ),
+    )
+
+
+def _option_quote_response(quote: OptionQuote) -> OptionQuoteResponse:
+    return OptionQuoteResponse(
+        expiration_date=quote.expiration_date,
+        strike=quote.strike,
+        option_type=quote.option_type,
+        bid=quote.bid,
+        ask=quote.ask,
+        last_price=quote.last_price,
+        volume=quote.volume,
+        open_interest=quote.open_interest,
+        implied_volatility=quote.implied_volatility,
+        delta=quote.delta,
+        gamma=quote.gamma,
+        theta=quote.theta,
+        vega=quote.vega,
+        market_data_quality=quote.market_data_quality,
+        source_provider=quote.source_provider,
+    )
+
+
+@router.get("/{symbol}/strategies", response_model=StrategyLabResponse)
+def get_strategy_lab(symbol: str, db: DbSession) -> StrategyLabResponse:
+    """Real, ranked strategy candidates for ``symbol``'s upcoming earnings,
+    built entirely from the most recently ingested real options-chain
+    snapshot -- see services/strategy_generation.py and
+    analytics/options/strategy_ranking.py. Honestly empty (never
+    fabricated) when no such snapshot exists yet, regardless of whether
+    that's because the company hasn't been researched or because no
+    options provider has real data for it.
+    """
+    ticker = normalize_ticker(symbol)
+    company = db.query(Company).filter(Company.ticker == ticker).one_or_none()
+    if company is None:
+        raise NotFoundError(f"no research on record yet for {ticker!r}")
+
+    chain_response = [_option_quote_response(q) for q in get_latest_options_chain(db, company)]
+    volatility = get_latest_volatility_snapshot(db, company.id)
+
+    if volatility is None or volatility.target_earnings_date is None:
+        return StrategyLabResponse(
+            ticker=ticker,
+            expiration=None,
+            underlying_price=None,
+            implied_move_pct=None,
+            strategies=[],
+            chain=chain_response,
+        )
+
+    candidates = generate_strategy_candidates(db, company, volatility.target_earnings_date)
+    ranked = rank_strategy_candidates(candidates, ticker, volatility.implied_move_pct)
+    historical_moves = get_historical_move_pcts(db, company.id)
+
+    strategies = []
+    for r in ranked:
+        compatibility = assess_move_compatibility(r.candidate, historical_moves)
+        strategies.append(
+            RankedStrategyResponse(
+                rank=r.rank,
+                category=r.candidate.category.value,
+                legs=[
+                    OptionLegResponse(
+                        option_type=leg.option_type.value,
+                        action=leg.action.value,
+                        strike=leg.strike,
+                        premium=leg.premium,
+                        quantity=leg.quantity,
+                    )
+                    for leg in r.candidate.legs
+                ],
+                analysis=StrategyAnalysisResponse(
+                    net_premium=r.candidate.analysis.net_premium,
+                    max_profit=r.candidate.analysis.max_profit,
+                    max_loss=r.candidate.analysis.max_loss,
+                    breakevens=list(r.candidate.analysis.breakevens),
+                    return_on_risk=r.candidate.analysis.return_on_risk,
+                ),
+                score=r.score,
+                explanation=r.explanation,
+                scenario=ScenarioPnlResponse(
+                    down_price=r.scenario.down_price,
+                    down_pnl=r.scenario.down_pnl,
+                    flat_pnl=r.scenario.flat_pnl,
+                    up_price=r.scenario.up_price,
+                    up_pnl=r.scenario.up_pnl,
+                )
+                if r.scenario
+                else None,
+                move_compatibility=MoveCompatibilityResponse(
+                    method=compatibility.method,
+                    sample_size=compatibility.sample_size,
+                    requires_move_beyond_threshold=compatibility.requires_move_beyond_threshold,
+                    required_move_pct=compatibility.required_move_pct,
+                    compatible_count=compatibility.compatible_count,
+                    compatible_pct=compatibility.compatible_pct,
+                )
+                if compatibility
+                else None,
+            )
+        )
+
+    return StrategyLabResponse(
+        ticker=ticker,
+        expiration=candidates[0].expiration if candidates else None,
+        underlying_price=candidates[0].underlying_price if candidates else None,
+        implied_move_pct=volatility.implied_move_pct,
+        strategies=strategies,
+        chain=chain_response,
+    )
+
+
+@router.post("/{symbol}/thesis", response_model=EarningsThesisResponse)
+def get_earnings_thesis(
+    symbol: str, request: Request, db: DbSession, llm: LLM, embedder: Embedder
+) -> EarningsThesisResponse:
+    if not request.app.state.research_rate_limiter.allow():
+        raise RateLimitedError(
+            "Too many AI requests in a short window — a thesis runs several real LLM calls. "
+            "Please wait a moment and try again."
+        )
+    ticker = normalize_ticker(symbol)
+    company = db.query(Company).filter(Company.ticker == ticker).one_or_none()
+    if company is None:
+        raise NotFoundError(f"no research on record yet for {ticker!r} — prepare it first")
+
+    try:
+        result = generate_earnings_thesis(db, llm, embedder, company)
+    except ThesisGenerationError as exc:
+        raise LLMError(f"thesis generation failed: {exc}") from exc
+
+    return EarningsThesisResponse(
+        business_context=result.thesis.business_context,
+        historical_earnings_pattern=result.thesis.historical_earnings_pattern,
+        guidance_trend=result.thesis.guidance_trend,
+        key_risks=result.thesis.key_risks,
+        market_setup=result.thesis.market_setup,
+        disclaimer=result.thesis.disclaimer,
+        citations=[CitationResponse.from_citation(c) for c in result.citations],
+        generated_at=result.generated_at,
+        model=result.model,
     )

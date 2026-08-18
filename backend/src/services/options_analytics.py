@@ -322,6 +322,27 @@ def has_any_options_data(db: Session) -> bool:
     return db.query(OptionsSnapshot.id).first() is not None
 
 
+def get_latest_options_chain(db: Session, company: Company) -> list[OptionQuote]:
+    """Every real quote from the most recently ingested options-chain
+    snapshot for ``company``, across every expiration in that snapshot --
+    the same snapshot selection rule compute_and_persist_volatility_snapshot
+    and services/strategy_generation.py already use. Empty (never
+    fabricated) when no snapshot has been ingested yet."""
+    snapshot_timestamp = _latest_snapshot_timestamp(db, company.id)
+    if snapshot_timestamp is None:
+        return []
+    rows = (
+        db.query(OptionsSnapshot)
+        .filter(
+            OptionsSnapshot.company_id == company.id,
+            OptionsSnapshot.snapshot_timestamp == snapshot_timestamp,
+        )
+        .order_by(OptionsSnapshot.expiration_date, OptionsSnapshot.strike)
+        .all()
+    )
+    return [_to_option_quote(r, company.ticker) for r in rows]
+
+
 def get_latest_volatility_snapshot(db: Session, company_id: int) -> VolatilitySnapshot | None:
     """Most recently computed implied-move/ATM-IV snapshot for a company,
     regardless of which expiration or earnings event it was computed for."""

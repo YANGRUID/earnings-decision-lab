@@ -343,3 +343,92 @@ class ResearchOverviewResponse(BaseModel):
     filing_chunks_count: int
     latest_earnings_estimate: EarningsEstimateResponse | None
     latest_volatility_snapshot: VolatilitySnapshotResponse | None
+
+
+class OptionQuoteResponse(BaseModel):
+    expiration_date: date
+    strike: Decimal
+    option_type: str
+    bid: Decimal | None
+    ask: Decimal | None
+    last_price: Decimal | None
+    volume: int | None
+    open_interest: int | None
+    implied_volatility: Decimal | None
+    delta: Decimal | None
+    gamma: Decimal | None
+    theta: Decimal | None
+    vega: Decimal | None
+    market_data_quality: str | None
+    source_provider: str
+
+
+class OptionLegResponse(BaseModel):
+    option_type: str
+    action: str
+    strike: Decimal
+    premium: Decimal
+    quantity: int
+
+
+class StrategyAnalysisResponse(BaseModel):
+    net_premium: Decimal
+    max_profit: Decimal | None
+    max_loss: Decimal | None
+    breakevens: list[Decimal]
+    return_on_risk: Decimal | None
+
+
+class MoveCompatibilityResponse(BaseModel):
+    method: str
+    sample_size: int
+    requires_move_beyond_threshold: bool
+    required_move_pct: Decimal
+    compatible_count: int
+    compatible_pct: Decimal
+
+
+class ScenarioPnlResponse(BaseModel):
+    down_price: Decimal
+    down_pnl: Decimal
+    flat_pnl: Decimal
+    up_price: Decimal
+    up_pnl: Decimal
+
+
+class RankedStrategyResponse(BaseModel):
+    rank: int
+    category: str
+    legs: list[OptionLegResponse]
+    analysis: StrategyAnalysisResponse
+    score: Decimal
+    explanation: str
+    scenario: ScenarioPnlResponse | None
+    move_compatibility: MoveCompatibilityResponse | None
+
+
+class StrategyLabResponse(BaseModel):
+    """Real, ranked strategy candidates for a company's upcoming earnings,
+    built entirely from an already-ingested real options-chain snapshot --
+    empty (never fabricated) when no such snapshot exists yet. See
+    services/strategy_generation.py and analytics/options/strategy_ranking.py.
+    """
+
+    ticker: str
+    expiration: date | None
+    underlying_price: Decimal | None
+    implied_move_pct: Decimal | None
+    strategies: list[RankedStrategyResponse]
+    chain: list[OptionQuoteResponse]
+
+
+class EarningsThesisResponse(BaseModel):
+    business_context: str
+    historical_earnings_pattern: str
+    guidance_trend: str
+    key_risks: str
+    market_setup: str
+    disclaimer: str
+    citations: list[CitationResponse]
+    generated_at: datetime
+    model: str

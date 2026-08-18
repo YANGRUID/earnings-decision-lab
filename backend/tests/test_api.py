@@ -38,11 +38,21 @@ class _StubLLM(LLMProvider):
         self, messages, schema: type[BaseModel], *, temperature=0.0, max_tokens=1024
     ):
         from schemas.agent import IntentCategory, IntentClassification, VerificationResult
+        from schemas.thesis import EarningsThesis
 
         if schema is IntentClassification:
             return IntentClassification(category=IntentCategory.GENERAL, reasoning="stub")
         if schema is VerificationResult:
             return VerificationResult(supported=True)
+        if schema is EarningsThesis:
+            return EarningsThesis(
+                business_context="Stub business context [1].",
+                historical_earnings_pattern="Stub historical pattern.",
+                guidance_trend="Stub guidance trend.",
+                key_risks="Stub key risks [1].",
+                market_setup="Stub market setup.",
+                disclaimer="This is not investment advice and no outcome is assured.",
+            )
         raise NotImplementedError(schema)
 
     def stream(self, messages, *, temperature=0.0, max_tokens=1024) -> Iterator[str]:
@@ -618,3 +628,156 @@ def test_overview_known_company_reflects_real_counts(client, db_session):
     assert body["company"]["ticker"] == "ZZOVW"
     assert body["price_bars_count"] == 1
     assert body["filings_count"] == 1
+
+
+# --- Strategy Lab and AI Earnings Thesis endpoints ---------------------------
+
+
+def test_strategy_lab_unknown_company_returns_404(client):
+    response = client.get("/api/v1/research/ZZNOSTR/strategies")
+    assert response.status_code == 404
+
+
+def test_strategy_lab_no_volatility_snapshot_returns_honest_empty_state(client, db_session):
+    from models.company import Company
+
+    db_session.add(Company(ticker="ZZSLAB", name="ZZ Strategy Lab Co", cik="0009999915"))
+    db_session.flush()
+
+    response = client.get("/api/v1/research/zzslab/strategies")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["strategies"] == []
+    assert body["expiration"] is None
+
+
+def test_strategy_lab_returns_real_ranked_strategies_from_a_real_chain(client, db_session):
+    from datetime import UTC, date, datetime
+    from decimal import Decimal
+
+    from models.company import Company
+    from models.enums import OptionType
+    from models.options_snapshot import OptionsSnapshot
+    from models.price_bar import PriceBar
+    from models.volatility_snapshot import VolatilitySnapshot
+
+    company = Company(ticker="ZZSLAB2", name="ZZ Strategy Lab Co 2", cik="0009999916")
+    db_session.add(company)
+    db_session.flush()
+
+    now = datetime.now(UTC)
+    db_session.add(
+        PriceBar(
+            ticker="ZZSLAB2",
+            company_id=company.id,
+            trade_date=date(2026, 8, 1),
+            source_provider="test",
+            open=Decimal("100"),
+            high=Decimal("101"),
+            low=Decimal("99"),
+            close=Decimal("100"),
+            volume=1000,
+            retrieved_at=now,
+        )
+    )
+    snapshot_ts = now
+    for strike in (Decimal("95"), Decimal("100"), Decimal("105")):
+        for option_type in (OptionType.CALL, OptionType.PUT):
+            db_session.add(
+                OptionsSnapshot(
+                    company_id=company.id,
+                    snapshot_timestamp=snapshot_ts,
+                    expiration_date=date(2026, 9, 18),
+                    strike=strike,
+                    option_type=option_type,
+                    bid=Decimal("1.90"),
+                    ask=Decimal("2.10"),
+                    source_provider="test",
+                    retrieved_at=snapshot_ts,
+                )
+            )
+    db_session.add(
+        VolatilitySnapshot(
+            company_id=company.id,
+            snapshot_timestamp=snapshot_ts,
+            method="atm_straddle",
+            target_earnings_date=date(2026, 9, 10),
+            near_term_expiration=date(2026, 9, 18),
+            implied_move_pct=Decimal("0.05"),
+            implied_move_absolute=Decimal("5.00"),
+            computed_at=now,
+        )
+    )
+    db_session.flush()
+
+    response = client.get("/api/v1/research/zzslab2/strategies")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["strategies"] != []
+    assert body["chain"] != []
+    assert body["implied_move_pct"] == "0.050000"
+    top = body["strategies"][0]
+    assert top["rank"] == 1
+    assert "ZZSLAB2" in top["explanation"]
+
+
+def test_thesis_unknown_company_returns_404(client):
+    response = client.post("/api/v1/research/ZZNOTHS/thesis")
+    assert response.status_code == 404
+
+
+def test_thesis_generates_from_stub_llm(client, db_session):
+    from models.company import Company
+
+    db_session.add(Company(ticker="ZZTHAPI", name="ZZ Thesis API Co", cik="0009999917"))
+    db_session.flush()
+
+    response = client.post("/api/v1/research/zzthapi/thesis")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["business_context"] == "Stub business context [1]."
+    assert "not investment advice" in body["disclaimer"]
+
+
+def test_portfolio_positions_filtered_by_ticker(client, db_session):
+    from datetime import UTC, datetime
+    from decimal import Decimal
+
+    from models.portfolio_position_snapshot import PortfolioPositionSnapshot
+
+    now = datetime.now(UTC)
+    db_session.add_all(
+        [
+            PortfolioPositionSnapshot(
+                account_id_masked="U12****34",
+                snapshot_timestamp=now,
+                conid=1,
+                contract_description="ZZPORT",
+                asset_class="STK",
+                quantity=Decimal("10"),
+                source_provider="test",
+                retrieved_at=now,
+            ),
+            PortfolioPositionSnapshot(
+                account_id_masked="U12****34",
+                snapshot_timestamp=now,
+                conid=2,
+                contract_description="OTHR",
+                asset_class="STK",
+                quantity=Decimal("5"),
+                source_provider="test",
+                retrieved_at=now,
+            ),
+        ]
+    )
+    db_session.flush()
+
+    response = client.get("/api/v1/portfolio/positions", params={"ticker": "zzport"})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body["positions"]) == 1
+    assert body["positions"][0]["contract_description"] == "ZZPORT"
