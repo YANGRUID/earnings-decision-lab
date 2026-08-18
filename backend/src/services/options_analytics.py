@@ -88,6 +88,8 @@ def _to_option_quote(row: OptionsSnapshot, ticker: str) -> OptionQuote:
         gamma=row.gamma,
         theta=row.theta,
         vega=row.vega,
+        market_data_quality=row.market_data_quality.value if row.market_data_quality else None,
+        external_contract_id=row.external_contract_id,
         source_provider=row.source_provider,
         retrieved_at=row.retrieved_at,
     )

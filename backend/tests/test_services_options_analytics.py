@@ -14,6 +14,7 @@ from services.options_analytics import (
     collect_forward_options_snapshot,
     compute_and_persist_volatility_snapshot,
     get_implied_vs_realized_moves,
+    get_latest_options_chain,
     get_latest_volatility_snapshot,
 )
 
@@ -563,3 +564,35 @@ class TestCollectForwardOptionsSnapshot:
         assert second is None
         assert provider.call_count == 1
         assert db_session.query(OptionsSnapshot).filter_by(company_id=company.id).count() == 1
+
+
+def test_get_latest_options_chain_preserves_market_data_quality_and_contract_id(db_session):
+    # Real bug caught live building the Option Chain view (Phase 14): the
+    # OptionsSnapshot -> OptionQuote conversion silently dropped
+    # market_data_quality and external_contract_id, so every reader of
+    # ingested chain data (implied move, strategy generation, and now the
+    # chain view) lost IBKR's real live/delayed/frozen classification and
+    # contract id even though both were correctly persisted.
+    company = _seed_company(db_session)
+    db_session.add(
+        OptionsSnapshot(
+            company_id=company.id,
+            snapshot_timestamp=SNAPSHOT_TS,
+            expiration_date=NEAR_EXP,
+            strike=Decimal("115"),
+            option_type=OptionType.CALL,
+            bid=Decimal("4.00"),
+            ask=Decimal("4.20"),
+            market_data_quality="frozen",
+            external_contract_id="12345",
+            source_provider="ibkr",
+            retrieved_at=datetime.now(UTC),
+        )
+    )
+    db_session.commit()
+
+    chain = get_latest_options_chain(db_session, company)
+
+    assert len(chain) == 1
+    assert chain[0].market_data_quality == "frozen"
+    assert chain[0].external_contract_id == "12345"
