@@ -417,3 +417,85 @@ def test_existing_estimate_snapshot_reused_when_fresh(db_session):
     assert estimates.calls == 0  # fresh (< 12h old) -- never re-fetched
     steps_by_name = {s["step"]: s for s in job.steps}
     assert "already fresh" in steps_by_name[PreparationStep.EARNINGS_ESTIMATES.value]["detail"]
+
+
+def test_existing_estimate_snapshot_refetched_when_stale(db_session):
+    # Distinct from the MISSING (never-collected) case exercised elsewhere:
+    # this is data that exists but has aged past its freshness policy
+    # window (EARNINGS_ESTIMATES = 12h), which must trigger a real
+    # refetch just like MISSING does -- needs_refresh() treats both the
+    # same way, but this exercises that via a genuinely stale row rather
+    # than an absent one.
+    company = Company(ticker="ZZSTAL", name="ZZ Stale Co", cik="0009999906")
+    db_session.add(company)
+    db_session.flush()
+    stale_snapshot_time = NOW - timedelta(hours=13)
+    db_session.add(
+        EarningsEstimateSnapshot(
+            company_id=company.id,
+            fiscal_period_end_date=date(2026, 6, 30),
+            horizon="fiscal quarter",
+            snapshot_timestamp=stale_snapshot_time,
+            estimated_report_date=date(2026, 9, 1),
+            source_provider="fake",
+            retrieved_at=stale_snapshot_time,
+        )
+    )
+    db_session.commit()
+
+    estimates = _FakeEstimatesProvider(date(2026, 9, 1))
+    providers = _providers(estimates=estimates)
+
+    job = prepare_company_research(db_session, "zzstal", providers, now=NOW)
+
+    assert job.status == JobStatus.COMPLETED
+    assert estimates.calls == 1  # stale -> real refetch, not skipped
+    steps_by_name = {s["step"]: s for s in job.steps}
+    assert "already fresh" not in steps_by_name[PreparationStep.EARNINGS_ESTIMATES.value]["detail"]
+    # Point-in-time integrity: the stale row is never overwritten in
+    # place -- the refetch adds a new snapshot alongside it.
+    rows = (
+        db_session.query(EarningsEstimateSnapshot)
+        .filter(EarningsEstimateSnapshot.company_id == company.id)
+        .all()
+    )
+    assert len(rows) == 2
+    assert stale_snapshot_time in {r.snapshot_timestamp for r in rows}
+
+
+def test_force_refresh_never_overwrites_prior_options_snapshots(db_session):
+    # Point-in-time integrity for the options-chain step specifically:
+    # a forced re-collection must add a new OptionsSnapshot row per quote,
+    # never update an existing historical row in place.
+    report_date = date(2026, 9, 1)
+    expiration = date(2026, 9, 4)
+    options = _FakeOptionsProvider(
+        quotes=[
+            _stub_option_quote(Decimal("10"), "call", expiration),
+            _stub_option_quote(Decimal("10"), "put", expiration),
+        ]
+    )
+    providers = _providers(estimates=_FakeEstimatesProvider(report_date), options=options)
+
+    prepare_company_research(db_session, "zzpitc", providers, now=NOW)
+    company = db_session.query(Company).filter(Company.ticker == "ZZPITC").one()
+    first_count = (
+        db_session.query(OptionsSnapshot).filter(OptionsSnapshot.company_id == company.id).count()
+    )
+    assert first_count == 2
+
+    prepare_company_research(
+        db_session, "zzpitc", providers, now=NOW + timedelta(days=1), force=True
+    )
+    second_count = (
+        db_session.query(OptionsSnapshot).filter(OptionsSnapshot.company_id == company.id).count()
+    )
+
+    assert options.calls == 2  # a real second fetch happened
+    assert second_count == 4  # new rows added, old ones untouched
+    assert (
+        db_session.query(OptionsSnapshot)
+        .filter(OptionsSnapshot.company_id == company.id, OptionsSnapshot.strike == Decimal("10"))
+        .count()
+        == 4
+    )
