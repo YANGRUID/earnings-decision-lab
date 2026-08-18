@@ -1,6 +1,8 @@
 # Earnings Decision Lab
 
-**A personal research system for earnings-event analysis, market reactions, SEC filings, and options analytics — with an AI research assistant layered on top of deterministic financial calculations.**
+**An on-demand earnings research and options decision system.** Search a stock, and the system
+prepares its earnings history, filings, expectations, price data, and option-chain data, then
+combines deterministic financial analytics with grounded AI research.
 
 > **Not investment advice.** A personal research tool, not a trading system. See
 > [Disclaimer](#disclaimer).
@@ -16,87 +18,168 @@ computing) deterministically in Python, and uses an LLM only for the parts that 
 language understanding — reading filing text, answering questions, comparing guidance language
 across quarters — never for arithmetic.
 
+## How it works
+
+1. **Search a stock** by ticker.
+2. **Prepare or refresh research** — earnings history, filings, price data, analyst estimates,
+   and options data are ingested for that ticker on demand, with progress shown while it runs.
+3. **Analyze the next earnings event** — consensus expectations, implied move, and ATM IV for
+   the next, unreported report.
+4. **Inspect options market pricing** — a real, live option chain: strikes, bid/ask, IV, Greeks,
+   volume/open interest where available.
+5. **Compare strategy candidates** — deterministic, ranked options strategies built from that
+   real chain, with exact breakeven, max profit, and max loss.
+6. **Check historical move compatibility** — how the current implied move compares to what
+   actually happened in the company's own past earnings reports.
+7. **Read the grounded AI Earnings Thesis** — a cited synthesis of filings, historical pattern,
+   and guidance trend for that company.
+8. **Review IBKR exposure** — real, read-only positions from your own Interactive Brokers
+   account that match the researched ticker, if any.
+9. **Make your own decision** — every number here is computed from real data; nothing in this
+   system is a recommendation or a probability of profit.
+
 ## Current capabilities
 
-| | |
-|---|---|
-| **What it does** | For NVDA, AMD, MU, SNDK: real historical earnings results and price reactions, real SEC filing search with citations, a deterministic options-strategy calculator, and an AI research assistant that plans and executes real tool calls against real data (not a single LLM call pretending to be an agent) |
-| **Stack** | Python 3.12 / FastAPI / SQLAlchemy 2.0 / Alembic / PostgreSQL + pgvector · React 18 + TypeScript / Vite · Docker Compose · GitHub Actions CI |
-| **AI architecture** | Provider-agnostic LLM layer (DeepSeek / OpenAI / Anthropic / any OpenAI-compatible endpoint) · hybrid (vector + keyword, RRF-fused) retrieval over real SEC filings · explicit multi-stage agent (intent → plan → tool execution → verification) |
-| **Real data** | 150 real earnings events, 25k+ real daily price bars, 93 real SEC filings, 2,231 real filing chunks — sourced from SEC EDGAR, Tiingo, Alpha Vantage |
-| **Measured, not claimed** | 243 automated tests (unit/API/provider/RAG/agent), a 51-item hand-verified evaluation dataset with real measured results (below), CI green on every push including a full Docker build-and-boot check |
-| **Deployment status** | Docker-verified and ready to run (`docker compose up --build` runs the full real stack locally) — **not** deployed to a public host; see [docs/deployment.md](docs/deployment.md) for the cost research and why |
-| **Honesty as a design principle** | Every screen that has no real data shows an explicit "no data yet" state instead of a fake number. [docs/limitations.md](docs/limitations.md) tracks every known gap, phase by phase |
+**On-demand research**
+- Search any supported US-listed ticker; symbol resolution against a real reference dataset
+- On-demand ingestion — a ticker's earnings history, filings, price data, and options data are
+  fetched and stored only once that ticker is actually requested
+- Freshness-aware refresh — re-running research only re-fetches what's stale, not everything
+- Real preparation progress and status for every run (e.g. `completed_with_warnings`, with real
+  start/end timestamps), not a silent black box
 
-## Supported tickers and data sources
+**Earnings**
+- Real historical earnings events — EPS, report date, next-day and five-day price reaction —
+  sourced from SEC EDGAR and Tiingo/Alpha Vantage
+- The next, unreported earnings event tracked separately from historical events, so expectation
+  and outcome are never mixed
+- Analyst consensus (EPS/revenue estimates, analyst count, revision trend) for the next report
+- Historical move statistics (average, median, largest move) computed from a company's own
+  reported history
 
-Four tickers to start: **NVDA, AMD, MU, SNDK** — a deliberately small set chosen for depth over
-breadth (see [docs/engineering_decisions.md](docs/engineering_decisions.md) for why), with the
-data model and provider interfaces designed to make adding more a config change, not a rewrite.
+**Options**
+- Real option-chain data from the user's own Interactive Brokers account — strikes, bid/ask,
+  last, implied volatility, delta, volume/open interest where available
+- Market-data quality shown per quote (e.g. live vs. frozen), never presented as more certain
+  than it is
+- Implied move and ATM IV computed from the real chain via an ATM-straddle method
+- Put/call open-interest ratio as a real sentiment signal
 
-Data comes from documented, authenticated APIs only — SEC EDGAR (filings, XBRL facts), Tiingo
-(primary price data), Alpha Vantage (price-data fallback, plus real analyst-consensus estimates).
-Two other market-data providers (Stooq, Yahoo Finance) were evaluated and rejected outright after
-live testing showed both block automated access — see
-[docs/data_sources.md](docs/data_sources.md) for what was checked and why. No scraping, no
-unlicensed data.
+**Strategy Lab**
+- Real option-chain-based candidate generation across common strategies (spreads, straddles,
+  strangles, iron condor, and more)
+- Deterministic breakeven, max profit, and max loss for every candidate, computed from real
+  strikes and premiums — never an LLM estimate
+- Deterministic, explainable ranking by payoff at the market's own implied move
+- A historical move compatibility check per candidate — see [Limitations](#limitations) for why
+  this is not a backtest
+- Advanced: a manual payoff calculator for arbitrary strikes/premiums, as a fallback outside the
+  generated candidates
 
-Real options-chain data (implied move, ATM IV, put/call ratios) comes from the user's own
-Interactive Brokers account via the official, locally-run Client Portal Gateway — read-only, no
-order execution, see [docs/ibkr_integration.md](docs/ibkr_integration.md). Alpha Vantage's own
-options endpoints remain premium-gated on this project's plan and are kept wired up as an
-alternate provider (`OPTIONS_PROVIDER=alpha_vantage`).
+**AI**
+- Retrieval-augmented generation over real SEC filing text (hybrid vector + keyword search)
+- Cited answers to natural-language questions about a company's filings, earnings, and guidance
+- A grounded, structured Earnings Thesis per company — business context, historical earnings
+  pattern, guidance trend, key risks — synthesized only from data already shown elsewhere in the
+  workspace
+- Explicit tool orchestration: every AI Research answer shows which tools were called and how it
+  was verified, not just the final text
+- Guidance comparison across quarters as a structured, deterministic diff
 
-## Research workflows
+**Portfolio**
+- Real, read-only positions from the user's own Interactive Brokers account, matched to the
+  researched ticker
+- Never a market-quote source; never places, modifies, or cancels an order
 
-- **Look up what actually happened** — real EPS/revenue, the actual price reaction (next-day,
-  five-day), for any covered ticker's earnings history.
-- **Read filings without reading the whole filing** — ask a question in plain language and get
-  an answer grounded in real 10-K/10-Q/8-K text, with citations back to the specific filing and
-  section, not a paraphrase from the model's own training data.
-- **Price a hypothetical options strategy** — enter strikes and premiums for any of nine common
-  strategies (spreads, straddles, strangles, iron condors, etc.) and get exact net premium, max
-  profit/loss, and breakeven(s), computed deterministically.
-- **Compare guidance language across quarters** — structured extraction pulls stated numeric
-  guidance (revenue, EPS, gross margin, capex) and qualitative commentary from filing text, so
-  quarter-over-quarter changes are a deterministic diff, not a re-read.
+**System**
+- Python 3.12 / FastAPI / SQLAlchemy 2.0 / Alembic / PostgreSQL + pgvector
+- React 18 + TypeScript / Vite frontend
+- Docker Compose for the full stack; GitHub Actions CI (frontend, backend, and Docker
+  build-and-boot jobs) on every push
+- Provider abstraction for market data, filings, and options, so a provider can be swapped
+  without touching calling code
+
+## Supported tickers and data
+
+NVDA, AMD, MU, and SNDK were the original companies researched while building this system, but
+they are not a hard-coded limit. Search prepares research for any supported US-listed ticker on
+demand — detailed data (earnings history, filings, price bars, options snapshots) is ingested and
+persisted only once a ticker is actually requested, rather than preloading thousands of companies
+nobody has asked about. Provider coverage (SEC EDGAR, Tiingo, Alpha Vantage, IBKR) can vary by
+ticker: a newly requested company may come back with partial data, or a preparation run may
+complete with warnings, if a provider has limited or no data for it.
+
+As of the most recent local run (see the System Status screenshot below, and the live
+`GET /api/v1/system-status` endpoint): 5 companies researched, 201 earnings events, 29,985 daily
+price bars, 127 SEC filings, 2,607 searchable filing chunks. These are live counts for one local
+deployment, not a fixed catalog — they change every time a ticker is researched, so treat them as
+an example snapshot rather than a permanent number.
 
 ## Screenshots
 
 | | |
 |---|---|
-| ![Dashboard](docs/screenshots/dashboard.png) Dashboard | ![AI Research](docs/screenshots/ai_research.png) AI Research — real agent run: citations, tool call, verification, cost |
-| ![Earnings Event](docs/screenshots/earnings_event.png) Earnings Event — real EPS/revenue/price reaction, honest empty state for unavailable options data | ![Options Lab](docs/screenshots/options_lab.png) Options Lab — deterministic payoff calculator |
-| ![Company](docs/screenshots/company_amd.png) Company — real earnings history | ![Historical Replay](docs/screenshots/historical_replay.png) Historical Replay — honest empty state, not faked |
+| ![Home](docs/screenshots/home.png) **Home** — search-first, recently researched companies | ![Upcoming Earnings](docs/screenshots/upcoming_earnings.png) **Upcoming Earnings** — consensus, implied move, ATM IV, historical comparison |
+| ![Strategy Lab](docs/screenshots/strategy_lab.png) **Strategy Lab** — ranked candidates from a real option chain, with breakeven and historical compatibility | ![Option Chain](docs/screenshots/option_chain.png) **Option Chain** — real strikes, bid/ask, delta, IV, OI, market-data quality |
+| ![AI Earnings Thesis](docs/screenshots/earnings_thesis.png) **AI Earnings Thesis** — grounded, cited synthesis | ![Historical Events](docs/screenshots/history.png) **Historical Events** — real past earnings moves |
 
-Full Data/Evaluation Status screen: [docs/screenshots/data_eval_status.png](docs/screenshots/data_eval_status.png).
+Additional screens: [AI Research](docs/screenshots/ai_research.png) (grounded Q&A with tool
+trace) · [System Status](docs/screenshots/system_status.png) (live data coverage and freshness) ·
+[Cross-Company Replay](docs/screenshots/cross_company_replay.png).
 
 ## Architecture
 
 ```
-backend/    FastAPI service: providers, ingestion, analytics, RAG, agents, API (see backend/README.md)
-frontend/   React + TypeScript research UI (see frontend/README.md)
+backend/    FastAPI service: providers, research orchestration, analytics, RAG, agents, API
+frontend/   React + TypeScript research workspace
 evaluation/ Hand-curated Q&A dataset and scripts that measure retrieval/RAG/agent/extraction quality
 docs/       Architecture, methodology, and engineering-decision documentation (see below)
 ```
 
-Five modules: **Earnings Expectations** (pre-earnings, point-in-time), **Earnings Outcomes**
-(actuals, surprise, price reaction), **Options & Volatility Analytics** (deterministic payoff
-engine, Black-Scholes Greeks, ATM-straddle implied move), **Historical Event Replay**
-(rule-based strike selection — architecture complete, honestly empty pending a historical
-options-chain data source), and **AI Research Assistant** (hybrid RAG + tool-calling agent over
-the four modules above).
+```
+User research request
+  -> Research Preparation Orchestrator (symbol resolution, freshness/cache check)
+  -> Providers (SEC EDGAR, Tiingo, Alpha Vantage, IBKR)
+  -> PostgreSQL + pgvector
+  -> Deterministic analytics (earnings, options, strategy ranking, historical move compatibility)
+  -> AI research / grounded Earnings Thesis (RAG + tool orchestration)
+  -> React research workspace
+```
 
-The no-lookahead-bias principle governs the whole data model: every pre-earnings snapshot
-stores only what existed at that timestamp, and every externally-sourced record carries its
-provider and retrieval time — necessary for the data to be trustworthy for research, not just
-for it to look complete. Full design rationale — including deliberate scope boundaries and what
-was evaluated and rejected — in [docs/engineering_decisions.md](docs/engineering_decisions.md).
+The no-lookahead-bias principle governs the whole data model: every pre-earnings snapshot stores
+only what existed at that timestamp, and every externally-sourced record carries its provider and
+retrieval time. Full design rationale — including deliberate scope boundaries and what was
+evaluated and rejected — in
+[docs/engineering_decisions.md](docs/engineering_decisions.md).
+
+## Interactive Brokers integration
+
+Real option-chain data and portfolio positions come from the user's own Interactive Brokers
+account via the official, locally-run **Client Portal Gateway** — read-only, no order placement,
+modification, or cancellation anywhere in the integration. The Gateway is deliberately
+**local-first**: it runs and is authenticated on the user's own machine, and this project never
+sees an IBKR username, password, or 2FA code. Cloud/Azure synchronization for IBKR data has not
+been implemented — if this system is ever deployed off a local machine, the Gateway either keeps
+running locally and forwards already-collected snapshots, or a different, officially supported
+IBKR cloud authentication model would need to be adopted first. That decision is explicitly
+deferred, not solved by what exists today. Full architecture and real, live-captured
+request/response examples in [docs/ibkr_integration.md](docs/ibkr_integration.md).
+
+## Deterministic analytics vs. AI
+
+A core design principle of this system: **all financial arithmetic is deterministic Python, never
+an LLM guess.** Breakeven, max profit/loss, net premium, implied move, ATM IV, historical move
+statistics, and strategy ranking scores are all computed by plain code with unit tests. The LLM is
+used only where the task genuinely requires language understanding — interpreting filing text,
+synthesizing evidence into an Earnings Thesis, answering a natural-language question, comparing
+guidance wording across quarters. Every AI-generated answer is grounded in data computed or
+retrieved by the deterministic layer, cited back to its source, and never the source of a number
+that appears elsewhere in the app.
 
 ## Measured evaluation
 
 This system's AI components are evaluated against a hand-curated, hand-verified dataset, not
-graded on impression. From the most recent run
+graded on impression
 ([docs/evaluation.md](docs/evaluation.md) has full methodology, per-item results, and an honest
 discussion of *why* retrieval scores what it does):
 
@@ -107,21 +190,32 @@ discussion of *why* retrieval scores what it does):
 | Agent orchestration (10 items) | Intent + tool-selection accuracy | 100% |
 | Structured extraction (8 items) | Capex-guidance accuracy | 100% |
 
+## Testing and quality
+
+Verified against the current repository: 465/465 backend tests passing on a clean database (a
+handful can show as failing against a long-running, actively-used shared dev database once real
+research data exists in it — expected, not a regression), `ruff` clean, `mypy` clean, frontend
+`tsc` typecheck clean, frontend `eslint` clean, frontend production build clean, and a full Docker
+Compose stack (`db` → `migrate` → `backend` → `frontend`) building and booting successfully.
+GitHub Actions runs the frontend, backend, and Docker jobs on every push to `main`, all green as
+of the latest commit.
+
 ## Documentation
 
 | Doc | Covers |
 |---|---|
-| [docs/architecture.md](docs/architecture.md) | System design, current status |
+| [docs/architecture.md](docs/architecture.md) | System design as of Phase 11 — schema, providers, and module status at that point; superseded on research orchestration, Strategy Lab, and AI Thesis by this README and the phases below |
 | [docs/data_model.md](docs/data_model.md) | Table grain, keys, indexing, point-in-time semantics |
 | [docs/data_sources.md](docs/data_sources.md) | Providers evaluated, chosen, and why (incl. two rejected for blocking automated access) |
-| [docs/options_methodology.md](docs/options_methodology.md) / [docs/earnings_methodology.md](docs/earnings_methodology.md) | Payoff formulas, Greeks assumptions, implied-move/IV-crush methodology |
+| [docs/options_methodology.md](docs/options_methodology.md) / [docs/earnings_methodology.md](docs/earnings_methodology.md) | Payoff formulas, Greeks assumptions, implied-move methodology |
 | [docs/llm_providers.md](docs/llm_providers.md) | Provider-agnostic LLM layer |
 | [docs/ai_architecture.md](docs/ai_architecture.md) | RAG pipeline + agent orchestration design |
+| [docs/ibkr_integration.md](docs/ibkr_integration.md) | Interactive Brokers integration architecture, auth flow, real request/response examples |
 | [docs/evaluation.md](docs/evaluation.md) | Evaluation methodology, real results, honest analysis |
 | [docs/deployment.md](docs/deployment.md) | Docker architecture, real cost research for hosting |
-| [docs/engineering_decisions.md](docs/engineering_decisions.md) | Every major technical decision and why, phase by phase — including real bugs found and fixed along the way |
-| [docs/limitations.md](docs/limitations.md) | Every known gap, stated plainly |
-| [SYSTEM_AUDIT.md](SYSTEM_AUDIT.md) | Independent verification of what actually works, run against the real system |
+| [docs/engineering_decisions.md](docs/engineering_decisions.md) | Every major technical decision and why, phase by phase (Phases 1–13), including real bugs found and fixed along the way |
+| [docs/limitations.md](docs/limitations.md) | Known gaps for Phases 1–10 in detail; see this README's own [Limitations](#limitations) section for what's specific to later phases |
+| [SYSTEM_AUDIT.md](SYSTEM_AUDIT.md) | An independent verification pass against the real system, dated to Phase 11 |
 
 ## Local setup
 
@@ -130,24 +224,40 @@ cp .env.example .env   # fill in real values — see docs/data_sources.md and do
 docker compose up --build
 ```
 
-Runs the full stack: PostgreSQL + pgvector, one-shot Alembic migration, the FastAPI backend
+Runs the full stack: PostgreSQL + pgvector, a one-shot Alembic migration, the FastAPI backend
 (`http://localhost:8000`), and the frontend (`http://localhost:5173`). Backend and frontend can
 also be run independently outside Docker — see `backend/README.md` and `frontend/README.md`.
 
+Everything works without a running IBKR Client Portal Gateway except real option-chain data,
+IBKR-sourced implied move/ATM IV, and Portfolio/My Exposure — those show an explicit
+not-available state instead of a number. See
+[docs/ibkr_integration.md](docs/ibkr_integration.md) for how to run and authenticate the Gateway
+locally.
+
 ## Limitations
 
-Real options-chain data requires the user's own IBKR Client Portal Gateway running locally and
-authenticated (see [docs/ibkr_integration.md](docs/ibkr_integration.md)) — without it, implied
-move, ATM IV, and historical strategy replay honestly run on empty tables rather than real
-numbers. A dockerized backend can't reach a Gateway running on the host machine without extra
-network configuration not set up by default. Full, current list in
-[docs/limitations.md](docs/limitations.md).
+- The IBKR Client Portal Gateway requires local authentication on the user's own machine; there
+  is no cloud-hosted IBKR connection today, and Azure/cloud synchronization for IBKR data has not
+  been built (see [Interactive Brokers integration](#interactive-brokers-integration)).
+- Strategy Lab's ranking is a deterministic heuristic based on payoff at the market's own implied
+  move — not a profit predictor and not a recommendation.
+- Historical move compatibility compares the current implied move against real past earnings-day
+  moves; it is not a backtest, because complete historical point-in-time options-chain data does
+  not exist for past earnings events.
+- Data coverage and freshness depend on the underlying providers (SEC EDGAR, Tiingo, Alpha
+  Vantage, IBKR) — rate limits, provider outages, or a ticker with limited coverage can produce
+  partial results or a preparation run that completes with warnings.
+- AI-generated research (the Earnings Thesis, AI Research answers) is grounded in retrieved
+  evidence but is only as complete as that evidence — a newly researched company with sparse
+  filing history produces a correspondingly limited answer.
+
+Full, phase-by-phase list for Phases 1–10 in [docs/limitations.md](docs/limitations.md).
 
 ## Disclaimer
 
-This is a personal research tool. It is not investment advice, has no live users, and no claim
-is made about trading performance — see [docs/limitations.md](docs/limitations.md) for a full,
-honest account of what is and isn't real.
+This is a personal research tool. It is not investment advice, has no live users, and no claim is
+made about trading performance — see [docs/limitations.md](docs/limitations.md) and the
+[Limitations](#limitations) section above for a full, honest account of what is and isn't real.
 
 ## License
 
