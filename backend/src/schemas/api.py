@@ -222,6 +222,11 @@ class ExecutionTraceResponse(BaseModel):
 
 class ResearchQueryRequest(BaseModel):
     question: str
+    ticker: str | None = None
+    """Optional company context -- when supplied, the persisted history row
+    (see AIResearchQuery) is scoped to this ticker; the underlying agent
+    itself still answers from whatever the tools retrieve, this only
+    affects how the answer is filed for later retrieval."""
 
 
 class ResearchQueryResponse(BaseModel):
@@ -229,6 +234,33 @@ class ResearchQueryResponse(BaseModel):
     answer: str
     citations: list[CitationResponse]
     trace: ExecutionTraceResponse
+
+
+class AIResearchHistoryItemResponse(BaseModel):
+    """A real, persisted AI Research answer -- see models/ai_research_query.py.
+    Selecting one from history restores exactly this stored answer; it is
+    never regenerated."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    ticker: str | None
+    question: str
+    answer_markdown: str
+    citations: list[dict]
+    intent_category: str
+    planning_method: str
+    tool_calls: list[dict]
+    verification_ran: bool
+    verification_supported: bool | None
+    revised: bool
+    provider: str
+    model: str
+    total_input_tokens: int
+    total_output_tokens: int
+    estimated_cost_usd: Decimal | None
+    total_duration_ms: float
+    created_at: datetime
 
 
 class EvaluationStatusResponse(BaseModel):
@@ -400,6 +432,34 @@ class ResearchJobQueuedResponse(BaseModel):
     status: str = "queued"
 
 
+class OptionsMarketStateResponse(BaseModel):
+    """The one canonical options-availability answer -- see
+    services/options_analytics.py::OptionsMarketState. Every surface that
+    shows options status (Dashboard, Company Overview, Upcoming Earnings,
+    Strategy Lab) renders this same object rather than each inferring
+    availability from a different signal.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    chain_exists: bool
+    contract_count: int
+    priceable_contract_count: int
+    has_bid_ask: bool
+    has_iv: bool
+    has_greeks: bool
+    implied_move_available: bool
+    earnings_anchored: bool | None
+    expiration: date | None
+    source: str | None
+    snapshot_timestamp: datetime | None
+    snapshot_age_minutes: int | None
+    snapshot_age_label: str | None
+    market_data_quality: str | None
+    data_state: str
+    reason: str
+
+
 class ResearchOverviewResponse(BaseModel):
     """A cross-section of what's actually on record for a ticker right
     now -- enough for the frontend to decide whether a research workspace
@@ -418,9 +478,7 @@ class ResearchOverviewResponse(BaseModel):
     latest_volatility_snapshot: VolatilitySnapshotResponse | None
     latest_price: Decimal | None = None
     historical_moves: HistoricalMoveStatsResponse | None = None
-    options_data_state: str = "not_collected"
-    options_snapshot_source: str | None = None
-    options_snapshot_age_label: str | None = None
+    options_market: OptionsMarketStateResponse
 
 
 class OptionQuoteResponse(BaseModel):
@@ -532,6 +590,11 @@ class StrategyLabResponse(BaseModel):
     estimated / unknown -- mirrors EarningsEstimateSnapshot.date_source
     when a date is known, "unknown" when none is. Never presents a
     manual/estimated date as provider-confirmed."""
+    options_market: OptionsMarketStateResponse
+    """The same canonical options-availability object shown on Company
+    Overview / Upcoming Earnings -- so the two surfaces can never disagree
+    about whether a real chain exists, how many contracts, or why an
+    implied move is or isn't available."""
 
 
 class EarningsThesisResponse(BaseModel):
@@ -544,6 +607,33 @@ class EarningsThesisResponse(BaseModel):
     citations: list[CitationResponse]
     generated_at: datetime
     model: str
+
+
+class AIThesisVersionResponse(BaseModel):
+    """A real, persisted AI Earnings Thesis generation -- see
+    models/ai_thesis_version.py. One row per generation, never overwritten;
+    ``is_stale`` (computed by the endpoint, not stored) tells the frontend
+    whether newer consensus/options evidence exists than what this version
+    was grounded in, without ever silently discarding the old version.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    company_id: int
+    business_context: str
+    historical_earnings_pattern: str
+    guidance_trend: str
+    key_risks: str
+    market_setup: str
+    disclaimer: str
+    citations: list[dict]
+    provider: str
+    model: str
+    earnings_estimate_snapshot_id: int | None
+    volatility_snapshot_id: int | None
+    created_at: datetime
+    is_stale: bool = False
 
 
 class ProviderSettingsUpdateRequest(BaseModel):

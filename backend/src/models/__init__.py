@@ -1,4 +1,6 @@
 from models.ai_extraction import AIExtraction
+from models.ai_research_query import AIResearchQuery
+from models.ai_thesis_version import AIThesisVersion
 from models.app_provider_settings import AppProviderSettings
 from models.company import Company
 from models.document_chunk import DocumentChunk
@@ -18,6 +20,8 @@ from models.volatility_snapshot import VolatilitySnapshot
 
 __all__ = [
     "AIExtraction",
+    "AIResearchQuery",
+    "AIThesisVersion",
     "AppProviderSettings",
     "Company",
     "DocumentChunk",

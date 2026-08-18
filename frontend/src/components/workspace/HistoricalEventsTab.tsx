@@ -70,7 +70,7 @@ export function HistoricalEventsTab({ ticker }: { ticker: string }) {
               {events.data.map((event) => (
                 <tr key={event.id}>
                   <td>
-                    <Link to={`/earnings/${event.id}`}>
+                    <Link className="text-link" to={`/earnings/${event.id}`}>
                       FY{event.fiscal_year} Q{event.fiscal_quarter}
                     </Link>
                   </td>

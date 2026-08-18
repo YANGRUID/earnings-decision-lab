@@ -2,8 +2,9 @@ import { useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { api, ApiError } from "../api/client";
 import { useAsync } from "../hooks/useAsync";
-import { dataStateLabel, formatRelativeTime } from "../lib/format";
-import type { ResearchOverview, ResearchQueryResponse } from "../types/api";
+import { Markdown } from "../components/Markdown";
+import { dataStateLabel, formatRelativeTime, providerLabel } from "../lib/format";
+import type { AIResearchHistoryItem, ResearchOverview } from "../types/api";
 
 const DEFAULT_EXAMPLE_QUESTIONS = [
   "What were MU's last two earnings results?",
@@ -52,9 +53,9 @@ function buildChecklist(overview: ResearchOverview): ChecklistItem[] {
     },
     {
       label: "Options snapshot",
-      ok: overview.options_snapshot_source !== null,
-      detail: overview.options_snapshot_source
-        ? `${dataStateLabel(overview.options_data_state)} · ${overview.options_snapshot_age_label ?? ""} old`
+      ok: overview.options_market.chain_exists,
+      detail: overview.options_market.chain_exists
+        ? `${dataStateLabel(overview.options_market.data_state)} · ${overview.options_market.snapshot_age_label ?? ""} old`
         : "Not collected yet",
     },
   ];
@@ -90,6 +91,213 @@ function ResearchChecklist({ ticker }: { ticker: string }) {
   );
 }
 
+function groupByRecency(items: AIResearchHistoryItem[]): { label: string; items: AIResearchHistoryItem[] }[] {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const yesterday = new Date(today);
+  yesterday.setDate(yesterday.getDate() - 1);
+
+  const groups = new Map<string, AIResearchHistoryItem[]>();
+  for (const item of items) {
+    const created = new Date(item.created_at);
+    const createdDay = new Date(created);
+    createdDay.setHours(0, 0, 0, 0);
+    let label: string;
+    if (createdDay.getTime() === today.getTime()) label = "Today";
+    else if (createdDay.getTime() === yesterday.getTime()) label = "Yesterday";
+    else label = createdDay.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+    const list = groups.get(label) ?? [];
+    list.push(item);
+    groups.set(label, list);
+  }
+  return [...groups.entries()].map(([label, items]) => ({ label, items }));
+}
+
+function HistoryPanel({
+  ticker,
+  activeId,
+  onSelect,
+  onDeleted,
+}: {
+  ticker: string | null;
+  activeId: number | null;
+  onSelect: (item: AIResearchHistoryItem) => void;
+  onDeleted: (id: number) => void;
+}) {
+  const history = useAsync(
+    () => api.getResearchHistory({ ticker: ticker ?? undefined, limit: 15 }),
+    [ticker],
+  );
+  const [deletingId, setDeletingId] = useState<number | null>(null);
+
+  const remove = async (e: React.MouseEvent, id: number) => {
+    e.stopPropagation();
+    setDeletingId(id);
+    try {
+      await api.deleteResearchHistoryItem(id);
+      onDeleted(id);
+      history.reload();
+    } finally {
+      setDeletingId(null);
+    }
+  };
+
+  if (history.loading && !history.data) return null;
+  if (!history.data || history.data.length === 0) return null;
+
+  const groups = groupByRecency(history.data);
+
+  return (
+    <div className="card">
+      <h2>Recent research{ticker ? ` — ${ticker}` : ""}</h2>
+      {groups.map((group) => (
+        <div key={group.label} style={{ marginBottom: 10 }}>
+          <div className="text-sm text-faint" style={{ marginBottom: 4 }}>
+            {group.label}
+          </div>
+          <ul className="history-list">
+            {group.items.map((item) => (
+              <li
+                key={item.id}
+                className={`history-item ${item.id === activeId ? "active" : ""}`}
+                onClick={() => onSelect(item)}
+              >
+                <span className="history-item-question">
+                  {item.ticker && <span className="mono text-faint">{item.ticker} — </span>}
+                  {item.question}
+                </span>
+                <button
+                  className="history-item-delete"
+                  onClick={(e) => remove(e, item.id)}
+                  disabled={deletingId === item.id}
+                  aria-label="Delete this research item"
+                  title="Delete"
+                >
+                  ×
+                </button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function AnswerPanel({ item }: { item: AIResearchHistoryItem }) {
+  return (
+    <>
+      <div className="card">
+        <h2>Question</h2>
+        <p style={{ margin: 0 }}>&ldquo;{item.question}&rdquo;</p>
+      </div>
+
+      <div className="card">
+        <h2>Answer</h2>
+        <Markdown>{item.answer_markdown}</Markdown>
+      </div>
+
+      {item.citations.length > 0 && (
+        <div className="card">
+          <h2>Sources</h2>
+          {item.citations.map((c) => (
+            <div key={c.marker} className="source-item">
+              <span className="citation-badge">{c.marker}</span>
+              <div>
+                <div className="source-title">
+                  {c.ticker} · {c.filing_type} · filed {c.filing_date}
+                  {c.section ? ` · ${c.section}` : ""}
+                </div>
+                <a className="text-link text-sm" href={c.source_url} target="_blank" rel="noreferrer">
+                  View source
+                </a>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <details className="card">
+        <summary style={{ cursor: "pointer", fontWeight: 600 }}>Research details</summary>
+        <div className="grid grid-3" style={{ marginTop: 14, marginBottom: 14 }}>
+          <div className="stat">
+            <span className="stat-label">Generated</span>
+            <span className="stat-value small">{new Date(item.created_at).toLocaleString()}</span>
+          </div>
+          <div className="stat">
+            <span className="stat-label">Intent</span>
+            <span className="stat-value small">{item.intent_category}</span>
+          </div>
+          <div className="stat">
+            <span className="stat-label">Planning</span>
+            <span className="stat-value small">{item.planning_method}</span>
+          </div>
+          <div className="stat">
+            <span className="stat-label">Provider / model</span>
+            <span className="stat-value small">
+              {providerLabel(item.provider)} · {item.model}
+            </span>
+          </div>
+          <div className="stat">
+            <span className="stat-label">Duration</span>
+            <span className="stat-value small">{(item.total_duration_ms / 1000).toFixed(1)}s</span>
+          </div>
+          <div className="stat">
+            <span className="stat-label">Tokens (in/out)</span>
+            <span className="stat-value small">
+              {item.total_input_tokens} / {item.total_output_tokens}
+            </span>
+          </div>
+          <div className="stat">
+            <span className="stat-label">Est. cost</span>
+            <span className="stat-value small">
+              {item.estimated_cost_usd ? `$${Number(item.estimated_cost_usd).toFixed(4)}` : "n/a"}
+            </span>
+          </div>
+          <div className="stat">
+            <span className="stat-label">Verification</span>
+            {item.verification_ran ? (
+              <span className={`pill ${item.verification_supported ? "pill-positive" : "pill-negative"}`}>
+                {item.verification_supported ? "supported by evidence" : "revised"}
+              </span>
+            ) : (
+              <span className="pill pill-neutral">not run</span>
+            )}
+          </div>
+        </div>
+
+        {item.tool_calls.length === 0 ? (
+          <p className="text-sm text-muted">No tools were needed for this question.</p>
+        ) : (
+          item.tool_calls.map((tc, i) => (
+            <div className="trace-step" key={i}>
+              <div className="trace-step-header">
+                <span className="trace-step-name">{tc.tool_name}</span>
+                <span className={`pill ${tc.success ? "pill-positive" : "pill-negative"}`}>
+                  {tc.success ? "ok" : "failed"} · {tc.duration_ms.toFixed(0)}ms
+                </span>
+              </div>
+              <div className="text-muted" style={{ marginTop: 4 }}>
+                {tc.summary || tc.error}
+              </div>
+              {tc.query_description && (
+                <details style={{ marginTop: 6 }}>
+                  <summary className="text-sm text-faint" style={{ cursor: "pointer" }}>
+                    Query
+                  </summary>
+                  <pre className="mono text-sm" style={{ whiteSpace: "pre-wrap", marginTop: 4 }}>
+                    {tc.query_description}
+                  </pre>
+                </details>
+              )}
+            </div>
+          ))
+        )}
+      </details>
+    </>
+  );
+}
+
 export function Research() {
   const [searchParams] = useSearchParams();
   const contextTicker = searchParams.get("ticker")?.toUpperCase() ?? null;
@@ -101,18 +309,26 @@ export function Research() {
       ]
     : DEFAULT_EXAMPLE_QUESTIONS;
   const [question, setQuestion] = useState(contextTicker ? `About ${contextTicker}: ` : "");
-  const [response, setResponse] = useState<ResearchQueryResponse | null>(null);
+  const [activeItem, setActiveItem] = useState<AIResearchHistoryItem | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [historyKey, setHistoryKey] = useState(0);
 
   const ask = async (q: string) => {
     if (!q.trim()) return;
     setLoading(true);
     setError(null);
-    setResponse(null);
     try {
-      const res = await api.researchQuery(q);
-      setResponse(res);
+      await api.researchQuery(q, contextTicker ?? undefined);
+      // Re-fetch the row that was just persisted -- the active-answer panel
+      // always renders a real AIResearchHistoryItem, whether it was just
+      // generated or restored from history, so the two paths never drift.
+      const items = await api.getResearchHistory({
+        ticker: contextTicker ?? undefined,
+        limit: 1,
+      });
+      if (items[0]) setActiveItem(items[0]);
+      setHistoryKey((k) => k + 1);
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "The research query failed.");
     } finally {
@@ -126,7 +342,8 @@ export function Research() {
         <h1>AI Research{contextTicker ? ` — ${contextTicker}` : ""}</h1>
         <p>
           Grounded, cited answers over real earnings data and SEC filings — every answer shows
-          which tools were called and how it was verified, not just the final text.
+          which tools were called and how it was verified, not just the final text. Answers are
+          saved as real research history.
         </p>
       </div>
 
@@ -143,7 +360,7 @@ export function Research() {
             placeholder="Ask about a covered company's earnings, filings, or guidance…"
           />
         </div>
-        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+        <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
           <button className="btn" onClick={() => ask(question)} disabled={loading}>
             {loading ? "Researching…" : "Ask"}
           </button>
@@ -157,6 +374,7 @@ export function Research() {
                 setQuestion(q);
                 ask(q);
               }}
+              disabled={loading}
             >
               {q}
             </button>
@@ -166,116 +384,17 @@ export function Research() {
 
       {error && <div className="notice">{error}</div>}
 
-      {response && (
-        <>
-          <div className="card">
-            <h2>Answer</h2>
-            <p style={{ whiteSpace: "pre-wrap", marginTop: 0 }}>{response.answer}</p>
-          </div>
+      <HistoryPanel
+        key={historyKey}
+        ticker={contextTicker}
+        activeId={activeItem?.id ?? null}
+        onSelect={setActiveItem}
+        onDeleted={(id) => {
+          if (activeItem?.id === id) setActiveItem(null);
+        }}
+      />
 
-          {response.citations.length > 0 && (
-            <div className="card">
-              <h2>Citations</h2>
-              <ul className="citation-list">
-                {response.citations.map((c) => (
-                  <li key={c.marker} className="citation-item">
-                    <span className="citation-marker">{c.marker}</span>
-                    {c.ticker} {c.filing_type} filed {c.filing_date}
-                    {c.section ? `, ${c.section}` : ""} —{" "}
-                    <a href={c.source_url} target="_blank" rel="noreferrer">
-                      source
-                    </a>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
-
-          <div className="card">
-            <h2>Execution trace</h2>
-            <div className="grid grid-3" style={{ marginBottom: 14 }}>
-              <div className="stat">
-                <span className="stat-label">Intent</span>
-                <span className="stat-value small">{response.trace.intent_category}</span>
-              </div>
-              <div className="stat">
-                <span className="stat-label">Planning</span>
-                <span className="stat-value small">{response.trace.planning_method}</span>
-              </div>
-              <div className="stat">
-                <span className="stat-label">Model</span>
-                <span className="stat-value small">{response.trace.model}</span>
-              </div>
-              <div className="stat">
-                <span className="stat-label">Duration</span>
-                <span className="stat-value small">
-                  {(response.trace.total_duration_ms / 1000).toFixed(1)}s
-                </span>
-              </div>
-              <div className="stat">
-                <span className="stat-label">Tokens (in/out)</span>
-                <span className="stat-value small">
-                  {response.trace.total_input_tokens} / {response.trace.total_output_tokens}
-                </span>
-              </div>
-              <div className="stat">
-                <span className="stat-label">Est. cost</span>
-                <span className="stat-value small">
-                  {response.trace.estimated_cost_usd
-                    ? `$${Number(response.trace.estimated_cost_usd).toFixed(4)}`
-                    : "n/a"}
-                </span>
-              </div>
-            </div>
-
-            {response.trace.tool_calls.length === 0 ? (
-              <p className="text-sm text-muted">No tools were needed for this question.</p>
-            ) : (
-              response.trace.tool_calls.map((tc, i) => (
-                <div className="trace-step" key={i}>
-                  <div className="trace-step-header">
-                    <span className="trace-step-name">{tc.tool_name}</span>
-                    <span
-                      className={`pill ${tc.success ? "pill-positive" : "pill-negative"}`}
-                    >
-                      {tc.success ? "ok" : "failed"} · {tc.duration_ms.toFixed(0)}ms
-                    </span>
-                  </div>
-                  <div className="text-muted" style={{ marginTop: 4 }}>
-                    {tc.summary || tc.error}
-                  </div>
-                  {tc.query_description && (
-                    <details style={{ marginTop: 6 }}>
-                      <summary className="text-sm text-faint" style={{ cursor: "pointer" }}>
-                        Query
-                      </summary>
-                      <pre
-                        className="mono text-sm"
-                        style={{ whiteSpace: "pre-wrap", marginTop: 4 }}
-                      >
-                        {tc.query_description}
-                      </pre>
-                    </details>
-                  )}
-                </div>
-              ))
-            )}
-
-            <div style={{ marginTop: 10 }}>
-              <span className="stat-label">Verification</span>{" "}
-              {response.trace.verification_ran ? (
-                <span
-                  className={`pill ${response.trace.verification_supported ? "pill-positive" : "pill-negative"}`}
-                >
-                  {response.trace.verification_supported ? "supported by evidence" : "revised"}
-                </span>
-              ) : (
-                <span className="pill pill-neutral">not run (no evidence to check)</span>
-              )}
-            </div>
-          </div>
-        </>
-      )}
+      {activeItem && <AnswerPanel item={activeItem} />}
     </div>
   );
 }

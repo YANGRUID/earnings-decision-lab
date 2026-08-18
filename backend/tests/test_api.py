@@ -78,6 +78,24 @@ def client(test_client, db_session) -> Iterator[TestClient]:
     test_client.app.dependency_overrides.clear()
 
 
+@pytest.fixture(autouse=True)
+def _generous_research_rate_limit(client, monkeypatch):
+    """test_client (and its research_rate_limiter) is module-scoped, so real
+    request counts accumulate across every test in this file that hits
+    /research/query or /research/{symbol}/thesis -- without this, tests
+    exercising those endpoints multiple times start failing with a real 429
+    depending on test order/count, not because of anything they're actually
+    testing. test_research_query_rate_limit_enforced still overrides this
+    with its own tight limiter for the duration of that one test."""
+    from api.rate_limit import SlidingWindowRateLimiter
+
+    monkeypatch.setattr(
+        client.app.state,
+        "research_rate_limiter",
+        SlidingWindowRateLimiter(max_requests=1000, window_seconds=60.0),
+    )
+
+
 def test_health(client):
     response = client.get("/api/v1/health")
     assert response.status_code == 200
@@ -415,6 +433,82 @@ def test_research_query_rate_limit_enforced(client, monkeypatch):
 
     assert first.status_code == 200
     assert second.status_code == 429
+
+
+def test_research_query_persists_a_real_history_row(client, db_session):
+    from models.ai_research_query import AIResearchQuery
+
+    response = client.post("/api/v1/research/query", json={"question": "hi there"})
+    assert response.status_code == 200
+
+    rows = db_session.query(AIResearchQuery).filter(AIResearchQuery.question == "hi there").all()
+    assert len(rows) == 1
+    assert rows[0].answer_markdown == "Stub answer, no tools needed."
+    assert rows[0].provider == "stub"
+    assert rows[0].model == "stub-model"
+    assert rows[0].ticker is None
+    assert rows[0].company_id is None
+
+
+def test_research_query_with_ticker_scopes_the_history_row_to_that_company(client, db_session):
+    from models.company import Company
+
+    company = Company(ticker="ZZRQAPI", name="ZZ Research Query Co", cik="0009999920")
+    db_session.add(company)
+    db_session.flush()
+
+    response = client.post(
+        "/api/v1/research/query", json={"question": "what changed?", "ticker": "zzrqapi"}
+    )
+    assert response.status_code == 200
+
+    history = client.get("/api/v1/research/history", params={"ticker": "ZZRQAPI"})
+    assert history.status_code == 200
+    items = history.json()
+    assert len(items) == 1
+    assert items[0]["ticker"] == "ZZRQAPI"
+    assert items[0]["question"] == "what changed?"
+
+
+def test_research_history_lists_newest_first(client):
+    client.post("/api/v1/research/query", json={"question": "first question"})
+    client.post("/api/v1/research/query", json={"question": "second question"})
+
+    response = client.get("/api/v1/research/history", params={"limit": 2})
+    assert response.status_code == 200
+    items = response.json()
+    assert items[0]["question"] == "second question"
+    assert items[1]["question"] == "first question"
+
+
+def test_research_history_item_can_be_fetched_by_id(client):
+    client.post("/api/v1/research/query", json={"question": "fetch me by id"})
+    listed = client.get("/api/v1/research/history", params={"limit": 1}).json()
+    item_id = listed[0]["id"]
+
+    response = client.get(f"/api/v1/research/history/{item_id}")
+    assert response.status_code == 200
+    assert response.json()["question"] == "fetch me by id"
+
+
+def test_research_history_item_not_found_returns_404(client):
+    response = client.get("/api/v1/research/history/999999999")
+    assert response.status_code == 404
+
+
+def test_research_history_item_can_be_deleted(client, db_session):
+    from models.ai_research_query import AIResearchQuery
+
+    client.post("/api/v1/research/query", json={"question": "delete me"})
+    listed = client.get("/api/v1/research/history", params={"limit": 1}).json()
+    item_id = listed[0]["id"]
+
+    delete_response = client.delete(f"/api/v1/research/history/{item_id}")
+    assert delete_response.status_code == 204
+    assert db_session.get(AIResearchQuery, item_id) is None
+
+    second_delete = client.delete(f"/api/v1/research/history/{item_id}")
+    assert second_delete.status_code == 404
 
 
 def test_search_documents_unknown_ticker_returns_empty(client):
@@ -1072,6 +1166,137 @@ def test_thesis_generates_from_stub_llm(client, db_session):
     body = response.json()
     assert body["business_context"] == "Stub business context [1]."
     assert "not investment advice" in body["disclaimer"]
+
+
+def test_thesis_generation_persists_a_real_version_row(client, db_session):
+    from models.ai_thesis_version import AIThesisVersion
+    from models.company import Company
+
+    company = Company(ticker="ZZTHVER", name="ZZ Thesis Version Co", cik="0009999921")
+    db_session.add(company)
+    db_session.flush()
+
+    response = client.post("/api/v1/research/zzthver/thesis")
+    assert response.status_code == 200
+
+    versions = (
+        db_session.query(AIThesisVersion).filter(AIThesisVersion.company_id == company.id).all()
+    )
+    assert len(versions) == 1
+    assert versions[0].business_context == "Stub business context [1]."
+    assert versions[0].provider == "stub"
+
+
+def test_thesis_generating_twice_creates_two_versions_never_overwrites(client, db_session):
+    from models.company import Company
+
+    db_session.add(Company(ticker="ZZTHV2", name="ZZ Thesis Version Co 2", cik="0009999922"))
+    db_session.flush()
+
+    first = client.post("/api/v1/research/zzthv2/thesis")
+    second = client.post("/api/v1/research/zzthv2/thesis")
+    assert first.status_code == 200
+    assert second.status_code == 200
+
+    versions = client.get("/api/v1/research/zzthv2/theses").json()
+    assert len(versions) == 2
+    # Newest first, and both real, distinct rows -- not one row mutated twice.
+    assert versions[0]["id"] != versions[1]["id"]
+
+
+def test_thesis_history_unknown_ticker_returns_404(client):
+    response = client.get("/api/v1/research/ZZNOTHVHIST/theses")
+    assert response.status_code == 404
+
+
+def test_thesis_version_can_be_fetched_by_id(client, db_session):
+    from models.company import Company
+
+    db_session.add(Company(ticker="ZZTHVFETCH", name="ZZ Thesis Fetch Co", cik="0009999923"))
+    db_session.flush()
+
+    client.post("/api/v1/research/zzthvfetch/thesis")
+    versions = client.get("/api/v1/research/zzthvfetch/theses").json()
+    version_id = versions[0]["id"]
+
+    response = client.get(f"/api/v1/research/zzthvfetch/theses/{version_id}")
+    assert response.status_code == 200
+    assert response.json()["business_context"] == "Stub business context [1]."
+
+
+def test_thesis_version_for_a_different_company_returns_404(client, db_session):
+    from models.company import Company
+
+    company_a = Company(ticker="ZZTHVA", name="ZZ Thesis Co A", cik="0009999924")
+    company_b = Company(ticker="ZZTHVB", name="ZZ Thesis Co B", cik="0009999925")
+    db_session.add_all([company_a, company_b])
+    db_session.flush()
+
+    client.post("/api/v1/research/zzthva/thesis")
+    versions_a = client.get("/api/v1/research/zzthva/theses").json()
+    version_id = versions_a[0]["id"]
+
+    response = client.get(f"/api/v1/research/zzthvb/theses/{version_id}")
+    assert response.status_code == 404
+
+
+def test_thesis_version_can_be_deleted(client, db_session):
+    from models.ai_thesis_version import AIThesisVersion
+    from models.company import Company
+
+    db_session.add(Company(ticker="ZZTHVDEL", name="ZZ Thesis Delete Co", cik="0009999926"))
+    db_session.flush()
+
+    client.post("/api/v1/research/zzthvdel/thesis")
+    versions = client.get("/api/v1/research/zzthvdel/theses").json()
+    version_id = versions[0]["id"]
+
+    delete_response = client.delete(f"/api/v1/research/zzthvdel/theses/{version_id}")
+    assert delete_response.status_code == 204
+    assert db_session.get(AIThesisVersion, version_id) is None
+
+
+def test_thesis_is_not_stale_immediately_after_generation(client, db_session):
+    from models.company import Company
+
+    db_session.add(Company(ticker="ZZTHFRESH", name="ZZ Thesis Fresh Co", cik="0009999927"))
+    db_session.flush()
+
+    client.post("/api/v1/research/zzthfresh/thesis")
+    versions = client.get("/api/v1/research/zzthfresh/theses").json()
+
+    assert versions[0]["is_stale"] is False
+
+
+def test_thesis_becomes_stale_once_newer_consensus_data_exists(client, db_session):
+    from datetime import UTC, date, datetime
+
+    from models.company import Company
+    from models.earnings_estimate_snapshot import EarningsEstimateSnapshot
+
+    company = Company(ticker="ZZTHSTALE", name="ZZ Thesis Stale Co", cik="0009999928")
+    db_session.add(company)
+    db_session.flush()
+
+    client.post("/api/v1/research/zzthstale/thesis")
+
+    # A real, newer consensus snapshot arrives after the thesis was generated.
+    now = datetime.now(UTC)
+    db_session.add(
+        EarningsEstimateSnapshot(
+            company_id=company.id,
+            fiscal_period_end_date=date(2026, 10, 31),
+            horizon="fiscal quarter",
+            snapshot_timestamp=now,
+            estimated_report_date=date(2026, 11, 15),
+            source_provider="alpha_vantage",
+            retrieved_at=now,
+        )
+    )
+    db_session.flush()
+
+    versions = client.get("/api/v1/research/zzthstale/theses").json()
+    assert versions[0]["is_stale"] is True
 
 
 def test_portfolio_positions_filtered_by_ticker(client, db_session):

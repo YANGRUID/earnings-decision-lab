@@ -1,4 +1,10 @@
-import { dataStateLabel, formatMoney, formatPlainPercent, formatRelativeTime } from "../../lib/format";
+import {
+  dataStateLabel,
+  formatMoney,
+  formatPlainPercent,
+  formatRelativeTime,
+  isMeaningfulValue,
+} from "../../lib/format";
 import type { ResearchOverview } from "../../types/api";
 
 const DATE_SOURCE_LABELS: Record<string, string> = {
@@ -37,16 +43,22 @@ export function OverviewTab({ overview }: { overview: ResearchOverview }) {
                 <span className="stat-label">Name</span>
                 <span className="stat-value small">{company.name}</span>
               </div>
-              <div className="grid grid-2">
-                <div className="stat">
-                  <span className="stat-label">Sector</span>
-                  <span className="stat-value small">{company.sector ?? "Unknown"}</span>
+              {(isMeaningfulValue(company.sector) || isMeaningfulValue(company.exchange)) && (
+                <div className="grid grid-2">
+                  {isMeaningfulValue(company.sector) && (
+                    <div className="stat">
+                      <span className="stat-label">Sector</span>
+                      <span className="stat-value small">{company.sector}</span>
+                    </div>
+                  )}
+                  {isMeaningfulValue(company.exchange) && (
+                    <div className="stat">
+                      <span className="stat-label">Exchange</span>
+                      <span className="stat-value small">{company.exchange}</span>
+                    </div>
+                  )}
                 </div>
-                <div className="stat">
-                  <span className="stat-label">Exchange</span>
-                  <span className="stat-value small">{company.exchange ?? "Unknown"}</span>
-                </div>
-              </div>
+              )}
             </>
           )}
         </div>
@@ -66,7 +78,7 @@ export function OverviewTab({ overview }: { overview: ResearchOverview }) {
             </div>
             <div className="stat">
               <span className="stat-label">Options status</span>
-              <span className="stat-value small">{dataStateLabel(overview.options_data_state)}</span>
+              <span className="stat-value small">{dataStateLabel(overview.options_market.data_state)}</span>
             </div>
             <div className="stat">
               <span className="stat-label">Implied move</span>

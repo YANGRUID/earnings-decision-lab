@@ -40,12 +40,21 @@ body {
   line-height: 1.5;
 }
 
+/* Plain default: an <a>/<Link> is not automatically blue+underlined --
+   most of them wrap cards or nav items with their own explicit styling.
+   Only .text-link (genuine inline document/source references within
+   paragraph text) gets the classic accent-colored, underlined treatment. */
 a {
-  color: var(--color-accent);
+  color: inherit;
   text-decoration: none;
 }
-a:hover {
+.text-link {
+  color: var(--color-accent);
   text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.text-link:hover {
+  color: var(--color-accent-hover);
 }
 
 .mono {
@@ -119,7 +128,7 @@ a:hover {
   flex: 1;
   min-width: 0;
   padding: 28px 36px;
-  max-width: 1100px;
+  max-width: 1240px;
 }
 
 .page-header {
@@ -333,27 +342,6 @@ label {
   font-size: 12px;
 }
 
-.citation-list {
-  list-style: none;
-  padding: 0;
-  margin: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-.citation-item {
-  font-size: 12px;
-  padding: 8px 10px;
-  background: var(--color-bg);
-  border-radius: var(--radius);
-  border: 1px solid var(--color-border);
-}
-.citation-marker {
-  font-weight: 700;
-  color: var(--color-accent);
-  margin-right: 6px;
-}
-
 .trace-step {
   border: 1px solid var(--color-border);
   border-radius: var(--radius);
@@ -399,15 +387,23 @@ label {
 .ticker-card {
   display: block;
   cursor: pointer;
+  transition: border-color 0.12s ease, background-color 0.12s ease, box-shadow 0.12s ease;
+}
+.ticker-card:hover {
+  border-color: var(--color-accent);
+  background: var(--color-bg);
+  box-shadow: 0 2px 8px rgba(20, 24, 30, 0.08);
 }
 .ticker-card-symbol {
   font-family: var(--font-mono);
   font-weight: 700;
   font-size: 18px;
+  color: var(--color-accent);
 }
 .ticker-card-name {
   font-size: 13px;
   font-weight: 600;
+  color: var(--color-text);
   margin: 4px 0 2px;
 }
 
@@ -631,4 +627,174 @@ label {
   background: var(--color-surface);
   color: var(--color-text);
   border-color: var(--color-accent);
+}
+
+/* --- Rendered Markdown (AI Research answers, AI Thesis sections) --- */
+.markdown {
+  font-size: 14px;
+  line-height: 1.6;
+  color: var(--color-text);
+}
+.markdown > *:first-child {
+  margin-top: 0;
+}
+.markdown > *:last-child {
+  margin-bottom: 0;
+}
+.markdown h1,
+.markdown h2,
+.markdown h3,
+.markdown h4 {
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--color-text-muted);
+  margin: 20px 0 8px;
+}
+.markdown p {
+  margin: 0 0 12px;
+}
+.markdown ul,
+.markdown ol {
+  margin: 0 0 12px;
+  padding-left: 22px;
+}
+.markdown li {
+  margin-bottom: 4px;
+}
+.markdown strong {
+  color: var(--color-text);
+  font-weight: 700;
+}
+.markdown code {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  background: var(--color-bg);
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  padding: 1px 5px;
+}
+.markdown pre {
+  background: var(--color-bg);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  padding: 10px 12px;
+  overflow-x: auto;
+  margin: 0 0 12px;
+}
+.markdown pre code {
+  border: none;
+  padding: 0;
+  background: none;
+}
+.markdown blockquote {
+  margin: 0 0 12px;
+  padding: 4px 14px;
+  border-left: 3px solid var(--color-border);
+  color: var(--color-text-muted);
+}
+.markdown table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 0 0 12px;
+  font-size: 13px;
+}
+.markdown th,
+.markdown td {
+  text-align: left;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--color-border);
+}
+.markdown th {
+  color: var(--color-text-faint);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+.markdown a {
+  color: var(--color-accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.markdown hr {
+  border: none;
+  border-top: 1px solid var(--color-border);
+  margin: 16px 0;
+}
+
+/* --- Citations rendered as sources, not buried inline --- */
+.citation-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--color-bg);
+  border: 1px solid var(--color-border);
+  color: var(--color-text-muted);
+  font-size: 11px;
+  font-family: var(--font-mono);
+  font-weight: 600;
+  flex-shrink: 0;
+}
+.source-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--color-border);
+}
+.source-item:last-child {
+  border-bottom: none;
+}
+.source-title {
+  font-size: 13px;
+  color: var(--color-text);
+  margin-bottom: 2px;
+}
+
+/* --- AI Research / AI Thesis history lists --- */
+.history-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.history-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 7px 10px;
+  border-radius: var(--radius);
+  cursor: pointer;
+  font-size: 13px;
+}
+.history-item:hover {
+  background: var(--color-bg);
+}
+.history-item.active {
+  background: var(--color-bg);
+  border-left: 2px solid var(--color-accent);
+}
+.history-item-question {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.history-item-delete {
+  flex-shrink: 0;
+  background: none;
+  border: none;
+  color: var(--color-text-faint);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+.history-item-delete:hover {
+  color: var(--color-negative);
+  background: var(--color-negative-bg);
 }

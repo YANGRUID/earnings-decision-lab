@@ -86,6 +86,14 @@ class EarningsThesisResult:
     citations: list[Citation]
     generated_at: datetime
     model: str
+    # Real provenance: which specific snapshot rows this thesis was
+    # grounded in, so a persisted version can later be compared against
+    # the *current* latest snapshot to detect "newer research data is
+    # available" -- never inferred from a fixed staleness window. None
+    # when no such snapshot existed yet at generation time (see
+    # _market_setup_block's own None-handling above).
+    estimate_snapshot_id: int | None
+    volatility_snapshot_id: int | None
 
 
 def _assemble_thesis_evidence(
@@ -269,5 +277,10 @@ def generate_earnings_thesis(
     thesis = _generate_and_enforce(llm, messages)
 
     return EarningsThesisResult(
-        thesis=thesis, citations=citations, generated_at=datetime.now(UTC), model=llm.model
+        thesis=thesis,
+        citations=citations,
+        generated_at=datetime.now(UTC),
+        model=llm.model,
+        estimate_snapshot_id=estimate.id if estimate is not None else None,
+        volatility_snapshot_id=volatility.id if volatility is not None else None,
     )

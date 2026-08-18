@@ -152,6 +152,52 @@ export interface ResearchQueryResponse {
   trace: ExecutionTrace;
 }
 
+// A real, persisted AI Research answer -- see models/ai_research_query.py.
+// Selecting one from history restores exactly this stored answer; it is
+// never regenerated. The active-answer panel in Research.tsx renders one
+// of these regardless of whether it was just generated or pulled from
+// history, so the two code paths never drift apart.
+export interface AIResearchHistoryItem {
+  id: number;
+  ticker: string | null;
+  question: string;
+  answer_markdown: string;
+  citations: Citation[];
+  intent_category: string;
+  planning_method: string;
+  tool_calls: ToolCall[];
+  verification_ran: boolean;
+  verification_supported: boolean | null;
+  revised: boolean;
+  provider: string;
+  model: string;
+  total_input_tokens: number;
+  total_output_tokens: number;
+  estimated_cost_usd: string | null;
+  total_duration_ms: number;
+  created_at: string;
+}
+
+// A real, persisted AI Earnings Thesis generation -- see
+// models/ai_thesis_version.py. One row per generation, never overwritten.
+export interface AIThesisVersion {
+  id: number;
+  company_id: number;
+  business_context: string;
+  historical_earnings_pattern: string;
+  guidance_trend: string;
+  key_risks: string;
+  market_setup: string;
+  disclaimer: string;
+  citations: Citation[];
+  provider: string;
+  model: string;
+  earnings_estimate_snapshot_id: number | null;
+  volatility_snapshot_id: number | null;
+  created_at: string;
+  is_stale: boolean;
+}
+
 export interface OptionLegInput {
   option_type: "call" | "put";
   action: "buy" | "sell";
@@ -360,6 +406,28 @@ export interface ResearchJobQueued {
   status: "queued";
 }
 
+// The one canonical options-availability answer -- Dashboard, Company
+// Overview, Upcoming Earnings, and Strategy Lab all render this same
+// object rather than each inferring availability from a different signal.
+export interface OptionsMarketState {
+  chain_exists: boolean;
+  contract_count: number;
+  priceable_contract_count: number;
+  has_bid_ask: boolean;
+  has_iv: boolean;
+  has_greeks: boolean;
+  implied_move_available: boolean;
+  earnings_anchored: boolean | null;
+  expiration: string | null;
+  source: string | null;
+  snapshot_timestamp: string | null;
+  snapshot_age_minutes: number | null;
+  snapshot_age_label: string | null;
+  market_data_quality: string | null;
+  data_state: string;
+  reason: string;
+}
+
 // The single, company-level, always-current read for "what's on record
 // right now" -- this is where forward-looking data (next-period estimate,
 // implied move) actually belongs, never on a specific past EarningsEvent.
@@ -375,9 +443,7 @@ export interface ResearchOverview {
   latest_volatility_snapshot: VolatilitySnapshot | null;
   latest_price: string | null;
   historical_moves: HistoricalMoveStats | null;
-  options_data_state: string;
-  options_snapshot_source: string | null;
-  options_snapshot_age_label: string | null;
+  options_market: OptionsMarketState;
 }
 
 export interface OptionQuote {
@@ -458,6 +524,7 @@ export interface StrategyLab {
   snapshot_age_minutes: number | null;
   snapshot_age_label: string | null;
   earnings_anchor_status: string;
+  options_market: OptionsMarketState;
 }
 
 export interface EarningsThesis {

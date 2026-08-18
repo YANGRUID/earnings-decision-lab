@@ -14,11 +14,11 @@ from services.options_analytics import (
     collect_forward_options_snapshot,
     collect_options_snapshot_now,
     compute_and_persist_volatility_snapshot,
+    compute_options_market_state,
     get_implied_vs_realized_moves,
     get_latest_close_price,
     get_latest_options_chain,
     get_latest_volatility_snapshot,
-    options_state_from_chain,
 )
 
 SNAPSHOT_TS = datetime(2025, 9, 15, 15, 0, tzinfo=UTC)
@@ -710,48 +710,139 @@ def test_get_latest_options_chain_preserves_market_data_quality_and_contract_id(
     assert chain[0].external_contract_id == "12345"
 
 
-def _quote_with(snapshot_timestamp: datetime, quality: str | None, source: str = "ibkr"):
+def _quote_with(
+    snapshot_timestamp: datetime,
+    quality: str | None,
+    source: str = "ibkr",
+    bid: Decimal | None = None,
+    ask: Decimal | None = None,
+    implied_volatility: Decimal | None = None,
+    delta: Decimal | None = None,
+    anchor: str | None = None,
+    expiration_date: date = NEAR_EXP,
+):
     return OptionQuote(
         ticker="ZZSTATE",
         snapshot_timestamp=snapshot_timestamp,
-        expiration_date=NEAR_EXP,
+        expiration_date=expiration_date,
         strike=Decimal("100"),
         option_type="call",
+        bid=bid,
+        ask=ask,
+        implied_volatility=implied_volatility,
+        delta=delta,
         market_data_quality=quality,
+        anchor=anchor,
         source_provider=source,
         retrieved_at=snapshot_timestamp,
     )
 
 
-class TestOptionsStateFromChain:
+class TestComputeOptionsMarketState:
     def test_empty_chain_is_not_collected(self):
-        state = options_state_from_chain([], datetime.now(UTC))
+        state = compute_options_market_state([], datetime.now(UTC), None)
+        assert state.chain_exists is False
+        assert state.contract_count == 0
         assert state.data_state == DataState.NOT_COLLECTED
-        assert state.snapshot_source is None
+        assert state.source is None
         assert state.snapshot_timestamp is None
         assert state.snapshot_age_minutes is None
         assert state.snapshot_age_label is None
+        assert state.implied_move_available is False
+        assert state.earnings_anchored is None
+        assert "No real options-chain snapshot" in state.reason
 
     def test_reads_timestamp_source_and_quality_from_the_first_quote(self):
         as_of = datetime(2026, 3, 18, 12, 0, tzinfo=UTC)
         snapshot_ts = datetime(2026, 3, 18, 11, 45, tzinfo=UTC)
         chain = [_quote_with(snapshot_ts, "live", source="ibkr")]
 
-        state = options_state_from_chain(chain, as_of)
+        state = compute_options_market_state(chain, as_of, None)
 
-        assert state.snapshot_source == "ibkr"
+        assert state.chain_exists is True
+        assert state.contract_count == 1
+        assert state.source == "ibkr"
         assert state.snapshot_timestamp == snapshot_ts
         assert state.snapshot_age_minutes == 15
         assert state.snapshot_age_label == "15m"
+        assert state.market_data_quality == "live"
 
     def test_previous_calendar_day_snapshot_is_previous_session(self):
         as_of = datetime(2026, 3, 18, 12, 0, tzinfo=UTC)
         snapshot_ts = datetime(2026, 3, 17, 20, 0, tzinfo=UTC)
         chain = [_quote_with(snapshot_ts, "live")]
 
-        state = options_state_from_chain(chain, as_of)
+        state = compute_options_market_state(chain, as_of, None)
 
         assert state.data_state == DataState.PREVIOUS_SESSION
+        assert "previous session" in state.reason
+
+    def test_chain_with_no_priceable_quotes_reports_bid_ask_unavailable(self):
+        # Real AVGO bug: a real chain with IV/Greeks but no bid/ask/last on
+        # any contract must never be presented as "no options data".
+        as_of = datetime(2026, 3, 18, 12, 0, tzinfo=UTC)
+        chain = [
+            _quote_with(
+                as_of,
+                "delayed",
+                implied_volatility=Decimal("0.57"),
+                delta=Decimal("0.5"),
+                anchor="earnings_anchored",
+            )
+        ]
+
+        state = compute_options_market_state(chain, as_of, None)
+
+        assert state.chain_exists is True
+        assert state.has_bid_ask is False
+        assert state.has_iv is True
+        assert state.has_greeks is True
+        assert state.priceable_contract_count == 0
+        assert state.implied_move_available is False
+        assert state.earnings_anchored is True
+        assert "no contract has a usable bid/ask/last price" in state.reason
+
+    def test_chain_with_bid_ask_but_no_volatility_snapshot_yet(self):
+        as_of = datetime(2026, 3, 18, 12, 0, tzinfo=UTC)
+        chain = [_quote_with(as_of, "live", bid=Decimal("1.90"), ask=Decimal("2.10"))]
+
+        state = compute_options_market_state(chain, as_of, None)
+
+        assert state.has_bid_ask is True
+        assert state.priceable_contract_count == 1
+        assert state.implied_move_available is False
+        assert "no matching at-the-money call/put pair" in state.reason
+
+    def test_implied_move_available_when_a_volatility_snapshot_exists(self, db_session):
+        as_of = datetime(2026, 3, 18, 12, 0, tzinfo=UTC)
+        chain = [_quote_with(as_of, "live", bid=Decimal("1.90"), ask=Decimal("2.10"))]
+        company = _seed_company(db_session, ticker="ZZMKTSTATE")
+        volatility = VolatilitySnapshot(
+            company_id=company.id,
+            snapshot_timestamp=as_of,
+            method="atm_straddle",
+            near_term_expiration=NEAR_EXP,
+            implied_move_pct=Decimal("0.05"),
+            implied_move_absolute=Decimal("5.00"),
+            computed_at=as_of,
+        )
+        db_session.add(volatility)
+        db_session.flush()
+
+        state = compute_options_market_state(chain, as_of, volatility)
+
+        assert state.implied_move_available is True
+        assert state.expiration == NEAR_EXP
+        assert "implied move was computed" in state.reason
+
+    def test_general_current_anchor_is_reported_as_not_earnings_anchored(self):
+        as_of = datetime(2026, 3, 18, 12, 0, tzinfo=UTC)
+        chain = [_quote_with(as_of, "live", anchor="general_current")]
+
+        state = compute_options_market_state(chain, as_of, None)
+
+        assert state.earnings_anchored is False
+        assert "not anchored to a confirmed earnings date" in state.reason
 
 
 class TestGetLatestClosePrice:

@@ -1,3 +1,17 @@
+/** True when `value` carries real descriptive information worth showing a
+ * field for -- false for null/empty/"unknown"/"n/a" style placeholders.
+ * Use to omit a whole metadata row rather than rendering "Sector: Unknown"
+ * -- meaningless descriptive metadata should be hidden entirely, unlike an
+ * unknown *research* state (e.g. next earnings date), which must still be
+ * shown with an explanation. See docs/limitations.md's UX principle. */
+export function isMeaningfulValue(value: string | null | undefined): value is string {
+  if (value === null || value === undefined) return false;
+  const trimmed = value.trim();
+  if (trimmed === "") return false;
+  const lowered = trimmed.toLowerCase();
+  return lowered !== "unknown" && lowered !== "n/a" && lowered !== "none";
+}
+
 export function formatMoney(value: string | null, digits = 2): string {
   if (value === null) return "—";
   const num = Number(value);

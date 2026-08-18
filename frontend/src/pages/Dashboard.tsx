@@ -49,18 +49,16 @@ export function Dashboard() {
   return (
     <div>
       <div className="search-hero">
-        <h1>Research any earnings event</h1>
+        <h1>Research an earnings event</h1>
         <p className="text-muted">
-          Search a US-listed ticker to prepare real research, understand what's priced in ahead
-          of its next earnings report, and compare deterministic options strategies against it.
-          A personal research tool — not investment advice.
+          Search a US-listed company and prepare a point-in-time earnings research workspace.
         </p>
         <form className="search-hero-form" onSubmit={submit}>
           <input
             className="search-hero-input"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="Search a ticker — e.g. NVDA, AAPL, COST…"
+            placeholder="Search a ticker or company — e.g. NVDA, AAPL, COST…"
             autoFocus
             aria-label="Search ticker"
           />
@@ -68,11 +66,15 @@ export function Dashboard() {
             Research
           </button>
         </form>
+        <p className="text-sm text-faint" style={{ marginTop: 14, marginBottom: 0, maxWidth: 620 }}>
+          A personal research tool, not investment advice — every number here is computed from
+          real, already-ingested data, never a prediction or recommendation.
+        </p>
       </div>
 
       <div className="page-header" style={{ marginTop: 8 }}>
         <h2 style={{ fontSize: 15, textTransform: "uppercase", letterSpacing: "0.03em" }}>
-          Already researched
+          Recent research
         </h2>
       </div>
 
@@ -131,7 +133,9 @@ export function Dashboard() {
                   </div>
                   <div className="stat">
                     <span className="stat-label">Options status</span>
-                    <span className="stat-value small">{dataStateLabel(overview.options_data_state)}</span>
+                    <span className="stat-value small">
+                      {dataStateLabel(overview.options_market.data_state)}
+                    </span>
                   </div>
                   <div className="stat">
                     <span className="stat-label">Last refresh</span>

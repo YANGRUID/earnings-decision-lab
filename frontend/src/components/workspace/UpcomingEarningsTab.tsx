@@ -2,9 +2,9 @@ import { useState } from "react";
 import { Link } from "react-router-dom";
 import { useAsync } from "../../hooks/useAsync";
 import { api, ApiError } from "../../api/client";
-import { formatMoney, formatPercent } from "../../lib/format";
+import { formatMoney, formatPercent, providerLabel } from "../../lib/format";
 import { LoadingState } from "../StatusStates";
-import type { ResearchOverview } from "../../types/api";
+import type { OptionsMarketState, ResearchOverview } from "../../types/api";
 
 function formatPlainPercent(value: string | null): string {
   if (value === null) return "—";
@@ -17,6 +17,67 @@ const DATE_SOURCE_LABEL: Record<string, string> = {
   estimated: "estimated, not confirmed",
   unknown: "unknown provenance",
 };
+
+function availability(has: boolean): string {
+  return has ? "Available" : "Unavailable";
+}
+
+/** The canonical options-market state for every case where an implied move
+ * *isn't* available -- see services/options_analytics.py::OptionsMarketState.
+ * Never collapses "no chain at all" / "chain but no bid-ask" / "chain with
+ * IV+Greeks but no priceable premium" / "stale" / "not earnings-anchored"
+ * into one generic "no option data" message (that collapse is exactly the
+ * bug that let this tab say "no options data" for AVGO while Strategy Lab
+ * showed a real 22-contract chain). */
+function OptionsMarketStateCard({ market }: { market: OptionsMarketState }) {
+  return (
+    <>
+      <div className="grid grid-2" style={{ gap: 10 }}>
+        <div className="stat">
+          <span className="stat-label">Option chain</span>
+          <span className="stat-value small">
+            {market.chain_exists ? `Available · ${market.contract_count} contracts` : "Not collected"}
+          </span>
+        </div>
+        <div className="stat">
+          <span className="stat-label">Expiration</span>
+          <span className="stat-value small mono">{market.expiration ?? "—"}</span>
+        </div>
+        {market.chain_exists && (
+          <>
+            <div className="stat">
+              <span className="stat-label">Data quality</span>
+              <span className="stat-value small mono">{market.market_data_quality ?? "unknown"}</span>
+            </div>
+            <div className="stat">
+              <span className="stat-label">IV / Greeks</span>
+              <span className="stat-value small">{availability(market.has_iv || market.has_greeks)}</span>
+            </div>
+            <div className="stat">
+              <span className="stat-label">Bid / Ask</span>
+              <span className="stat-value small">{availability(market.has_bid_ask)}</span>
+            </div>
+            <div className="stat">
+              <span className="stat-label">Implied move</span>
+              <span className="stat-value small">Cannot be calculated from the current snapshot</span>
+            </div>
+          </>
+        )}
+      </div>
+      {market.chain_exists && (
+        <p className="text-sm text-muted" style={{ marginTop: 10, marginBottom: 0 }}>
+          Snapshot from {market.source ? providerLabel(market.source) : "an unknown source"}
+          {market.snapshot_age_label ? `, ${market.snapshot_age_label} ago` : ""}. {market.reason}
+        </p>
+      )}
+      {!market.chain_exists && (
+        <p className="text-sm text-muted" style={{ marginTop: 10, marginBottom: 0 }}>
+          {market.reason}
+        </p>
+      )}
+    </>
+  );
+}
 
 function ManualEarningsDateOverride({
   ticker,
@@ -91,7 +152,10 @@ export function UpcomingEarningsTab({
       <p className="text-sm text-muted" style={{ marginTop: 0 }}>
         What the market currently expects for {ticker}'s <strong>next, unreported</strong>{" "}
         earnings report — separate from any specific past event. See{" "}
-        <Link to="#historical">Historical Events</Link> for what actually happened before.
+        <Link className="text-link" to="#historical">
+          Historical Events
+        </Link>{" "}
+        for what actually happened before.
       </p>
 
       <div className="grid grid-2">
@@ -170,9 +234,7 @@ export function UpcomingEarningsTab({
               </p>
             </>
           ) : (
-            <p className="text-sm text-muted" style={{ marginBottom: 0 }}>
-              No real options-chain data has been ingested for {ticker} yet.
-            </p>
+            <OptionsMarketStateCard market={overview.options_market} />
           )}
         </div>
       </div>

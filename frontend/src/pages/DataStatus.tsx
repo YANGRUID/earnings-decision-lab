@@ -68,7 +68,7 @@ export function DataStatus() {
           The technical control room for this deployment: provider health, connectivity, real
           data coverage, freshness, and evaluation results — stated plainly rather than left to
           be discovered. Change what's active in{" "}
-          <Link to="/settings/providers">Settings → Data Providers</Link>.
+          <Link className="text-link" to="/settings/providers">Settings → Data Providers</Link>.
         </p>
       </div>
 
@@ -95,7 +95,7 @@ export function DataStatus() {
           </div>
           <div className="stat">
             <span className="stat-label">Manage connection</span>
-            <Link to="/settings/ibkr" className="text-sm">
+            <Link to="/settings/ibkr" className="text-sm text-link">
               Settings → IBKR
             </Link>
           </div>
@@ -196,6 +196,7 @@ export function DataStatus() {
             options entitlements (that endpoint is premium-gated on this project's current plan).
             See{" "}
             <a
+              className="text-link"
               href="https://github.com/YANGRUID/earnings-decision-lab/blob/main/docs/data_sources.md"
               target="_blank"
               rel="noreferrer"
@@ -227,7 +228,8 @@ export function DataStatus() {
         </div>
         <p className="text-sm text-muted" style={{ marginTop: 10, marginBottom: 0 }}>
           Embeddings: <span className="mono">{embeddingModel}</span> (local, no API key needed).
-          Switch providers in <Link to="/settings/ai-provider">Settings → AI Provider</Link>.
+          Switch providers in{" "}
+          <Link className="text-link" to="/settings/ai-provider">Settings → AI Provider</Link>.
         </p>
       </div>
 
@@ -311,6 +313,7 @@ export function DataStatus() {
         <p className="text-sm text-muted" style={{ marginBottom: 0 }}>
           Full detail in{" "}
           <a
+            className="text-link"
             href="https://github.com/YANGRUID/earnings-decision-lab/blob/main/docs/limitations.md"
             target="_blank"
             rel="noreferrer"

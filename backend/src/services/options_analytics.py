@@ -92,6 +92,7 @@ def _to_option_quote(row: OptionsSnapshot, ticker: str) -> OptionQuote:
         vega=row.vega,
         market_data_quality=row.market_data_quality.value if row.market_data_quality else None,
         external_contract_id=row.external_contract_id,
+        anchor=row.anchor.value if row.anchor else None,
         source_provider=row.source_provider,
         retrieved_at=row.retrieved_at,
     )
@@ -387,33 +388,142 @@ def get_latest_volatility_snapshot(db: Session, company_id: int) -> VolatilitySn
 
 
 @dataclass(frozen=True)
-class OptionsSnapshotState:
-    """The shared "what's the options data right now" summary shown on both
-    the Strategy Lab state bar and the Company Overview -- see
-    analytics/data_state.py for what each DataState means."""
+class OptionsMarketState:
+    """The one canonical "what's the options data right now" answer --
+    Dashboard, Company Overview / Upcoming Earnings, Strategy Lab, and
+    System Status all read this instead of each independently inferring
+    availability from a different signal (that divergence is exactly what
+    let AVGO show a real 22-contract chain in Strategy Lab while Upcoming
+    Earnings claimed no options data existed at all -- Upcoming Earnings
+    was gating on VolatilitySnapshot existing, which fails whenever no
+    contract has a priceable bid/ask, even though the chain itself is
+    real). ``reason`` is the single human-readable explanation every
+    surface should show verbatim rather than writing its own.
+    """
 
-    data_state: DataState
-    snapshot_source: str | None
+    chain_exists: bool
+    contract_count: int
+    priceable_contract_count: int
+    has_bid_ask: bool
+    has_iv: bool
+    has_greeks: bool
+    implied_move_available: bool
+    earnings_anchored: bool | None
+    expiration: date | None
+    source: str | None
     snapshot_timestamp: datetime | None
     snapshot_age_minutes: int | None
     snapshot_age_label: str | None
+    market_data_quality: str | None
+    data_state: DataState
+    reason: str
 
 
-def options_state_from_chain(raw_chain: list[OptionQuote], as_of: datetime) -> OptionsSnapshotState:
+def compute_options_market_state(
+    raw_chain: list[OptionQuote],
+    as_of: datetime,
+    volatility: VolatilitySnapshot | None,
+) -> OptionsMarketState:
     """Pure function over an already-fetched ``get_latest_options_chain()``
     result -- callers that already hold the chain (e.g. to also render its
-    quotes) pass it in rather than triggering a second query."""
-    snapshot_timestamp = raw_chain[0].snapshot_timestamp if raw_chain else None
-    snapshot_source = raw_chain[0].source_provider if raw_chain else None
-    snapshot_quality = raw_chain[0].market_data_quality if raw_chain else None
-    data_state = compute_options_data_state(snapshot_timestamp, snapshot_quality, as_of)
-    snapshot_age = compute_snapshot_age(snapshot_timestamp, as_of) if snapshot_timestamp else None
-    return OptionsSnapshotState(
-        data_state=data_state,
-        snapshot_source=snapshot_source,
+    quotes) pass it in rather than triggering a second query. ``volatility``
+    is whatever ``get_latest_volatility_snapshot`` (or a fresh compute)
+    returned -- the real, authoritative signal for whether an implied move
+    could actually be calculated, since that depends on more than just "some
+    contract has a bid/ask" (a matching ATM call/put pair and a real
+    underlying price are also required; see
+    compute_and_persist_volatility_snapshot).
+    """
+    if not raw_chain:
+        return OptionsMarketState(
+            chain_exists=False,
+            contract_count=0,
+            priceable_contract_count=0,
+            has_bid_ask=False,
+            has_iv=False,
+            has_greeks=False,
+            implied_move_available=False,
+            earnings_anchored=None,
+            expiration=None,
+            source=None,
+            snapshot_timestamp=None,
+            snapshot_age_minutes=None,
+            snapshot_age_label=None,
+            market_data_quality=None,
+            data_state=DataState.NOT_COLLECTED,
+            reason="No real options-chain snapshot has been collected yet.",
+        )
+
+    snapshot_timestamp = raw_chain[0].snapshot_timestamp
+    source = raw_chain[0].source_provider
+    quality = raw_chain[0].market_data_quality
+    earnings_anchored = raw_chain[0].anchor == "earnings_anchored" if raw_chain[0].anchor else None
+    contract_count = len(raw_chain)
+    priceable = [
+        q for q in raw_chain if q.bid is not None or q.ask is not None or q.last_price is not None
+    ]
+    has_bid_ask = len(priceable) > 0
+    has_iv = any(q.implied_volatility is not None for q in raw_chain)
+    has_greeks = any(q.delta is not None for q in raw_chain)
+    implied_move_available = volatility is not None
+    expiration = (
+        volatility.near_term_expiration
+        if volatility is not None
+        else min((q.expiration_date for q in raw_chain), default=None)
+    )
+
+    data_state = compute_options_data_state(snapshot_timestamp, quality, as_of)
+    age = compute_snapshot_age(snapshot_timestamp, as_of)
+
+    if data_state in (DataState.PREVIOUS_SESSION, DataState.STALE):
+        reason = (
+            f"Real options-chain snapshot with {contract_count} contracts, but it's from a "
+            f"previous session ({age.label} ago) -- treat any pricing as indicative only, not "
+            "current."
+        )
+    elif implied_move_available:
+        reason = (
+            f"Real options-chain snapshot with {contract_count} contracts; an implied move was "
+            "computed from priceable quotes."
+        )
+    elif has_bid_ask:
+        reason = (
+            f"Real options-chain snapshot with {contract_count} contracts and usable bid/ask on "
+            "at least one, but an implied move couldn't be computed -- no matching "
+            "at-the-money call/put pair or no underlying price on record as of the snapshot."
+        )
+    elif has_iv or has_greeks:
+        reason = (
+            f"Real options-chain snapshot with {contract_count} contracts -- implied volatility "
+            "and Greeks are available, but no contract has a usable bid/ask/last price yet, so "
+            "an implied move can't be computed. Common before market open or on delayed quotes."
+        )
+    else:
+        reason = (
+            f"Real options-chain snapshot with {contract_count} contracts, but no pricing or "
+            "volatility data is available on any contract yet."
+        )
+
+    if earnings_anchored is False:
+        reason += " This snapshot is not anchored to a confirmed earnings date."
+
+    return OptionsMarketState(
+        chain_exists=True,
+        contract_count=contract_count,
+        priceable_contract_count=len(priceable),
+        has_bid_ask=has_bid_ask,
+        has_iv=has_iv,
+        has_greeks=has_greeks,
+        implied_move_available=implied_move_available,
+        earnings_anchored=earnings_anchored,
+        expiration=expiration,
+        source=source,
         snapshot_timestamp=snapshot_timestamp,
-        snapshot_age_minutes=snapshot_age.minutes if snapshot_age else None,
-        snapshot_age_label=snapshot_age.label if snapshot_age else None,
+        snapshot_age_minutes=age.minutes,
+        snapshot_age_label=age.label,
+        market_data_quality=quality,
+        data_state=data_state,
+        reason=reason,
     )
 
 

@@ -1,4 +1,6 @@
 import type {
+  AIResearchHistoryItem,
+  AIThesisVersion,
   Company,
   EarningsEstimate,
   EarningsEventDetail,
@@ -81,11 +83,35 @@ export const api = {
       body: JSON.stringify(body),
     }),
 
-  researchQuery: (question: string) =>
+  researchQuery: (question: string, ticker?: string) =>
     request<ResearchQueryResponse>("/research/query", {
       method: "POST",
-      body: JSON.stringify({ question }),
+      body: JSON.stringify({ question, ticker: ticker ?? null }),
     }),
+  getResearchHistory: (params: { ticker?: string; limit?: number; offset?: number } = {}) => {
+    const qs = new URLSearchParams();
+    if (params.ticker) qs.set("ticker", params.ticker);
+    if (params.limit) qs.set("limit", String(params.limit));
+    if (params.offset) qs.set("offset", String(params.offset));
+    const suffix = qs.toString() ? `?${qs.toString()}` : "";
+    return request<AIResearchHistoryItem[]>(`/research/history${suffix}`);
+  },
+  getResearchHistoryItem: (id: number) =>
+    request<AIResearchHistoryItem>(`/research/history/${id}`),
+  deleteResearchHistoryItem: (id: number) =>
+    request<void>(`/research/history/${id}`, { method: "DELETE" }),
+
+  getThesisHistory: (ticker: string, params: { limit?: number; offset?: number } = {}) => {
+    const qs = new URLSearchParams();
+    if (params.limit) qs.set("limit", String(params.limit));
+    if (params.offset) qs.set("offset", String(params.offset));
+    const suffix = qs.toString() ? `?${qs.toString()}` : "";
+    return request<AIThesisVersion[]>(`/research/${ticker}/theses${suffix}`);
+  },
+  getThesisVersion: (ticker: string, id: number) =>
+    request<AIThesisVersion>(`/research/${ticker}/theses/${id}`),
+  deleteThesisVersion: (ticker: string, id: number) =>
+    request<void>(`/research/${ticker}/theses/${id}`, { method: "DELETE" }),
   searchDocuments: (params: { query: string; ticker?: string; k?: number }) => {
     const qs = new URLSearchParams({ query: params.query });
     if (params.ticker) qs.set("ticker", params.ticker);

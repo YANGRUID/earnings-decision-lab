@@ -148,6 +148,12 @@ class OptionQuote(ProvenancedModel):
     # exists -- real provenance for re-querying or auditing exactly which
     # contract this quote came from. None for providers with no such concept.
     external_contract_id: str | None = None
+    # "earnings_anchored" | "general_current" -- only set when this quote was
+    # reconstructed from a persisted OptionsSnapshot row (see
+    # services/options_analytics.py::_to_option_quote); a live provider
+    # response has no opinion on this, since it's a research-collection
+    # concept, not something the market data itself carries.
+    anchor: str | None = None
 
 
 class PortfolioPosition(ProvenancedModel):

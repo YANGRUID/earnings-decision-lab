@@ -11,6 +11,7 @@ from api.deps import LLM, DbSession, Embedder, Orchestrator
 from api.exceptions import InvalidRequestError, NotFoundError, RateLimitedError
 from core.config import get_settings
 from db.session import SessionLocal
+from models.ai_thesis_version import AIThesisVersion
 from models.company import Company
 from models.document_chunk import DocumentChunk
 from models.earnings_event import EarningsEvent
@@ -22,6 +23,8 @@ from rag.context import assemble_context
 from rag.embeddings import EmbeddingProvider
 from rag.retrieval import RetrievalFilters, hybrid_search
 from schemas.api import (
+    AIResearchHistoryItemResponse,
+    AIThesisVersionResponse,
     CitationResponse,
     CompanyResponse,
     EarningsEstimateResponse,
@@ -33,6 +36,7 @@ from schemas.api import (
     MoveCompatibilityResponse,
     OptionLegResponse,
     OptionQuoteResponse,
+    OptionsMarketStateResponse,
     RankedStrategyResponse,
     ResearchJobQueuedResponse,
     ResearchJobResponse,
@@ -50,10 +54,21 @@ from services.historical_moves import get_historical_move_pcts, get_historical_m
 from services.llm.errors import LLMError
 from services.market_expectations import get_latest_earnings_estimate, set_manual_earnings_date
 from services.options_analytics import (
+    compute_options_market_state,
     get_latest_close_price,
     get_latest_options_chain,
     get_latest_volatility_snapshot,
-    options_state_from_chain,
+)
+from services.research_history import (
+    ThesisProvenance,
+    delete_research_query,
+    delete_thesis_version,
+    get_research_query,
+    get_thesis_version,
+    list_research_queries,
+    list_thesis_versions,
+    persist_research_query,
+    persist_thesis_version,
 )
 from services.research_orchestration import (
     UnsupportedSymbolError,
@@ -83,11 +98,16 @@ class _StrategyLabStateBar(TypedDict):
     snapshot_age_minutes: int | None
     snapshot_age_label: str | None
     earnings_anchor_status: str
+    options_market: OptionsMarketStateResponse
 
 
 @router.post("/query", response_model=ResearchQueryResponse)
 def research_query(
-    body: ResearchQueryRequest, request: Request, orchestrator: Orchestrator
+    body: ResearchQueryRequest,
+    request: Request,
+    db: DbSession,
+    llm: LLM,
+    orchestrator: Orchestrator,
 ) -> ResearchQueryResponse:
     if not request.app.state.research_rate_limiter.allow():
         raise RateLimitedError(
@@ -97,6 +117,18 @@ def research_query(
 
     result = orchestrator.run(body.question)
     trace = result.trace
+
+    ticker = normalize_ticker(body.ticker) if body.ticker else None
+    company = (
+        db.query(Company).filter(Company.ticker == ticker).one_or_none()
+        if ticker is not None
+        else None
+    )
+    # Persisted only now that generation has genuinely succeeded -- a
+    # failed orchestrator.run() above would have raised before reaching
+    # this line, so no row is ever written for a broken/incomplete answer.
+    persist_research_query(db, ticker=ticker, company=company, provider=llm.name, result=result)
+
     return ResearchQueryResponse(
         question=result.question,
         answer=result.answer,
@@ -126,6 +158,32 @@ def research_query(
             total_duration_ms=trace.total_duration_ms,
         ),
     )
+
+
+@router.get("/history", response_model=list[AIResearchHistoryItemResponse])
+def get_research_history(
+    db: DbSession,
+    ticker: str | None = None,
+    limit: int = Query(default=20, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+) -> list[AIResearchHistoryItemResponse]:
+    normalized = normalize_ticker(ticker) if ticker else None
+    rows = list_research_queries(db, ticker=normalized, limit=limit, offset=offset)
+    return [AIResearchHistoryItemResponse.model_validate(r) for r in rows]
+
+
+@router.get("/history/{query_id}", response_model=AIResearchHistoryItemResponse)
+def get_research_history_item(query_id: int, db: DbSession) -> AIResearchHistoryItemResponse:
+    row = get_research_query(db, query_id)
+    if row is None:
+        raise NotFoundError(f"no research history item with id {query_id}")
+    return AIResearchHistoryItemResponse.model_validate(row)
+
+
+@router.delete("/history/{query_id}", status_code=204)
+def delete_research_history_item(query_id: int, db: DbSession) -> None:
+    if not delete_research_query(db, query_id):
+        raise NotFoundError(f"no research history item with id {query_id}")
 
 
 @router.get("/documents", response_model=FilingSearchResponse)
@@ -245,13 +303,16 @@ def research_overview(symbol: str, db: DbSession) -> ResearchOverviewResponse:
             filing_chunks_count=0,
             latest_earnings_estimate=None,
             latest_volatility_snapshot=None,
+            options_market=OptionsMarketStateResponse.model_validate(
+                compute_options_market_state([], datetime.now(UTC), None)
+            ),
         )
 
     latest_estimate = get_latest_earnings_estimate(db, company.id)
     latest_volatility = get_latest_volatility_snapshot(db, company.id)
     move_stats = get_historical_move_stats(db, company.id)
     raw_chain = get_latest_options_chain(db, company)
-    options_state = options_state_from_chain(raw_chain, datetime.now(UTC))
+    options_state = compute_options_market_state(raw_chain, datetime.now(UTC), latest_volatility)
 
     return ResearchOverviewResponse(
         ticker=ticker,
@@ -277,9 +338,7 @@ def research_overview(symbol: str, db: DbSession) -> ResearchOverviewResponse:
         historical_moves=(
             HistoricalMoveStatsResponse.model_validate(move_stats) if move_stats else None
         ),
-        options_data_state=options_state.data_state.value,
-        options_snapshot_source=options_state.snapshot_source,
-        options_snapshot_age_label=options_state.snapshot_age_label,
+        options_market=OptionsMarketStateResponse.model_validate(options_state),
     )
 
 
@@ -361,7 +420,7 @@ def get_strategy_lab(symbol: str, db: DbSession) -> StrategyLabResponse:
     chain_response = [_option_quote_response(q) for q in raw_chain]
     volatility = get_latest_volatility_snapshot(db, company.id)
 
-    options_state = options_state_from_chain(raw_chain, now)
+    options_state = compute_options_market_state(raw_chain, now, volatility)
     market_session = get_market_session(now)
 
     estimate_for_anchor = get_latest_earnings_estimate(db, company.id)
@@ -377,11 +436,12 @@ def get_strategy_lab(symbol: str, db: DbSession) -> StrategyLabResponse:
     state_bar: _StrategyLabStateBar = {
         "market_session": market_session.session.value,
         "data_state": options_state.data_state.value,
-        "snapshot_source": options_state.snapshot_source,
+        "snapshot_source": options_state.source,
         "snapshot_timestamp": options_state.snapshot_timestamp,
         "snapshot_age_minutes": options_state.snapshot_age_minutes,
         "snapshot_age_label": options_state.snapshot_age_label,
         "earnings_anchor_status": earnings_anchor_status,
+        "options_market": OptionsMarketStateResponse.model_validate(options_state),
     }
 
     if volatility is None:
@@ -531,6 +591,20 @@ def get_earnings_thesis(
     except ThesisGenerationError as exc:
         raise LLMError(f"thesis generation failed: {exc}") from exc
 
+    # Persisted as a new version only now that generation has genuinely
+    # succeeded -- never overwrites a prior version (see
+    # models/ai_thesis_version.py).
+    persist_thesis_version(
+        db,
+        company=company,
+        provider=llm.name,
+        result=result,
+        provenance=ThesisProvenance(
+            estimate_snapshot_id=result.estimate_snapshot_id,
+            volatility_snapshot_id=result.volatility_snapshot_id,
+        ),
+    )
+
     return EarningsThesisResponse(
         business_context=result.thesis.business_context,
         historical_earnings_pattern=result.thesis.historical_earnings_pattern,
@@ -542,3 +616,69 @@ def get_earnings_thesis(
         generated_at=result.generated_at,
         model=result.model,
     )
+
+
+def _thesis_is_stale(db: DbSession, company: Company, version: AIThesisVersion) -> bool:
+    """True when the real *current* latest consensus/options snapshot for
+    ``company`` is a different row than what this version was grounded in
+    -- never inferred from a fixed time window, only from an actual change
+    in which snapshot is now the latest."""
+    current_estimate = get_latest_earnings_estimate(db, company.id)
+    current_volatility = get_latest_volatility_snapshot(db, company.id)
+    current_estimate_id = current_estimate.id if current_estimate is not None else None
+    current_volatility_id = current_volatility.id if current_volatility is not None else None
+    return (
+        version.earnings_estimate_snapshot_id != current_estimate_id
+        or version.volatility_snapshot_id != current_volatility_id
+    )
+
+
+@router.get("/{symbol}/theses", response_model=list[AIThesisVersionResponse])
+def get_thesis_history(
+    symbol: str,
+    db: DbSession,
+    limit: int = Query(default=20, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+) -> list[AIThesisVersionResponse]:
+    ticker = normalize_ticker(symbol)
+    company = db.query(Company).filter(Company.ticker == ticker).one_or_none()
+    if company is None:
+        raise NotFoundError(f"no research on record yet for {ticker!r}")
+
+    versions = list_thesis_versions(db, company.id, limit=limit, offset=offset)
+    responses = []
+    for v in versions:
+        response = AIThesisVersionResponse.model_validate(v)
+        response.is_stale = _thesis_is_stale(db, company, v)
+        responses.append(response)
+    return responses
+
+
+@router.get("/{symbol}/theses/{version_id}", response_model=AIThesisVersionResponse)
+def get_thesis_version_item(
+    symbol: str, version_id: int, db: DbSession
+) -> AIThesisVersionResponse:
+    ticker = normalize_ticker(symbol)
+    company = db.query(Company).filter(Company.ticker == ticker).one_or_none()
+    if company is None:
+        raise NotFoundError(f"no research on record yet for {ticker!r}")
+
+    version = get_thesis_version(db, version_id)
+    if version is None or version.company_id != company.id:
+        raise NotFoundError(f"no thesis version {version_id} for {ticker!r}")
+    response = AIThesisVersionResponse.model_validate(version)
+    response.is_stale = _thesis_is_stale(db, company, version)
+    return response
+
+
+@router.delete("/{symbol}/theses/{version_id}", status_code=204)
+def delete_thesis_version_item(symbol: str, version_id: int, db: DbSession) -> None:
+    ticker = normalize_ticker(symbol)
+    company = db.query(Company).filter(Company.ticker == ticker).one_or_none()
+    if company is None:
+        raise NotFoundError(f"no research on record yet for {ticker!r}")
+
+    version = get_thesis_version(db, version_id)
+    if version is None or version.company_id != company.id:
+        raise NotFoundError(f"no thesis version {version_id} for {ticker!r}")
+    delete_thesis_version(db, version_id)

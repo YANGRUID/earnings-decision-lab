@@ -53,8 +53,10 @@ export function HistoricalReplay() {
       {companies.map((entry) => (
         <div className="card" key={entry.company.ticker}>
           <h2>
-            <Link to={`/company/${entry.company.ticker}`}>{entry.company.ticker}</Link> —{" "}
-            {entry.company.name}
+            <Link to={`/company/${entry.company.ticker}`} style={{ color: "var(--color-accent)" }}>
+              {entry.company.ticker}
+            </Link>{" "}
+            — {entry.company.name}
           </h2>
 
           {entry.historical_moves === null ? (
