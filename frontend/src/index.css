@@ -129,6 +129,9 @@ a:hover {
   box-shadow: var(--shadow-sm);
   padding: 18px 20px;
   margin-bottom: 16px;
+  /* Wide content (a many-column table) scrolls inside the card instead of
+     pushing the page itself wider. */
+  overflow-x: auto;
 }
 .card h2 {
   font-size: 14px;
@@ -141,6 +144,12 @@ a:hover {
 .grid {
   display: grid;
   gap: 16px;
+}
+.grid > * {
+  /* Grid items default to min-width: auto, which lets wide content (a
+     table, a long mono value) force the whole grid wider than its
+     container instead of wrapping/scrolling inside its own cell. */
+  min-width: 0;
 }
 .grid-2 {
   grid-template-columns: 1fr 1fr;
@@ -182,6 +191,7 @@ tr:hover td {
   display: flex;
   flex-direction: column;
   gap: 2px;
+  min-width: 0;
 }
 .stat-label {
   font-size: 11px;
@@ -193,6 +203,7 @@ tr:hover td {
   font-size: 20px;
   font-weight: 600;
   font-family: var(--font-mono);
+  overflow-wrap: break-word;
 }
 .stat-value.small {
   font-size: 15px;
@@ -345,4 +356,201 @@ label {
 .trace-step-name {
   font-weight: 600;
   font-family: var(--font-mono);
+}
+
+/* --- Search-first dashboard --- */
+.search-hero {
+  padding: 40px 8px 28px;
+  border-bottom: 1px solid var(--color-border);
+  margin-bottom: 24px;
+}
+.search-hero h1 {
+  font-size: 26px;
+  margin: 0 0 8px;
+}
+.search-hero p {
+  max-width: 620px;
+  margin: 0 0 20px;
+}
+.search-hero-form {
+  display: flex;
+  gap: 10px;
+  max-width: 520px;
+}
+.search-hero-input {
+  flex: 1;
+  font-size: 15px;
+  padding: 11px 14px;
+}
+
+.ticker-card {
+  display: block;
+  cursor: pointer;
+}
+.ticker-card-symbol {
+  font-family: var(--font-mono);
+  font-weight: 700;
+  font-size: 18px;
+}
+.ticker-card-name {
+  font-size: 13px;
+  font-weight: 600;
+  margin: 4px 0 2px;
+}
+
+/* --- Preparation progress --- */
+.progress-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.progress-item {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  font-size: 13px;
+}
+.progress-icon {
+  width: 16px;
+  text-align: center;
+  font-family: var(--font-mono);
+}
+.progress-pending .progress-icon {
+  color: var(--color-text-faint);
+}
+.progress-running .progress-icon {
+  color: var(--color-accent);
+}
+.progress-done .progress-icon {
+  color: var(--color-positive);
+}
+.progress-failed .progress-icon {
+  color: var(--color-negative);
+}
+.progress-skipped .progress-icon {
+  color: var(--color-text-faint);
+}
+.progress-label {
+  font-weight: 600;
+  min-width: 160px;
+}
+.progress-detail {
+  color: var(--color-text-muted);
+  font-size: 12px;
+}
+
+/* --- Workspace tabs --- */
+.workspace-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+.tab-bar {
+  display: flex;
+  gap: 4px;
+  border-bottom: 1px solid var(--color-border);
+  margin-bottom: 20px;
+  flex-wrap: wrap;
+}
+.tab-button {
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  padding: 10px 14px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-text-muted);
+  cursor: pointer;
+}
+.tab-button:hover {
+  color: var(--color-text);
+}
+.tab-button.active {
+  color: var(--color-accent);
+  border-bottom-color: var(--color-accent);
+}
+
+.freshness-list {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 13px;
+  color: var(--color-text-muted);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+/* --- Strategy Lab --- */
+.strategy-card-header {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+.strategy-rank {
+  font-family: var(--font-mono);
+  font-weight: 700;
+  color: var(--color-accent);
+  font-size: 13px;
+}
+.strategy-card-header h3 {
+  margin: 0;
+  font-size: 14px;
+  text-transform: capitalize;
+}
+.legs-table {
+  font-size: 12px;
+}
+
+/* --- Historical move bars --- */
+.move-bar-track {
+  position: relative;
+  height: 20px;
+  display: flex;
+  align-items: center;
+}
+.move-bar {
+  height: 10px;
+  border-radius: 3px;
+  min-width: 3px;
+}
+.move-bar-positive {
+  background: var(--color-positive);
+}
+.move-bar-negative {
+  background: var(--color-negative);
+}
+.move-bar-label {
+  margin-left: 8px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+/* --- Dark mode: same component classes, different palette --- */
+@media (prefers-color-scheme: dark) {
+  :root {
+    --color-bg: #14161a;
+    --color-surface: #1b1e23;
+    --color-border: #2c3038;
+    --color-text: #e7e9ec;
+    --color-text-muted: #a3a9b3;
+    --color-text-faint: #6e7480;
+    --color-accent: #6ea3e0;
+    --color-accent-hover: #8fb8e8;
+    --color-positive: #4cbd7d;
+    --color-negative: #e0665f;
+    --color-positive-bg: #163224;
+    --color-negative-bg: #3a1f1e;
+    --color-warning-bg: #3a2f10;
+    --color-warning-text: #e0b84c;
+    --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+  }
+  .btn {
+    color: #0c0d0f;
+  }
 }

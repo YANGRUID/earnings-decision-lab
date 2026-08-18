@@ -1,11 +1,10 @@
 import { NavLink, Outlet } from "react-router-dom";
 
 const NAV_ITEMS = [
-  { to: "/", label: "Dashboard", end: true },
-  { to: "/options-lab", label: "Options Lab" },
+  { to: "/", label: "Search", end: true },
   { to: "/research", label: "AI Research" },
-  { to: "/historical-replay", label: "Historical Replay" },
-  { to: "/data-status", label: "Data / Eval Status" },
+  { to: "/historical-replay", label: "Cross-Company Replay" },
+  { to: "/system-status", label: "System Status" },
 ];
 
 export function Layout() {

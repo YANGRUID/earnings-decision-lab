@@ -20,8 +20,11 @@ export function DataStatus() {
   return (
     <div>
       <div className="page-header">
-        <h1>Data / Evaluation Status</h1>
-        <p>What has real data behind it right now, stated plainly rather than left to be discovered.</p>
+        <h1>System Status</h1>
+        <p>
+          Real data coverage, freshness, and evaluation results for this deployment — stated
+          plainly rather than left to be discovered.
+        </p>
       </div>
 
       <div className="card">
@@ -92,8 +95,10 @@ export function DataStatus() {
         </div>
         {freshness.latest_options_snapshot_at === null && (
           <p className="text-sm text-muted" style={{ marginTop: 10, marginBottom: 0 }}>
-            No options-chain data ingested yet — Alpha Vantage's options endpoints are
-            premium-gated on this project's plan. See{" "}
+            No options-chain data ingested yet for any company. Real options data requires either
+            a configured Interactive Brokers Gateway connection or an Alpha Vantage plan with
+            options entitlements (that endpoint is premium-gated on this project's current plan).
+            See{" "}
             <a
               href="https://github.com/YANGRUID/earnings-decision-lab/blob/main/docs/data_sources.md"
               target="_blank"
@@ -191,12 +196,14 @@ export function DataStatus() {
       </div>
 
       <details className="card">
-        <summary style={{ cursor: "pointer", fontWeight: 600 }}>Known gaps — not hidden, not faked</summary>
+        <summary style={{ cursor: "pointer", fontWeight: 600 }}>Coverage &amp; limitations</summary>
         <ul className="text-sm" style={{ marginTop: 10 }}>
           <li>
-            No real options-chain data — Alpha Vantage's options endpoints are premium-gated on
-            this project's plan (confirmed live, see docs/data_sources.md); implied move, IV, and
-            put/call ratios stay null until a subscription exists or forward snapshots accumulate.
+            Options-chain data (implied move, IV, put/call ratios) requires either a locally
+            running, authenticated Interactive Brokers Gateway or an Alpha Vantage plan with
+            options entitlements — Alpha Vantage's options endpoints are premium-gated on this
+            project's current plan (confirmed live, see docs/data_sources.md); without either
+            source configured, these fields stay null rather than estimated.
           </li>
           <li>No earnings-call transcripts (no legally accessible free source identified)</li>
           <li>

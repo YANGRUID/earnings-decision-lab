@@ -1,15 +1,25 @@
 import { useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { api, ApiError } from "../api/client";
 import type { ResearchQueryResponse } from "../types/api";
 
-const EXAMPLE_QUESTIONS = [
+const DEFAULT_EXAMPLE_QUESTIONS = [
   "What were MU's last two earnings results?",
   "What did MU say about HBM demand in its risk factors?",
   "How has AMD's guidance changed recently?",
 ];
 
 export function Research() {
-  const [question, setQuestion] = useState("");
+  const [searchParams] = useSearchParams();
+  const contextTicker = searchParams.get("ticker")?.toUpperCase() ?? null;
+  const EXAMPLE_QUESTIONS = contextTicker
+    ? [
+        `What were ${contextTicker}'s last two earnings results?`,
+        `What did ${contextTicker} say about risk factors in its most recent filing?`,
+        `How has ${contextTicker}'s guidance changed recently?`,
+      ]
+    : DEFAULT_EXAMPLE_QUESTIONS;
+  const [question, setQuestion] = useState(contextTicker ? `About ${contextTicker}: ` : "");
   const [response, setResponse] = useState<ResearchQueryResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -32,7 +42,7 @@ export function Research() {
   return (
     <div>
       <div className="page-header">
-        <h1>AI Research</h1>
+        <h1>AI Research{contextTicker ? ` — ${contextTicker}` : ""}</h1>
         <p>
           Grounded, cited answers over real earnings data and SEC filings — every answer shows
           which tools were called and how it was verified, not just the final text.

@@ -307,6 +307,113 @@ export interface ResearchOverview {
   latest_volatility_snapshot: VolatilitySnapshot | null;
 }
 
+export interface OptionQuote {
+  expiration_date: string;
+  strike: string;
+  option_type: "call" | "put";
+  bid: string | null;
+  ask: string | null;
+  last_price: string | null;
+  volume: number | null;
+  open_interest: number | null;
+  implied_volatility: string | null;
+  delta: string | null;
+  gamma: string | null;
+  theta: string | null;
+  vega: string | null;
+  market_data_quality: string | null;
+  source_provider: string;
+}
+
+export interface OptionLeg {
+  option_type: "call" | "put";
+  action: "buy" | "sell";
+  strike: string;
+  premium: string;
+  quantity: number;
+}
+
+export interface StrategyAnalysis {
+  net_premium: string;
+  max_profit: string | null;
+  max_loss: string | null;
+  breakevens: string[];
+  return_on_risk: string | null;
+}
+
+export interface MoveCompatibility {
+  method: string;
+  sample_size: number;
+  requires_move_beyond_threshold: boolean;
+  required_move_pct: string;
+  compatible_count: number;
+  compatible_pct: string;
+}
+
+export interface ScenarioPnl {
+  down_price: string;
+  down_pnl: string;
+  flat_pnl: string;
+  up_price: string;
+  up_pnl: string;
+}
+
+export interface RankedStrategy {
+  rank: number;
+  category: string;
+  legs: OptionLeg[];
+  analysis: StrategyAnalysis;
+  score: string;
+  explanation: string;
+  scenario: ScenarioPnl | null;
+  move_compatibility: MoveCompatibility | null;
+}
+
+export interface StrategyLab {
+  ticker: string;
+  expiration: string | null;
+  underlying_price: string | null;
+  implied_move_pct: string | null;
+  strategies: RankedStrategy[];
+  chain: OptionQuote[];
+}
+
+export interface EarningsThesis {
+  business_context: string;
+  historical_earnings_pattern: string;
+  guidance_trend: string;
+  key_risks: string;
+  market_setup: string;
+  disclaimer: string;
+  citations: Citation[];
+  generated_at: string;
+  model: string;
+}
+
+export interface PortfolioPosition {
+  account_id_masked: string;
+  conid: number;
+  contract_description: string;
+  asset_class: string;
+  quantity: string;
+  currency: string | null;
+  market_price: string | null;
+  market_value: string | null;
+  average_cost: string | null;
+  unrealized_pnl: string | null;
+  realized_pnl: string | null;
+  option_expiry: string | null;
+  option_right: string | null;
+  option_strike: string | null;
+  snapshot_timestamp: string;
+  source_provider: string;
+}
+
+export interface PortfolioSnapshotResponse {
+  positions: PortfolioPosition[];
+  snapshot_timestamp: string | null;
+}
+
 export interface ApiError {
   error: string;
   request_id: string | null;

@@ -2,15 +2,18 @@ import type {
   Company,
   EarningsEventDetail,
   EarningsEventSummary,
+  EarningsThesis,
   EvaluationStatusResponse,
   FilingSearchResponse,
   ImpliedMoveRequest,
   ImpliedMoveResponse,
+  PortfolioSnapshotResponse,
   ReplaySummary,
   ResearchJob,
   ResearchJobQueued,
   ResearchOverview,
   ResearchQueryResponse,
+  StrategyLab,
   StrategyPayoffRequest,
   StrategyPayoffResponse,
   SystemStatus,
@@ -93,10 +96,20 @@ export const api = {
   getResearchStatus: (ticker: string) => request<ResearchJob>(`/research/${ticker}/status`),
   getResearchOverview: (ticker: string) =>
     request<ResearchOverview>(`/research/${ticker}/overview`),
+  getStrategyLab: (ticker: string) => request<StrategyLab>(`/research/${ticker}/strategies`),
+  getEarningsThesis: (ticker: string) =>
+    request<EarningsThesis>(`/research/${ticker}/thesis`, { method: "POST" }),
 
   getLatestEvaluation: () => request<EvaluationStatusResponse>("/evaluations/latest"),
 
   getReplaySummary: () => request<ReplaySummary>("/replay"),
 
   getSystemStatus: () => request<SystemStatus>("/system-status"),
+
+  getPortfolioPositions: (params: { ticker?: string } = {}) => {
+    const qs = new URLSearchParams();
+    if (params.ticker) qs.set("ticker", params.ticker);
+    const suffix = qs.toString() ? `?${qs.toString()}` : "";
+    return request<PortfolioSnapshotResponse>(`/portfolio/positions${suffix}`);
+  },
 };
