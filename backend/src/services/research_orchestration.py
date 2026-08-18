@@ -33,7 +33,6 @@ from ingestion.backfill_price_data import (
     _backfill_snapshots,
     _ingest_price_bars,
     _load_close_series,
-    build_provider_chain,
 )
 from ingestion.bootstrap_phase1 import (
     _FP_TO_QUARTER,
@@ -62,7 +61,7 @@ from models.research_preparation_job import (
 )
 from providers.alpha_vantage_estimates import AlphaVantageEarningsEstimatesProvider
 from providers.base import EarningsEstimatesProvider, MarketDataProvider, OptionsDataProvider
-from providers.factory import MissingOptionsProviderConfigError, get_options_provider
+from providers.factory import build_market_data_chain, build_options_provider_chain
 from providers.sec_edgar import SECEdgarProvider
 from rag.embeddings import EmbeddingProvider
 from services.market_expectations import (
@@ -74,6 +73,7 @@ from services.options_analytics import (
     compute_and_persist_volatility_snapshot,
     get_implied_vs_realized_moves,
 )
+from services.provider_settings import get_app_provider_settings
 from services.symbol_resolution import SymbolResolution, resolve_symbol
 
 log = logging.getLogger("research_orchestration")
@@ -98,8 +98,17 @@ class ResearchProviders:
     embedder: EmbeddingProvider
 
 
-def build_research_providers(settings: Settings, embedder: EmbeddingProvider) -> ResearchProviders:
-    """Constructs every provider the pipeline can use from real app config.
+def build_research_providers(
+    settings: Settings, embedder: EmbeddingProvider, db: Session | None = None
+) -> ResearchProviders:
+    """Constructs every provider the pipeline can use from real app config,
+    plus any owner-configured provider-selection override (see
+    services/provider_settings.py) -- read fresh from ``db`` on every call,
+    never cached, so changing a provider in the Settings UI takes effect on
+    the very next research run. ``db`` is optional only so callers that
+    genuinely have no session yet (none exist today) still type-check;
+    every real caller passes one.
+
     ``estimates`` and ``options`` are None -- not raised -- when their
     configuration is missing, since both are optional preparation steps
     (see REQUIRED_STEPS): a missing Alpha Vantage key or unset
@@ -109,18 +118,24 @@ def build_research_providers(settings: Settings, embedder: EmbeddingProvider) ->
     or Alpha Vantage key at all) is left to raise, the same real
     RuntimeError ``ingestion.backfill_price_data.main`` already raises.
     """
+    overrides = get_app_provider_settings(db) if db is not None else None
+
     edgar = SECEdgarProvider(user_agent=settings.sec_edgar_user_agent)
-    market_data = build_provider_chain()
+    market_data = build_market_data_chain(
+        settings,
+        primary_override=overrides.price_history_primary if overrides else None,
+        fallback_override=overrides.price_history_fallback if overrides else None,
+    )
 
     estimates: EarningsEstimatesProvider | None = None
     if settings.alpha_vantage_api_key:
         estimates = AlphaVantageEarningsEstimatesProvider(api_key=settings.alpha_vantage_api_key)
 
-    options: OptionsDataProvider | None = None
-    try:
-        options = get_options_provider(settings)
-    except MissingOptionsProviderConfigError:
-        options = None
+    options = build_options_provider_chain(
+        settings,
+        primary_override=overrides.options_primary if overrides else None,
+        fallback_override=overrides.options_fallback if overrides else None,
+    )
 
     return ResearchProviders(
         edgar=edgar,

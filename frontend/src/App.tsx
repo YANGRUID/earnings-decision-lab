@@ -6,6 +6,9 @@ import { EarningsEvent } from "./pages/EarningsEvent";
 import { Research } from "./pages/Research";
 import { HistoricalReplay } from "./pages/HistoricalReplay";
 import { DataStatus } from "./pages/DataStatus";
+import { DataProviders } from "./pages/Settings/DataProviders";
+import { AiProvider } from "./pages/Settings/AiProvider";
+import { Ibkr } from "./pages/Settings/Ibkr";
 
 export default function App() {
   return (
@@ -17,6 +20,9 @@ export default function App() {
           <Route path="earnings/:id" element={<EarningsEvent />} />
           <Route path="research" element={<Research />} />
           <Route path="historical-replay" element={<HistoricalReplay />} />
+          <Route path="settings/providers" element={<DataProviders />} />
+          <Route path="settings/ai-provider" element={<AiProvider />} />
+          <Route path="settings/ibkr" element={<Ibkr />} />
           <Route path="system-status" element={<DataStatus />} />
         </Route>
       </Routes>

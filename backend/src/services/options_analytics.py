@@ -25,6 +25,7 @@ from decimal import Decimal
 
 from sqlalchemy.orm import Session
 
+from analytics.data_state import compute_options_data_state, compute_snapshot_age
 from analytics.options.collection_schedule import (
     DEFAULT_COLLECTION_OFFSETS,
     should_collect_snapshot,
@@ -43,7 +44,7 @@ from analytics.options.sentiment import (
 )
 from models.company import Company
 from models.earnings_event import EarningsEvent
-from models.enums import MarketDataQuality, OptionsSnapshotAnchor, OptionType
+from models.enums import DataState, MarketDataQuality, OptionsSnapshotAnchor, OptionType
 from models.options_snapshot import OptionsSnapshot
 from models.price_bar import PriceBar
 from models.price_reaction import PriceReaction
@@ -383,6 +384,50 @@ def get_latest_volatility_snapshot(db: Session, company_id: int) -> VolatilitySn
         .order_by(VolatilitySnapshot.snapshot_timestamp.desc())
         .first()
     )
+
+
+@dataclass(frozen=True)
+class OptionsSnapshotState:
+    """The shared "what's the options data right now" summary shown on both
+    the Strategy Lab state bar and the Company Overview -- see
+    analytics/data_state.py for what each DataState means."""
+
+    data_state: DataState
+    snapshot_source: str | None
+    snapshot_timestamp: datetime | None
+    snapshot_age_minutes: int | None
+    snapshot_age_label: str | None
+
+
+def options_state_from_chain(raw_chain: list[OptionQuote], as_of: datetime) -> OptionsSnapshotState:
+    """Pure function over an already-fetched ``get_latest_options_chain()``
+    result -- callers that already hold the chain (e.g. to also render its
+    quotes) pass it in rather than triggering a second query."""
+    snapshot_timestamp = raw_chain[0].snapshot_timestamp if raw_chain else None
+    snapshot_source = raw_chain[0].source_provider if raw_chain else None
+    snapshot_quality = raw_chain[0].market_data_quality if raw_chain else None
+    data_state = compute_options_data_state(snapshot_timestamp, snapshot_quality, as_of)
+    snapshot_age = compute_snapshot_age(snapshot_timestamp, as_of) if snapshot_timestamp else None
+    return OptionsSnapshotState(
+        data_state=data_state,
+        snapshot_source=snapshot_source,
+        snapshot_timestamp=snapshot_timestamp,
+        snapshot_age_minutes=snapshot_age.minutes if snapshot_age else None,
+        snapshot_age_label=snapshot_age.label if snapshot_age else None,
+    )
+
+
+def get_latest_close_price(db: Session, ticker: str) -> Decimal | None:
+    """Most recent real closing price on record for ``ticker``, regardless
+    of how far in the past it is -- callers decide whether/how to label its
+    staleness (e.g. against DataFreshness), this just never fabricates one."""
+    row = (
+        db.query(PriceBar)
+        .filter(PriceBar.ticker == ticker)
+        .order_by(PriceBar.trade_date.desc())
+        .first()
+    )
+    return row.close if row else None
 
 
 @dataclass(frozen=True)

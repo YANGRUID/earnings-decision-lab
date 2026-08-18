@@ -2,13 +2,77 @@ import { useState } from "react";
 import { api, ApiError } from "../../api/client";
 import { useAsync } from "../../hooks/useAsync";
 import { ErrorState, LoadingState } from "../StatusStates";
-import { formatMoney, formatPercent } from "../../lib/format";
+import {
+  dataStateLabel,
+  formatMoney,
+  formatPercent,
+  MARKET_SESSION_LABELS,
+  providerLabel,
+} from "../../lib/format";
 import type {
   OptionLegInput,
   OptionQuote,
   RankedStrategy,
+  StrategyLab,
   StrategyPayoffResponse,
 } from "../../types/api";
+
+const STALE_DATA_STATES = new Set(["stale", "previous_session"]);
+
+const EARNINGS_ANCHOR_LABELS: Record<string, string> = {
+  confirmed: "Confirmed by provider",
+  estimated: "Estimated",
+  manual: "Manual override",
+  unknown: "Unknown",
+};
+
+function StrategyLabStateBar({ lab }: { lab: StrategyLab }) {
+  const isStale = STALE_DATA_STATES.has(lab.data_state);
+  return (
+    <div className="card" style={{ marginBottom: 16 }}>
+      <div className="grid grid-3" style={{ gap: 10 }}>
+        <div className="stat">
+          <span className="stat-label">Market</span>
+          <span className="stat-value small">
+            {MARKET_SESSION_LABELS[lab.market_session] ?? lab.market_session}
+          </span>
+        </div>
+        <div className="stat">
+          <span className="stat-label">Options source</span>
+          <span className="stat-value small">
+            {lab.snapshot_source ? providerLabel(lab.snapshot_source) : "Not collected"}
+          </span>
+        </div>
+        <div className="stat">
+          <span className="stat-label">Snapshot</span>
+          <span className="stat-value small">
+            {lab.snapshot_age_label ? `${lab.snapshot_age_label} ago` : "—"}
+          </span>
+        </div>
+        <div className="stat">
+          <span className="stat-label">Data quality</span>
+          <span className={`pill ${isStale ? "pill-negative" : "pill-positive"}`}>
+            {dataStateLabel(lab.data_state)}
+          </span>
+        </div>
+        <div className="stat">
+          <span className="stat-label">Earnings anchor</span>
+          <span className="stat-value small">
+            {EARNINGS_ANCHOR_LABELS[lab.earnings_anchor_status] ?? lab.earnings_anchor_status}
+          </span>
+        </div>
+      </div>
+      {isStale && (
+        <div className="notice" style={{ marginTop: 12, marginBottom: 0 }}>
+          <strong>Using {lab.snapshot_source ? providerLabel(lab.snapshot_source) : "a"}{" "}
+          snapshot from a previous session</strong>
+          {lab.snapshot_age_label && ` (${lab.snapshot_age_label} ago)`} — every strategy below is
+          computed from this stale data and may differ materially from current tradable prices.
+        </div>
+      )}
+    </div>
+  );
+}
 
 function pct(value: string | null, digits = 1): string {
   if (value === null) return "—";
@@ -293,6 +357,8 @@ export function StrategyLabTab({ ticker }: { ticker: string }) {
 
   return (
     <div>
+      <StrategyLabStateBar lab={lab.data} />
+
       {lab.data.strategies.length === 0 ? (
         <div className="card">
           <p className="text-sm text-muted" style={{ margin: 0 }}>

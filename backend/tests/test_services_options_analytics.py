@@ -3,7 +3,7 @@ from decimal import ROUND_HALF_UP, Decimal
 
 from models.company import Company
 from models.earnings_event import EarningsEvent
-from models.enums import OptionsSnapshotAnchor, OptionType
+from models.enums import DataState, OptionsSnapshotAnchor, OptionType
 from models.options_snapshot import OptionsSnapshot
 from models.price_bar import PriceBar
 from models.price_reaction import PriceReaction
@@ -15,8 +15,10 @@ from services.options_analytics import (
     collect_options_snapshot_now,
     compute_and_persist_volatility_snapshot,
     get_implied_vs_realized_moves,
+    get_latest_close_price,
     get_latest_options_chain,
     get_latest_volatility_snapshot,
+    options_state_from_chain,
 )
 
 SNAPSHOT_TS = datetime(2025, 9, 15, 15, 0, tzinfo=UTC)
@@ -706,3 +708,86 @@ def test_get_latest_options_chain_preserves_market_data_quality_and_contract_id(
     assert len(chain) == 1
     assert chain[0].market_data_quality == "frozen"
     assert chain[0].external_contract_id == "12345"
+
+
+def _quote_with(snapshot_timestamp: datetime, quality: str | None, source: str = "ibkr"):
+    return OptionQuote(
+        ticker="ZZSTATE",
+        snapshot_timestamp=snapshot_timestamp,
+        expiration_date=NEAR_EXP,
+        strike=Decimal("100"),
+        option_type="call",
+        market_data_quality=quality,
+        source_provider=source,
+        retrieved_at=snapshot_timestamp,
+    )
+
+
+class TestOptionsStateFromChain:
+    def test_empty_chain_is_not_collected(self):
+        state = options_state_from_chain([], datetime.now(UTC))
+        assert state.data_state == DataState.NOT_COLLECTED
+        assert state.snapshot_source is None
+        assert state.snapshot_timestamp is None
+        assert state.snapshot_age_minutes is None
+        assert state.snapshot_age_label is None
+
+    def test_reads_timestamp_source_and_quality_from_the_first_quote(self):
+        as_of = datetime(2026, 3, 18, 12, 0, tzinfo=UTC)
+        snapshot_ts = datetime(2026, 3, 18, 11, 45, tzinfo=UTC)
+        chain = [_quote_with(snapshot_ts, "live", source="ibkr")]
+
+        state = options_state_from_chain(chain, as_of)
+
+        assert state.snapshot_source == "ibkr"
+        assert state.snapshot_timestamp == snapshot_ts
+        assert state.snapshot_age_minutes == 15
+        assert state.snapshot_age_label == "15m"
+
+    def test_previous_calendar_day_snapshot_is_previous_session(self):
+        as_of = datetime(2026, 3, 18, 12, 0, tzinfo=UTC)
+        snapshot_ts = datetime(2026, 3, 17, 20, 0, tzinfo=UTC)
+        chain = [_quote_with(snapshot_ts, "live")]
+
+        state = options_state_from_chain(chain, as_of)
+
+        assert state.data_state == DataState.PREVIOUS_SESSION
+
+
+class TestGetLatestClosePrice:
+    def test_none_when_no_price_bars_exist(self, db_session):
+        assert get_latest_close_price(db_session, "ZZNOPRICE") is None
+
+    def test_returns_the_most_recent_close_by_trade_date(self, db_session):
+        company = _seed_company(db_session, ticker="ZZPRICE1")
+        db_session.add_all(
+            [
+                PriceBar(
+                    ticker="ZZPRICE1",
+                    company_id=company.id,
+                    trade_date=date(2026, 3, 16),
+                    open=Decimal("10"),
+                    high=Decimal("11"),
+                    low=Decimal("9"),
+                    close=Decimal("10.50"),
+                    volume=100,
+                    source_provider="test",
+                    retrieved_at=datetime.now(UTC),
+                ),
+                PriceBar(
+                    ticker="ZZPRICE1",
+                    company_id=company.id,
+                    trade_date=date(2026, 3, 17),
+                    open=Decimal("11"),
+                    high=Decimal("12"),
+                    low=Decimal("10"),
+                    close=Decimal("11.75"),
+                    volume=150,
+                    source_provider="test",
+                    retrieved_at=datetime.now(UTC),
+                ),
+            ]
+        )
+        db_session.commit()
+
+        assert get_latest_close_price(db_session, "ZZPRICE1") == Decimal("11.75")

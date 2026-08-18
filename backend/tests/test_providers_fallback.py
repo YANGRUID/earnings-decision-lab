@@ -1,10 +1,15 @@
-from datetime import date
+from datetime import UTC, date, datetime
+from decimal import Decimal
 
 import pytest
 
-from providers.base import MarketDataProvider
-from providers.fallback import AllProvidersFailedError, MarketDataProviderChain
-from providers.types import OHLCBar
+from providers.base import MarketDataProvider, OptionsDataProvider
+from providers.fallback import (
+    AllProvidersFailedError,
+    MarketDataProviderChain,
+    OptionsProviderChain,
+)
+from providers.types import OHLCBar, OptionQuote
 
 
 class _FailingProvider(MarketDataProvider):
@@ -61,3 +66,87 @@ def test_raises_when_all_providers_fail():
 def test_requires_at_least_one_provider():
     with pytest.raises(ValueError):
         MarketDataProviderChain([])
+
+
+class TestMarketDataProviderChainProvenance:
+    def test_records_actual_provider_and_no_fallback_reason_when_primary_works(self):
+        chain = MarketDataProviderChain(
+            [("primary", _WorkingProvider()), ("fallback", _FailingProvider())]
+        )
+        chain.get_daily_bars("MU", date(2025, 1, 1), date(2025, 1, 2))
+        assert chain.last_requested_provider == "primary"
+        assert chain.last_actual_provider == "primary"
+        assert chain.last_fallback_reason is None
+
+    def test_records_a_real_fallback_reason_when_primary_fails(self):
+        chain = MarketDataProviderChain(
+            [("primary", _FailingProvider()), ("fallback", _WorkingProvider())]
+        )
+        chain.get_daily_bars("MU", date(2025, 1, 1), date(2025, 1, 2))
+        assert chain.last_requested_provider == "primary"
+        assert chain.last_actual_provider == "fallback"
+        assert "primary" in chain.last_fallback_reason
+        assert "simulated provider failure" in chain.last_fallback_reason
+
+    def test_provenance_is_none_before_any_call_is_made(self):
+        chain = MarketDataProviderChain([("primary", _WorkingProvider())])
+        assert chain.last_requested_provider is None
+        assert chain.last_actual_provider is None
+        assert chain.last_fallback_reason is None
+
+
+class _FailingOptionsProvider(OptionsDataProvider):
+    def get_option_chain(
+        self, ticker, as_of, expiration=None, reference_date=None, earnings_anchored=True
+    ):
+        raise RuntimeError("simulated options provider failure")
+
+
+class _WorkingOptionsProvider(OptionsDataProvider):
+    def get_option_chain(
+        self, ticker, as_of, expiration=None, reference_date=None, earnings_anchored=True
+    ):
+        return [
+            OptionQuote(
+                ticker=ticker,
+                snapshot_timestamp=as_of,
+                expiration_date=date(2026, 1, 16),
+                strike=Decimal("100"),
+                option_type="call",
+                source_provider="working",
+                retrieved_at=as_of,
+            )
+        ]
+
+
+class TestOptionsProviderChain:
+    def test_requires_at_least_one_provider(self):
+        with pytest.raises(ValueError):
+            OptionsProviderChain([])
+
+    def test_uses_primary_when_it_works(self):
+        chain = OptionsProviderChain(
+            [("primary", _WorkingOptionsProvider()), ("fallback", _FailingOptionsProvider())]
+        )
+        quotes = chain.get_option_chain("NVDA", datetime.now(UTC))
+        assert quotes[0].source_provider == "working"
+        assert chain.last_requested_provider == "primary"
+        assert chain.last_actual_provider == "primary"
+        assert chain.last_fallback_reason is None
+
+    def test_falls_through_to_next_provider_on_failure(self):
+        chain = OptionsProviderChain(
+            [("primary", _FailingOptionsProvider()), ("fallback", _WorkingOptionsProvider())]
+        )
+        quotes = chain.get_option_chain("NVDA", datetime.now(UTC))
+        assert quotes[0].source_provider == "working"
+        assert chain.last_requested_provider == "primary"
+        assert chain.last_actual_provider == "fallback"
+        assert "simulated options provider failure" in chain.last_fallback_reason
+
+    def test_raises_when_all_providers_fail(self):
+        chain = OptionsProviderChain(
+            [("primary", _FailingOptionsProvider()), ("fallback", _FailingOptionsProvider())]
+        )
+        with pytest.raises(AllProvidersFailedError):
+            chain.get_option_chain("NVDA", datetime.now(UTC))

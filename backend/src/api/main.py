@@ -19,6 +19,7 @@ from api.routers import (
     health,
     options,
     portfolio,
+    provider_settings,
     replay,
     research,
     system_status,
@@ -26,7 +27,6 @@ from api.routers import (
 from core.config import get_settings
 from observability.logging import configure_logging
 from rag.embeddings import FastEmbedProvider
-from services.llm.factory import get_llm_provider
 
 RESEARCH_QUERY_RATE_LIMIT = 10  # per window — real LLM cost per call, see api/rate_limit.py
 RESEARCH_QUERY_RATE_WINDOW_SECONDS = 60.0
@@ -39,23 +39,20 @@ async def lifespan(app: FastAPI):
     settings = get_settings()
     configure_logging(settings.log_level)
 
-    # Constructed once at startup: the LLM provider's httpx.Client and the
-    # local embedding model are both safe/cheap to share across requests,
-    # expensive to rebuild per-request. Neither failing to construct should
-    # take down the whole app — /health, /companies, /earnings, and the
-    # pure options calculators don't need either. AI-dependent endpoints
-    # (api/deps.get_llm / get_embedder) raise a clear 503 if the one they
-    # need wasn't available at startup, instead of the process refusing to
-    # start at all. This is what let CI (which sets no real LLM key, by
-    # design — see docs/llm_providers.md) run the API test suite at all.
-    try:
-        app.state.llm = get_llm_provider(settings)
-    except Exception:
-        log.warning(
-            "LLM provider unavailable at startup; AI endpoints will return 503", exc_info=True
-        )
-        app.state.llm = None
-
+    # The local embedding model is safe/cheap to share across requests,
+    # expensive to reload per-request -- constructed once at startup.
+    # Failing to construct shouldn't take down the whole app — /health,
+    # /companies, /earnings, and the pure options calculators don't need
+    # it. RAG-dependent endpoints (api/deps.get_embedder) raise a clear
+    # 503 if it wasn't available, instead of the process refusing to start
+    # at all. This is what let CI (which sets no real LLM key, by design —
+    # see docs/llm_providers.md) run the API test suite at all.
+    #
+    # The LLM provider, by contrast, is deliberately NOT constructed here
+    # -- api/deps.get_llm builds it fresh on every request from the
+    # current owner-configured override (see services/provider_settings.py),
+    # so switching providers in the Settings UI takes effect immediately
+    # rather than requiring a restart.
     try:
         app.state.embedder = FastEmbedProvider()
     except Exception:
@@ -100,6 +97,7 @@ def create_app() -> FastAPI:
     app.include_router(replay.router, prefix="/api/v1")
     app.include_router(system_status.router, prefix="/api/v1")
     app.include_router(portfolio.router, prefix="/api/v1")
+    app.include_router(provider_settings.router, prefix="/api/v1")
 
     return app
 

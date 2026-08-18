@@ -66,6 +66,10 @@ a:hover {
   padding: 20px 0;
   display: flex;
   flex-direction: column;
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  overflow-y: auto;
 }
 
 .sidebar-brand {
@@ -100,6 +104,15 @@ a:hover {
   color: var(--color-accent);
   border-left-color: var(--color-accent);
   background: var(--color-bg);
+}
+
+.sidebar-nav-heading {
+  padding: 16px 20px 4px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--color-text-faint);
 }
 
 .main-content {
@@ -553,4 +566,69 @@ label {
   .btn {
     color: #0c0d0f;
   }
+}
+
+/* --- Explicit theme choice (see hooks/useTheme.ts) always wins over the
+   prefers-color-scheme media query above, regardless of source order --
+   the attribute selector has higher specificity than a bare :root. "System"
+   means no data-theme attribute at all, i.e. the media query applies. --- */
+:root[data-theme="light"] {
+  --color-bg: #f7f8fa;
+  --color-surface: #ffffff;
+  --color-border: #e2e5e9;
+  --color-text: #1a1d21;
+  --color-text-muted: #5b6470;
+  --color-text-faint: #8a9099;
+  --color-accent: #2a5fa8;
+  --color-accent-hover: #1e4a87;
+  --color-positive: #1a7d3f;
+  --color-negative: #b3261e;
+  --color-positive-bg: #e8f5ec;
+  --color-negative-bg: #fbe9e8;
+  --color-warning-bg: #fff7e0;
+  --color-warning-text: #8a6300;
+  --shadow-sm: 0 1px 2px rgba(20, 24, 30, 0.06);
+}
+
+:root[data-theme="dark"] {
+  --color-bg: #14161a;
+  --color-surface: #1b1e23;
+  --color-border: #2c3038;
+  --color-text: #e7e9ec;
+  --color-text-muted: #a3a9b3;
+  --color-text-faint: #6e7480;
+  --color-accent: #6ea3e0;
+  --color-accent-hover: #8fb8e8;
+  --color-positive: #4cbd7d;
+  --color-negative: #e0665f;
+  --color-positive-bg: #163224;
+  --color-negative-bg: #3a1f1e;
+  --color-warning-bg: #3a2f10;
+  --color-warning-text: #e0b84c;
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+}
+
+:root[data-theme="dark"] .btn {
+  color: #0c0d0f;
+}
+
+.theme-toggle {
+  display: flex;
+  gap: 4px;
+  padding: 12px 20px 4px;
+}
+.theme-toggle button {
+  flex: 1;
+  padding: 5px 0;
+  font-size: 11px;
+  font-weight: 600;
+  border-radius: var(--radius);
+  border: 1px solid var(--color-border);
+  background: transparent;
+  color: var(--color-text-faint);
+}
+.theme-toggle button.active {
+  background: var(--color-surface);
+  color: var(--color-text);
+  border-color: var(--color-accent);
 }

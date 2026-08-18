@@ -36,10 +36,8 @@ from models.earnings_event import EarningsEvent
 from models.earnings_expectation_snapshot import EarningsExpectationSnapshot
 from models.price_bar import PriceBar
 from models.price_reaction import PriceReaction
-from providers.alpha_vantage import AlphaVantageMarketDataProvider
 from providers.base import MarketDataProvider
-from providers.fallback import MarketDataProviderChain
-from providers.tiingo import TiingoMarketDataProvider
+from providers.factory import build_market_data_chain
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("backfill_price_data")
@@ -52,18 +50,13 @@ SNAPSHOT_SOURCE = "price_backfill"
 
 
 def build_provider_chain() -> MarketDataProvider:
-    settings = get_settings()
-    providers: list[tuple[str, MarketDataProvider]] = []
-    if settings.tiingo_api_key:
-        providers.append(("tiingo", TiingoMarketDataProvider(api_key=settings.tiingo_api_key)))
-    if settings.alpha_vantage_api_key:
-        av = AlphaVantageMarketDataProvider(api_key=settings.alpha_vantage_api_key)
-        providers.append(("alpha_vantage", av))
-    if not providers:
-        raise RuntimeError(
-            "no market data provider configured — set TIINGO_API_KEY or ALPHA_VANTAGE_API_KEY"
-        )
-    return MarketDataProviderChain(providers)
+    """Thin wrapper kept for this script's own CLI entry point --
+    providers/factory.py::build_market_data_chain is the real, shared
+    implementation (also used by the web app's request path, with owner
+    overrides). This script always uses plain env-var defaults, matching
+    its original behavior exactly.
+    """
+    return build_market_data_chain(get_settings())
 
 
 def _ingest_price_bars(db: Session, market: MarketDataProvider, ticker: str) -> int:

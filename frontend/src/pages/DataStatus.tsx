@@ -1,11 +1,45 @@
+import { Link } from "react-router-dom";
 import { api } from "../api/client";
 import { useAsync } from "../hooks/useAsync";
 import { ErrorState, LoadingState } from "../components/StatusStates";
-import { formatPercent } from "../lib/format";
+import {
+  DOMAIN_LABELS,
+  formatPercent,
+  formatRelativeTime,
+  MARKET_SESSION_LABELS,
+  providerLabel,
+} from "../lib/format";
+import type { DomainStatus } from "../types/api";
 
 function Timestamp({ value }: { value: string | null }) {
   if (value === null) return <span className="text-faint">never</span>;
   return <span className="mono">{new Date(value).toLocaleString()}</span>;
+}
+
+function ProviderHealthRow({ domain }: { domain: DomainStatus }) {
+  const errored = domain.providers.find((p) => p.last_error_status !== null);
+  return (
+    <tr>
+      <td>{DOMAIN_LABELS[domain.domain] ?? domain.domain}</td>
+      <td className="mono">
+        {providerLabel(domain.primary)}
+        {domain.primary_is_override && <span className="text-faint"> (override)</span>}
+      </td>
+      <td className="mono">
+        {domain.fallback ? providerLabel(domain.fallback) : <span className="text-faint">none</span>}
+      </td>
+      <td>
+        {errored ? (
+          <span className="pill pill-negative">
+            {providerLabel(errored.provider)}: {errored.last_error_status} (
+            {formatRelativeTime(errored.last_error_at)})
+          </span>
+        ) : (
+          <span className="pill pill-positive">no recent errors</span>
+        )}
+      </td>
+    </tr>
+  );
 }
 
 export function DataStatus() {
@@ -15,16 +49,78 @@ export function DataStatus() {
   if (status.error) return <ErrorState message={status.error} />;
   if (!status.data) return null;
 
-  const { counts, freshness, llm, embedding_model: embeddingModel, evaluation } = status.data;
+  const {
+    counts,
+    freshness,
+    llm,
+    embedding_model: embeddingModel,
+    evaluation,
+    ibkr,
+    market_session: marketSession,
+    providers,
+  } = status.data;
 
   return (
     <div>
       <div className="page-header">
         <h1>System Status</h1>
         <p>
-          Real data coverage, freshness, and evaluation results for this deployment — stated
-          plainly rather than left to be discovered.
+          The technical control room for this deployment: provider health, connectivity, real
+          data coverage, freshness, and evaluation results — stated plainly rather than left to
+          be discovered. Change what's active in{" "}
+          <Link to="/settings/providers">Settings → Data Providers</Link>.
         </p>
+      </div>
+
+      <div className="card">
+        <h2>Market &amp; connectivity</h2>
+        <div className="grid grid-3" style={{ gap: 10 }}>
+          <div className="stat">
+            <span className="stat-label">US market session</span>
+            <span className="stat-value small">
+              {MARKET_SESSION_LABELS[marketSession] ?? marketSession}
+            </span>
+          </div>
+          <div className="stat">
+            <span className="stat-label">IBKR Gateway</span>
+            <span
+              className={`pill ${ibkr.gateway_reachable && ibkr.authenticated ? "pill-positive" : "pill-negative"}`}
+            >
+              {ibkr.gateway_reachable
+                ? ibkr.authenticated
+                  ? "running & authenticated"
+                  : "running, not authenticated"
+                : "offline"}
+            </span>
+          </div>
+          <div className="stat">
+            <span className="stat-label">Manage connection</span>
+            <Link to="/settings/ibkr" className="text-sm">
+              Settings → IBKR
+            </Link>
+          </div>
+        </div>
+      </div>
+
+      <div className="card">
+        <h2>Provider health</h2>
+        <div style={{ overflowX: "auto" }}>
+          <table>
+            <thead>
+              <tr>
+                <th>Domain</th>
+                <th>Active</th>
+                <th>Fallback</th>
+                <th>Recent errors</th>
+              </tr>
+            </thead>
+            <tbody>
+              {providers.domains.map((d) => (
+                <ProviderHealthRow key={d.domain} domain={d} />
+              ))}
+            </tbody>
+          </table>
+        </div>
       </div>
 
       <div className="card">
@@ -131,6 +227,7 @@ export function DataStatus() {
         </div>
         <p className="text-sm text-muted" style={{ marginTop: 10, marginBottom: 0 }}>
           Embeddings: <span className="mono">{embeddingModel}</span> (local, no API key needed).
+          Switch providers in <Link to="/settings/ai-provider">Settings → AI Provider</Link>.
         </p>
       </div>
 

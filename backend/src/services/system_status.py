@@ -20,6 +20,7 @@ from models.filing import Filing
 from models.options_snapshot import OptionsSnapshot
 from models.price_bar import PriceBar
 from models.volatility_snapshot import VolatilitySnapshot
+from providers.ibkr_client import IBKRClient, IBKRError
 
 # Provider -> the Settings field names required to actually run it, mirroring
 # services/llm/factory.py's own checks without instantiating a real client
@@ -99,3 +100,38 @@ def describe_llm_configuration(settings: Settings) -> LlmConfigStatus:
     configured = bool(getattr(settings, api_key_field)) and bool(getattr(settings, model_field))
     model = getattr(settings, model_field)
     return LlmConfigStatus(provider=provider, model=model, configured=configured)
+
+
+@dataclass(frozen=True)
+class IbkrStatus:
+    gateway_reachable: bool
+    authenticated: bool
+    connected: bool
+    competing: bool
+    error: str | None
+
+
+def get_ibkr_status(settings: Settings) -> IbkrStatus:
+    """A real, live check against the Gateway's own /iserver/auth/status --
+    never cached, never assumed. This page is exactly the place a live
+    check belongs (visited deliberately, not on every research action);
+    Strategy Lab and other research pages read persisted OptionsSnapshot
+    rows instead, never blocking on a live Gateway round-trip."""
+    client = IBKRClient(base_url=settings.ibkr_base_url)
+    try:
+        status = client.auth_status()
+        return IbkrStatus(
+            gateway_reachable=True,
+            authenticated=status.authenticated,
+            connected=status.connected,
+            competing=status.competing,
+            error=None,
+        )
+    except IBKRError as exc:
+        return IbkrStatus(
+            gateway_reachable=False,
+            authenticated=False,
+            connected=False,
+            competing=False,
+            error=str(exc),
+        )

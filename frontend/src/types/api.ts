@@ -264,12 +264,77 @@ export interface LlmConfigStatus {
   configured: boolean;
 }
 
+export interface IbkrStatus {
+  gateway_reachable: boolean;
+  authenticated: boolean;
+  connected: boolean;
+  competing: boolean;
+  error: string | null;
+}
+
+export interface ProviderCapabilities {
+  prices: boolean;
+  earnings_estimates: boolean;
+  filings: boolean;
+  options: boolean;
+  greeks: boolean;
+  ai: boolean;
+}
+
+export interface ProviderStatus {
+  provider: string;
+  domain: string;
+  configured: boolean;
+  masked_key: string | null;
+  last_success_at: string | null;
+  last_error_at: string | null;
+  last_error_status: string | null;
+  last_error_detail: string | null;
+  entitlement_note: string | null;
+  capabilities: ProviderCapabilities;
+}
+
+export interface DomainStatus {
+  domain: string;
+  primary: string | null;
+  fallback: string | null;
+  primary_is_override: boolean;
+  fallback_is_override: boolean;
+  providers: ProviderStatus[];
+}
+
+export interface ProviderDashboard {
+  domains: DomainStatus[];
+}
+
+export interface ProviderSettingsUpdate {
+  price_history_primary?: string | null;
+  price_history_fallback?: string | null;
+  clear_price_history_fallback?: boolean;
+  options_primary?: string | null;
+  options_fallback?: string | null;
+  clear_options_fallback?: boolean;
+  llm_provider?: string | null;
+  llm_model?: string | null;
+}
+
+export interface TestConnectionResult {
+  provider: string;
+  domain: string;
+  status: string;
+  detail: string | null;
+  tested_at: string;
+}
+
 export interface SystemStatus {
   counts: DataCounts;
   freshness: DataFreshness;
   llm: LlmConfigStatus;
   embedding_model: string;
   evaluation: EvaluationStatusResponse;
+  ibkr: IbkrStatus;
+  market_session: string;
+  providers: ProviderDashboard;
 }
 
 export interface PreparationStep {
@@ -308,6 +373,11 @@ export interface ResearchOverview {
   filing_chunks_count: number;
   latest_earnings_estimate: EarningsEstimate | null;
   latest_volatility_snapshot: VolatilitySnapshot | null;
+  latest_price: string | null;
+  historical_moves: HistoricalMoveStats | null;
+  options_data_state: string;
+  options_snapshot_source: string | null;
+  options_snapshot_age_label: string | null;
 }
 
 export interface OptionQuote {
@@ -381,6 +451,13 @@ export interface StrategyLab {
   chain: OptionQuote[];
   anchor: string | null;
   reason: string | null;
+  market_session: string;
+  data_state: string;
+  snapshot_source: string | null;
+  snapshot_timestamp: string | null;
+  snapshot_age_minutes: number | null;
+  snapshot_age_label: string | null;
+  earnings_anchor_status: string;
 }
 
 export interface EarningsThesis {

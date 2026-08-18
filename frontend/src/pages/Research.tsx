@@ -1,13 +1,94 @@
 import { useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { api, ApiError } from "../api/client";
-import type { ResearchQueryResponse } from "../types/api";
+import { useAsync } from "../hooks/useAsync";
+import { dataStateLabel, formatRelativeTime } from "../lib/format";
+import type { ResearchOverview, ResearchQueryResponse } from "../types/api";
 
 const DEFAULT_EXAMPLE_QUESTIONS = [
   "What were MU's last two earnings results?",
   "What did MU say about HBM demand in its risk factors?",
   "How has AMD's guidance changed recently?",
 ];
+
+interface ChecklistItem {
+  label: string;
+  ok: boolean;
+  detail: string;
+}
+
+function buildChecklist(overview: ResearchOverview): ChecklistItem[] {
+  return [
+    {
+      label: "Historical earnings",
+      ok: overview.earnings_events_count > 0,
+      detail:
+        overview.earnings_events_count > 0
+          ? `${overview.earnings_events_count} reported events on record`
+          : "None on record yet",
+    },
+    {
+      label: "SEC filings",
+      ok: overview.filings_count > 0,
+      detail:
+        overview.filings_count > 0
+          ? `${overview.filings_count} filings, ${overview.filing_chunks_count} searchable excerpts`
+          : "None ingested yet",
+    },
+    {
+      label: "Price history",
+      ok: overview.price_bars_count > 0,
+      detail:
+        overview.price_bars_count > 0
+          ? `${overview.price_bars_count} daily price bars`
+          : "No price history yet",
+    },
+    {
+      label: "Analyst consensus",
+      ok: overview.latest_earnings_estimate !== null,
+      detail: overview.latest_earnings_estimate
+        ? `From ${overview.latest_earnings_estimate.source_provider}`
+        : "No consensus collected yet",
+    },
+    {
+      label: "Options snapshot",
+      ok: overview.options_snapshot_source !== null,
+      detail: overview.options_snapshot_source
+        ? `${dataStateLabel(overview.options_data_state)} · ${overview.options_snapshot_age_label ?? ""} old`
+        : "Not collected yet",
+    },
+  ];
+}
+
+function ResearchChecklist({ ticker }: { ticker: string }) {
+  const overview = useAsync(() => api.getResearchOverview(ticker), [ticker]);
+  if (overview.loading && !overview.data) return null;
+  if (!overview.data || !overview.data.company) return null;
+
+  const items = buildChecklist(overview.data);
+  return (
+    <div className="card">
+      <h2>What's on record for {ticker}</h2>
+      <ul className="freshness-list" style={{ marginBottom: 8 }}>
+        {items.map((item) => (
+          <li key={item.label}>
+            <span style={{ color: item.ok ? "var(--color-positive)" : "var(--color-text-faint)" }}>
+              {item.ok ? "✓" : "⚠"}
+            </span>{" "}
+            <strong>{item.label}</strong> — {item.detail}
+          </li>
+        ))}
+      </ul>
+      <p className="text-sm text-faint" style={{ margin: 0 }}>
+        Evidence last refreshed{" "}
+        {overview.data.latest_job?.completed_at
+          ? formatRelativeTime(overview.data.latest_job.completed_at)
+          : "never — this company hasn't been prepared yet"}
+        . Answers below are only ever grounded in what's checked off here.
+      </p>
+    </div>
+  );
+}
 
 export function Research() {
   const [searchParams] = useSearchParams();
@@ -48,6 +129,8 @@ export function Research() {
           which tools were called and how it was verified, not just the final text.
         </p>
       </div>
+
+      {contextTicker && <ResearchChecklist ticker={contextTicker} />}
 
       <div className="card">
         <div className="field">

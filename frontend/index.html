@@ -4,6 +4,21 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Earnings Decision Lab</title>
+    <script>
+      // Applied before first paint so an explicit light/dark choice (see
+      // hooks/useTheme.ts) never flashes the system-preference theme first.
+      (function () {
+        try {
+          var stored = localStorage.getItem("ecl-theme");
+          if (stored === "light" || stored === "dark") {
+            document.documentElement.setAttribute("data-theme", stored);
+          }
+        } catch (e) {
+          // localStorage unavailable (e.g. private browsing) -- fall back
+          // to the system prefers-color-scheme media query untouched.
+        }
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

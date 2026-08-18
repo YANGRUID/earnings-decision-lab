@@ -70,3 +70,40 @@ class UpcomingEarningsDateSource(enum.StrEnum):
     MANUAL = "manual"
     ESTIMATED = "estimated"
     UNKNOWN = "unknown"
+
+
+class ProviderHealthStatus(enum.StrEnum):
+    """Outcome of a real provider check -- either an explicit "Test
+    Connection" call or a real failure observed during actual ingestion.
+    Never inferred; always the direct result of a real HTTP call or a real
+    exception class raised by the provider adapter (see
+    services/provider_status.py)."""
+
+    CONNECTED = "connected"
+    AUTH_FAILED = "auth_failed"
+    RATE_LIMITED = "rate_limited"
+    PREMIUM_REQUIRED = "premium_required"
+    GATEWAY_OFFLINE = "gateway_offline"
+    UNAVAILABLE = "unavailable"
+    TIMEOUT = "timeout"
+
+
+class DataState(enum.StrEnum):
+    """Shared vocabulary for "what kind of data is this, right now" --
+    every page that shows a data point derived from a provider must pick
+    one of these rather than inventing its own ad hoc label. See
+    analytics/data_state.py for the real derivation rules."""
+
+    LIVE = "live"
+    DELAYED = "delayed"
+    FROZEN = "frozen"
+    STALE = "stale"
+    PREVIOUS_SESSION = "previous_session"
+    MARKET_CLOSED = "market_closed"
+    GATEWAY_DISCONNECTED = "gateway_disconnected"
+    PROVIDER_UNAVAILABLE = "provider_unavailable"
+    RATE_LIMITED = "rate_limited"
+    PREMIUM_REQUIRED = "premium_required"
+    NOT_COLLECTED = "not_collected"
+    UNSUPPORTED = "unsupported"
+    UNKNOWN = "unknown"

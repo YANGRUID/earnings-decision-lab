@@ -9,6 +9,8 @@ import type {
   ImpliedMoveRequest,
   ImpliedMoveResponse,
   PortfolioSnapshotResponse,
+  ProviderDashboard,
+  ProviderSettingsUpdate,
   ReplaySummary,
   ResearchJob,
   ResearchJobQueued,
@@ -18,6 +20,7 @@ import type {
   StrategyPayoffRequest,
   StrategyPayoffResponse,
   SystemStatus,
+  TestConnectionResult,
 } from "../types/api";
 
 const BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000/api/v1";
@@ -114,6 +117,17 @@ export const api = {
   getReplaySummary: () => request<ReplaySummary>("/replay"),
 
   getSystemStatus: () => request<SystemStatus>("/system-status"),
+
+  getProviderDashboard: () => request<ProviderDashboard>("/settings/providers"),
+  updateProviderSettings: (update: ProviderSettingsUpdate) =>
+    request<ProviderDashboard>("/settings/providers", {
+      method: "PUT",
+      body: JSON.stringify(update),
+    }),
+  testProviderConnection: (domain: string, provider: string) =>
+    request<TestConnectionResult>(`/settings/providers/${domain}/${provider}/test`, {
+      method: "POST",
+    }),
 
   getPortfolioPositions: (params: { ticker?: string } = {}) => {
     const qs = new URLSearchParams();

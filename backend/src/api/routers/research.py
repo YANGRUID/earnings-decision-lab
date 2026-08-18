@@ -1,8 +1,10 @@
 import logging
 from datetime import UTC, datetime
+from typing import TypedDict
 
 from fastapi import APIRouter, BackgroundTasks, Query, Request
 
+from analytics.market_session import get_market_session
 from analytics.options.move_compatibility import assess_move_compatibility
 from analytics.options.strategy_ranking import rank_strategy_candidates
 from api.deps import LLM, DbSession, Embedder, Orchestrator
@@ -26,6 +28,7 @@ from schemas.api import (
     EarningsThesisResponse,
     ExecutionTraceResponse,
     FilingSearchResponse,
+    HistoricalMoveStatsResponse,
     ManualEarningsDateRequest,
     MoveCompatibilityResponse,
     OptionLegResponse,
@@ -43,10 +46,15 @@ from schemas.api import (
     VolatilitySnapshotResponse,
 )
 from services.earnings_thesis import ThesisGenerationError, generate_earnings_thesis
-from services.historical_moves import get_historical_move_pcts
+from services.historical_moves import get_historical_move_pcts, get_historical_move_stats
 from services.llm.errors import LLMError
 from services.market_expectations import get_latest_earnings_estimate, set_manual_earnings_date
-from services.options_analytics import get_latest_options_chain, get_latest_volatility_snapshot
+from services.options_analytics import (
+    get_latest_close_price,
+    get_latest_options_chain,
+    get_latest_volatility_snapshot,
+    options_state_from_chain,
+)
 from services.research_orchestration import (
     UnsupportedSymbolError,
     build_research_providers,
@@ -60,6 +68,21 @@ from services.symbol_resolution import normalize_ticker, resolve_symbol
 log = logging.getLogger("api.research")
 
 router = APIRouter(prefix="/research", tags=["research"])
+
+
+class _StrategyLabStateBar(TypedDict):
+    """Shape of the market/options state fields shared by every
+    StrategyLabResponse this endpoint returns -- typed so a future field
+    added to one branch and forgotten in another is a real mypy error, not
+    a silent inconsistency between response shapes."""
+
+    market_session: str
+    data_state: str
+    snapshot_source: str | None
+    snapshot_timestamp: datetime | None
+    snapshot_age_minutes: int | None
+    snapshot_age_label: str | None
+    earnings_anchor_status: str
 
 
 @router.post("/query", response_model=ResearchQueryResponse)
@@ -139,7 +162,7 @@ def _run_preparation_background(ticker: str, force: bool, embedder: EmbeddingPro
     """
     db = SessionLocal()
     try:
-        providers = build_research_providers(get_settings(), embedder)
+        providers = build_research_providers(get_settings(), embedder, db)
         prepare_company_research(db, ticker, providers, force=force)
     except UnsupportedSymbolError:
         # Already validated synchronously in _kickoff before this was ever
@@ -226,6 +249,9 @@ def research_overview(symbol: str, db: DbSession) -> ResearchOverviewResponse:
 
     latest_estimate = get_latest_earnings_estimate(db, company.id)
     latest_volatility = get_latest_volatility_snapshot(db, company.id)
+    move_stats = get_historical_move_stats(db, company.id)
+    raw_chain = get_latest_options_chain(db, company)
+    options_state = options_state_from_chain(raw_chain, datetime.now(UTC))
 
     return ResearchOverviewResponse(
         ticker=ticker,
@@ -247,6 +273,13 @@ def research_overview(symbol: str, db: DbSession) -> ResearchOverviewResponse:
             if latest_volatility
             else None
         ),
+        latest_price=get_latest_close_price(db, ticker),
+        historical_moves=(
+            HistoricalMoveStatsResponse.model_validate(move_stats) if move_stats else None
+        ),
+        options_data_state=options_state.data_state.value,
+        options_snapshot_source=options_state.snapshot_source,
+        options_snapshot_age_label=options_state.snapshot_age_label,
     )
 
 
@@ -323,8 +356,33 @@ def get_strategy_lab(symbol: str, db: DbSession) -> StrategyLabResponse:
     if company is None:
         raise NotFoundError(f"no research on record yet for {ticker!r}")
 
-    chain_response = [_option_quote_response(q) for q in get_latest_options_chain(db, company)]
+    now = datetime.now(UTC)
+    raw_chain = get_latest_options_chain(db, company)
+    chain_response = [_option_quote_response(q) for q in raw_chain]
     volatility = get_latest_volatility_snapshot(db, company.id)
+
+    options_state = options_state_from_chain(raw_chain, now)
+    market_session = get_market_session(now)
+
+    estimate_for_anchor = get_latest_earnings_estimate(db, company.id)
+    if estimate_for_anchor is None or estimate_for_anchor.estimated_report_date is None:
+        earnings_anchor_status = "unknown"
+    else:
+        earnings_anchor_status = {
+            "alpha_vantage": "confirmed",
+            "manual": "manual",
+            "estimated": "estimated",
+        }.get(estimate_for_anchor.date_source.value, "unknown")
+
+    state_bar: _StrategyLabStateBar = {
+        "market_session": market_session.session.value,
+        "data_state": options_state.data_state.value,
+        "snapshot_source": options_state.snapshot_source,
+        "snapshot_timestamp": options_state.snapshot_timestamp,
+        "snapshot_age_minutes": options_state.snapshot_age_minutes,
+        "snapshot_age_label": options_state.snapshot_age_label,
+        "earnings_anchor_status": earnings_anchor_status,
+    }
 
     if volatility is None:
         if chain_response:
@@ -363,6 +421,7 @@ def get_strategy_lab(symbol: str, db: DbSession) -> StrategyLabResponse:
             strategies=[],
             chain=chain_response,
             reason=reason,
+            **state_bar,
         )
 
     is_general = volatility.target_earnings_date is None
@@ -432,6 +491,7 @@ def get_strategy_lab(symbol: str, db: DbSession) -> StrategyLabResponse:
                 "candidates could be generated from it -- possibly no underlying price is "
                 "on record as of the snapshot, or no expiration in the chain matches."
             ),
+            **state_bar,
         )
 
     return StrategyLabResponse(
@@ -448,6 +508,7 @@ def get_strategy_lab(symbol: str, db: DbSession) -> StrategyLabResponse:
         )
         if is_general
         else None,
+        **state_bar,
     )
 
 

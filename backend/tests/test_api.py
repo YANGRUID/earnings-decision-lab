@@ -956,6 +956,105 @@ def test_strategy_lab_general_current_still_returns_real_strategies(client, db_s
     assert "not earnings-anchored" in body["reason"]
 
 
+def test_strategy_lab_exposes_real_state_bar_provenance_for_a_stale_snapshot(client, db_session):
+    """The state bar (market_session/data_state/snapshot_source/snapshot_age
+    /earnings_anchor_status) must be real and consistent, and a snapshot
+    from a prior calendar day must be labeled previous_session -- never
+    presented as current. A fixed, clearly-past snapshot_timestamp keeps
+    this deterministic regardless of when the suite actually runs."""
+    from datetime import UTC, date, datetime
+    from decimal import Decimal
+
+    from models.company import Company
+    from models.earnings_estimate_snapshot import EarningsEstimateSnapshot
+    from models.enums import OptionType, UpcomingEarningsDateSource
+    from models.options_snapshot import OptionsSnapshot
+    from models.price_bar import PriceBar
+    from models.volatility_snapshot import VolatilitySnapshot
+
+    company = Company(ticker="ZZSLAB5", name="ZZ Strategy Lab Co 5", cik="0009999919")
+    db_session.add(company)
+    db_session.flush()
+
+    now = datetime.now(UTC)
+    stale_snapshot_ts = datetime(2020, 1, 15, 15, 0, tzinfo=UTC)
+    db_session.add(
+        PriceBar(
+            ticker="ZZSLAB5",
+            company_id=company.id,
+            trade_date=date(2020, 1, 15),
+            source_provider="test",
+            open=Decimal("100"),
+            high=Decimal("101"),
+            low=Decimal("99"),
+            close=Decimal("100"),
+            volume=1000,
+            retrieved_at=stale_snapshot_ts,
+        )
+    )
+    db_session.add(
+        EarningsEstimateSnapshot(
+            company_id=company.id,
+            fiscal_period_end_date=date(2020, 4, 30),
+            horizon="fiscal quarter",
+            snapshot_timestamp=stale_snapshot_ts,
+            estimated_report_date=date(2020, 1, 20),
+            date_source=UpcomingEarningsDateSource.MANUAL,
+            source_provider="manual",
+            retrieved_at=stale_snapshot_ts,
+        )
+    )
+    for strike in (Decimal("95"), Decimal("100"), Decimal("105")):
+        for option_type in (OptionType.CALL, OptionType.PUT):
+            db_session.add(
+                OptionsSnapshot(
+                    company_id=company.id,
+                    snapshot_timestamp=stale_snapshot_ts,
+                    expiration_date=date(2020, 2, 21),
+                    strike=strike,
+                    option_type=option_type,
+                    bid=Decimal("1.90"),
+                    ask=Decimal("2.10"),
+                    market_data_quality="live",
+                    source_provider="ibkr",
+                    retrieved_at=stale_snapshot_ts,
+                )
+            )
+    db_session.add(
+        VolatilitySnapshot(
+            company_id=company.id,
+            snapshot_timestamp=stale_snapshot_ts,
+            method="atm_straddle",
+            target_earnings_date=date(2020, 1, 20),
+            near_term_expiration=date(2020, 2, 21),
+            implied_move_pct=Decimal("0.05"),
+            implied_move_absolute=Decimal("5.00"),
+            computed_at=now,
+        )
+    )
+    db_session.flush()
+
+    response = client.get("/api/v1/research/zzslab5/strategies")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["data_state"] == "previous_session"
+    assert body["snapshot_source"] == "ibkr"
+    assert body["snapshot_timestamp"] is not None
+    assert body["snapshot_age_minutes"] is not None and body["snapshot_age_minutes"] > 0
+    assert body["snapshot_age_label"] not in (None, "")
+    assert body["earnings_anchor_status"] == "manual"
+    assert body["market_session"] in (
+        "pre_market",
+        "regular",
+        "after_hours",
+        "closed",
+    )
+    # Real strategies are still generated from the stale data -- the UI, not
+    # the API, is responsible for the "stale, use with care" presentation.
+    assert body["strategies"] != []
+
+
 def test_thesis_unknown_company_returns_404(client):
     response = client.post("/api/v1/research/ZZNOTHS/thesis")
     assert response.status_code == 404

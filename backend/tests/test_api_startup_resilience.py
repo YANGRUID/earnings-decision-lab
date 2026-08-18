@@ -23,10 +23,18 @@ class _StubEmbedder(EmbeddingProvider):
 
 
 def test_app_starts_and_serves_data_endpoints_without_any_llm_configured(monkeypatch):
+    import api.deps as deps_module
     import api.main as main_module
 
     no_key_settings = Settings(_env_file=None, llm_provider="deepseek")
     monkeypatch.setattr(main_module, "get_settings", lambda: no_key_settings)
+    # api.deps.get_llm constructs the LLM provider fresh per-request (see
+    # services/provider_settings.py) from its own get_settings import, not
+    # main.py's -- must be patched separately, or this test would pick up
+    # whatever real DEEPSEEK_API_KEY happens to be in this machine's real
+    # .env via the process-wide lru_cache'd Settings, defeating the point
+    # of this no-key regression test.
+    monkeypatch.setattr(deps_module, "get_settings", lambda: no_key_settings)
     # Only the missing-LLM-key scenario is under test here; the embedder is
     # unrelated to this bug and stubbed at its construction site (lifespan
     # calls FastEmbedProvider() directly, not through a dependency-overridable

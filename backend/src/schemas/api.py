@@ -274,12 +274,66 @@ class LlmConfigStatusResponse(BaseModel):
     configured: bool
 
 
+class IbkrStatusResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    gateway_reachable: bool
+    authenticated: bool
+    connected: bool
+    competing: bool
+    error: str | None
+
+
+class ProviderCapabilitiesResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    prices: bool
+    earnings_estimates: bool
+    filings: bool
+    options: bool
+    greeks: bool
+    ai: bool
+
+
+class ProviderStatusResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    provider: str
+    domain: str
+    configured: bool
+    masked_key: str | None
+    last_success_at: datetime | None
+    last_error_at: datetime | None
+    last_error_status: str | None
+    last_error_detail: str | None
+    entitlement_note: str | None
+    capabilities: ProviderCapabilitiesResponse
+
+
+class DomainStatusResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    domain: str
+    primary: str | None
+    fallback: str | None
+    primary_is_override: bool
+    fallback_is_override: bool
+    providers: list[ProviderStatusResponse]
+
+
+class ProviderDashboardResponse(BaseModel):
+    domains: list[DomainStatusResponse]
+
+
 class SystemStatusResponse(BaseModel):
     counts: DataCountsResponse
     freshness: DataFreshnessResponse
     llm: LlmConfigStatusResponse
     embedding_model: str
     evaluation: EvaluationStatusResponse
+    ibkr: IbkrStatusResponse
+    market_session: str
+    providers: ProviderDashboardResponse
 
 
 class PortfolioPositionResponse(BaseModel):
@@ -362,6 +416,11 @@ class ResearchOverviewResponse(BaseModel):
     filing_chunks_count: int
     latest_earnings_estimate: EarningsEstimateResponse | None
     latest_volatility_snapshot: VolatilitySnapshotResponse | None
+    latest_price: Decimal | None = None
+    historical_moves: HistoricalMoveStatsResponse | None = None
+    options_data_state: str = "not_collected"
+    options_snapshot_source: str | None = None
+    options_snapshot_age_label: str | None = None
 
 
 class OptionQuoteResponse(BaseModel):
@@ -454,6 +513,26 @@ class StrategyLabResponse(BaseModel):
     when real, earnings-anchored strategies are returned with nothing to
     disclaim."""
 
+    market_session: str
+    """Real US Eastern-time session right now -- pre_market/regular/
+    after_hours/closed (see analytics/market_session.py). Independent of
+    whether any chain exists; always set."""
+    data_state: str
+    """live/delayed/frozen/previous_session/market_closed/not_collected --
+    see models/enums.py::DataState and analytics/data_state.py. The single
+    honest answer to "how current is what's shown below"."""
+    snapshot_source: str | None = None
+    """Real source_provider of the chain shown (ibkr/alpha_vantage) --
+    None only when there's no chain at all."""
+    snapshot_timestamp: datetime | None = None
+    snapshot_age_minutes: int | None = None
+    snapshot_age_label: str | None = None
+    earnings_anchor_status: str
+    """confirmed (alpha_vantage-sourced date) / manual (owner override) /
+    estimated / unknown -- mirrors EarningsEstimateSnapshot.date_source
+    when a date is known, "unknown" when none is. Never presents a
+    manual/estimated date as provider-confirmed."""
+
 
 class EarningsThesisResponse(BaseModel):
     business_context: str
@@ -465,3 +544,30 @@ class EarningsThesisResponse(BaseModel):
     citations: list[CitationResponse]
     generated_at: datetime
     model: str
+
+
+class ProviderSettingsUpdateRequest(BaseModel):
+    """Every field optional -- only supplied fields are changed. Setting a
+    field to null explicitly is not the same as omitting it; use the
+    matching ``clear_*`` flag to reset a fallback back to the real env-var
+    default. Validated against the real known-provider lists server-side
+    (see services/provider_settings.py) -- an unrecognized provider name is
+    rejected, never silently accepted.
+    """
+
+    price_history_primary: str | None = None
+    price_history_fallback: str | None = None
+    clear_price_history_fallback: bool = False
+    options_primary: str | None = None
+    options_fallback: str | None = None
+    clear_options_fallback: bool = False
+    llm_provider: str | None = None
+    llm_model: str | None = None
+
+
+class TestConnectionResponse(BaseModel):
+    provider: str
+    domain: str
+    status: str
+    detail: str | None
+    tested_at: datetime
