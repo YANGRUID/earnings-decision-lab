@@ -48,6 +48,7 @@ from models.document_chunk import DocumentChunk
 from models.earnings_estimate_snapshot import EarningsEstimateSnapshot
 from models.earnings_event import EarningsEvent
 from models.earnings_result import EarningsResult
+from models.enums import FilingType
 from models.filing import Filing
 from models.options_snapshot import OptionsSnapshot
 from models.price_bar import PriceBar
@@ -216,7 +217,24 @@ def _price_history_last_updated(db: Session, ticker: str) -> datetime | None:
 
 
 def _sec_filings_last_updated(db: Session, company_id: int) -> datetime | None:
-    return db.query(func.max(Filing.retrieved_at)).filter(Filing.company_id == company_id).scalar()
+    """Freshness anchor for *this* step specifically -- scoped to the 10-K/
+    10-Q filings it actually fetches (see _prepare_sec_filings), not every
+    Filing row for the company. Without this scoping, real 8-K rows the
+    historical-earnings step separately persists (for earnings-date
+    matching, see ingestion.earnings_date_backfill) would falsely satisfy
+    this step's freshness check on a brand-new company and permanently
+    skip ever fetching its actual 10-K/10-Q filings -- a real bug caught
+    live preparing a genuinely new ticker (COST) during Phase 14
+    verification, not a hypothetical.
+    """
+    return (
+        db.query(func.max(Filing.retrieved_at))
+        .filter(
+            Filing.company_id == company_id,
+            Filing.filing_type.in_([FilingType.FORM_10K, FilingType.FORM_10Q]),
+        )
+        .scalar()
+    )
 
 
 def _earnings_estimates_last_updated(db: Session, company_id: int) -> datetime | None:

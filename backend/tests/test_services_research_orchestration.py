@@ -4,6 +4,7 @@ from decimal import Decimal
 from models.company import Company
 from models.document_chunk import DocumentChunk
 from models.earnings_estimate_snapshot import EarningsEstimateSnapshot
+from models.enums import FilingType
 from models.filing import Filing
 from models.options_snapshot import OptionsSnapshot
 from models.price_bar import PriceBar
@@ -498,4 +499,62 @@ def test_force_refresh_never_overwrites_prior_options_snapshots(db_session):
         .filter(OptionsSnapshot.company_id == company.id, OptionsSnapshot.strike == Decimal("10"))
         .count()
         == 4
+    )
+
+
+def test_sec_filings_step_ignores_fresh_8k_rows_from_the_earnings_date_step(db_session):
+    # Real bug caught live preparing a genuinely new ticker (COST): the
+    # historical-earnings step persists real, freshly-retrieved 8-K Filing
+    # rows (for earnings-date matching, see ingestion.earnings_date_backfill)
+    # as a side effect. Those must never satisfy the SEC_FILINGS step's own
+    # freshness check -- that step is responsible for 10-K/10-Q filings
+    # specifically, and a company with only fresh 8-Ks has never actually
+    # had its 10-K/10-Q filings fetched at all.
+    company = Company(ticker="ZZFILE", name="ZZ Filing Co", cik="0009999907")
+    db_session.add(company)
+    db_session.flush()
+    db_session.add(
+        Filing(
+            company_id=company.id,
+            filing_type=FilingType.FORM_8K,
+            filing_date=date(2026, 5, 20),
+            accession_number="0000000000-26-000001",
+            cik="0009999907",
+            source_url="https://example.com/8k.htm",
+            title="ZZFILE 8-K",
+            retrieved_at=NOW,  # fresh, but the wrong filing type
+        )
+    )
+    db_session.flush()
+
+    edgar = _FakeEdgar(
+        cik="0009999907",
+        filings=[
+            FilingMetadata(
+                cik="0009999907",
+                company_name="ZZ Filing Co",
+                filing_type="10-K",
+                filing_date=date(2026, 3, 1),
+                accession_number="0000000000-26-000002",
+                primary_document="doc.htm",
+                source_url="https://example.com/10k.htm",
+                source_provider="sec_edgar",
+                retrieved_at=datetime.now(UTC),
+            )
+        ],
+    )
+    providers = _providers(edgar=edgar)
+
+    job = prepare_company_research(db_session, "zzfile", providers, now=NOW)
+
+    assert job.status == JobStatus.COMPLETED
+    steps_by_name = {s["step"]: s for s in job.steps}
+    sec_filings_step = steps_by_name[PreparationStep.SEC_FILINGS.value]
+    assert "already fresh" not in sec_filings_step["detail"]
+    assert "1 recent 10-K/10-Q" in sec_filings_step["detail"]
+    assert (
+        db_session.query(Filing)
+        .filter(Filing.company_id == company.id, Filing.filing_type == FilingType.FORM_10K)
+        .count()
+        == 1
     )

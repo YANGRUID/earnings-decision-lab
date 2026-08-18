@@ -37,26 +37,42 @@ from services.market_expectations import get_latest_earnings_estimate
 from services.options_analytics import get_latest_volatility_snapshot
 from services.strategy_generation import generate_strategy_candidates
 
-# Substring match, case-insensitive -- deliberately broad rather than
-# precise: a false positive here just costs one extra LLM round-trip
-# (see _generate_and_enforce), while a false negative would let
-# profit-guarantee language reach a real user. See module docstring.
+# Substring match, case-insensitive. Deliberately specific collocations
+# ("guaranteed profit") rather than bare words ("guaranteed", "risk-free",
+# "no risk") -- a real live check against DeepSeek found that the bare-word
+# version flags exactly the *responsible* disclaimer language this project
+# wants ("no outcome is guaranteed", "this is not risk-free"), and
+# "risk-free" alone is also a standard finance term (the risk-free rate)
+# unrelated to promising a risk-free trade. Every phrase below asserts a
+# positive, certain, profitable outcome -- something that cannot appear in
+# a responsibly-hedged sentence, so a match here is never a false positive
+# in the other direction.
 PROHIBITED_CERTAINTY_PHRASES = (
-    "guaranteed",
-    "guarantee",
-    "risk-free",
-    "riskfree",
+    "guaranteed profit",
+    "guaranteed return",
+    "guaranteed gain",
+    "guaranteed win",
+    "guaranteed outcome",
+    "guaranteed to profit",
+    "guaranteed to succeed",
+    "guaranteed to win",
     "sure thing",
     "certain profit",
-    "definitely will",
+    "definitely will profit",
     "cannot lose",
     "can't lose",
-    "no risk",
-    "100%",
+    "risk-free profit",
+    "risk-free return",
+    "risk-free gain",
+    "no risk of loss",
+    "eliminates all risk",
+    "100% profit",
+    "100% return",
+    "100% win",
     "surefire",
     "sure-fire",
     "always profit",
-    "will definitely",
+    "always wins",
 )
 
 
