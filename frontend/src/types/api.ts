@@ -469,6 +469,8 @@ export interface OptionsMarketState {
     | "stale_research_only"
     | "contracts_only"
     | "unavailable";
+  underlying_price: string | null;
+  underlying_timestamp: string | null;
 }
 
 // The single, company-level, always-current read for "what's on record

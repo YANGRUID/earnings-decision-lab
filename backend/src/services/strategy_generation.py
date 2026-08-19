@@ -65,9 +65,17 @@ def generate_strategy_candidates(
     if expiration is None:
         return []
 
-    underlying_price = _latest_close_price_on_or_before(
-        db, company.ticker, snapshot_timestamp.date()
-    )
+    # A reconstructed close snapshot carries its own real, same-window
+    # underlying price on every quote (Phase 14.13 Part 9) -- using that
+    # keeps strategy candidates coherent with the options data they're
+    # actually built from, rather than silently mixing yesterday's
+    # reconstructed premiums with whatever the latest daily close bar
+    # happens to be.
+    underlying_price = quotes[0].underlying_price
+    if underlying_price is None:
+        underlying_price = _latest_close_price_on_or_before(
+            db, company.ticker, snapshot_timestamp.date()
+        )
     if underlying_price is None:
         return []
 

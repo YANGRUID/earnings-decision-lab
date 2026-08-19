@@ -510,6 +510,8 @@ class OptionsMarketStateResponse(BaseModel):
     is_fallback_snapshot: bool
     snapshot_purpose: str | None
     actionability: str
+    underlying_price: Decimal | None
+    underlying_timestamp: datetime | None
 
 
 class ResearchOverviewResponse(BaseModel):

@@ -32,7 +32,11 @@ function availability(has: boolean): string {
 function pricingSnapshotLabel(market: OptionsMarketState): string {
   if (market.actionability === "actionable_current") return "Current";
   if (market.actionability === "actionable_previous_session") {
-    return market.snapshot_purpose === "close" ? "Previous close" : "Previous session";
+    if (market.snapshot_purpose === "close") return "Previous close";
+    if (market.snapshot_purpose === "reconstructed_close") {
+      return "Previous close (reconstructed from IBKR historical data)";
+    }
+    return "Previous session";
   }
   if (market.actionability === "stale_research_only") return "Stale (previous session)";
   return "Not currently priceable";

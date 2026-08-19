@@ -54,10 +54,11 @@ from services.llm.errors import LLMError
 from services.llm.types import ChatMessage
 from services.market_expectations import get_latest_earnings_estimate
 from services.options_analytics import (
+    compute_and_persist_volatility_snapshot,
     compute_options_market_state,
     get_latest_volatility_snapshot,
-    select_pricing_snapshot,
 )
+from services.options_reconstruction import resolve_best_actionable_option_market
 from services.provider_settings import get_strategy_risk_preference
 from services.research_history import (
     ThesisProvenance,
@@ -361,10 +362,21 @@ def generate_decision(
 
     estimate = get_latest_earnings_estimate(db, company.id)
     volatility = get_latest_volatility_snapshot(db, company.id)
-    selection = select_pricing_snapshot(db, company)
-    market_state = compute_options_market_state(
-        selection.quotes, datetime.now(UTC), volatility, selection
+    now = datetime.now(UTC)
+    earnings_date_for_resolution = estimate.estimated_report_date if estimate is not None else None
+    resolution = resolve_best_actionable_option_market(
+        db, company, now, earnings_date_for_resolution
     )
+    selection = resolution.selection
+    if selection.quotes and (
+        volatility is None or volatility.snapshot_timestamp != selection.snapshot_timestamp
+    ):
+        computed = compute_and_persist_volatility_snapshot(
+            db, company, earnings_date_for_resolution, selection=selection
+        )
+        if computed is not None:
+            volatility = computed
+    market_state = compute_options_market_state(selection.quotes, now, volatility, selection)
 
     if direction_override is not None and volatility_view_override is not None:
         view = DecisionView(
@@ -423,13 +435,22 @@ def generate_decision(
         candidates = filter_candidates_by_risk_preference(candidates, risk_preference)
 
     implied_move_pct = volatility.implied_move_pct if volatility is not None else None
+    # market_state.has_bid_ask means "at least one contract has a bid, an
+    # ask, OR a last price" (see OptionsMarketState) -- real for gating
+    # "is there any usable price at all", but wrong for a liquidity/quote-
+    # quality claim: a reconstructed chain (Phase 14.13) can be 100%
+    # last-price-only with zero real bid/ask and would still read True
+    # there, wrongly scoring full Liquidity credit and claiming "Real
+    # bid/ask quotes were available". bid_ask_contract_count counts
+    # contracts with an actual two-sided market (both bid AND ask).
+    has_real_bid_ask = market_state.bid_ask_contract_count > 0
     ranked_all = rank_candidates_for_view(
         candidates,
         direction=direction,
         volatility_view=volatility_view,
         implied_move_pct=implied_move_pct,
         historical_move_pcts=historical_moves,
-        has_bid_ask=market_state.has_bid_ask,
+        has_bid_ask=has_real_bid_ask,
         market_data_quality=market_state.market_data_quality,
     )
 
@@ -454,7 +475,7 @@ def generate_decision(
             r,
             direction=direction,
             implied_move_pct=implied_move_pct,
-            has_bid_ask=market_state.has_bid_ask,
+            has_bid_ask=has_real_bid_ask,
         )
         risks = build_risk_bullets(r)
         return ScoredStrategy(ranked=r, why=why, risks=risks, budget_fit=budget_fits.get(r.rank))

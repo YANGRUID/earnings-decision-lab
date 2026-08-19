@@ -154,6 +154,16 @@ class OptionQuote(ProvenancedModel):
     # response has no opinion on this, since it's a research-collection
     # concept, not something the market data itself carries.
     anchor: str | None = None
+    # Phase 14.13: only set on a quote that came from an IBKR historical
+    # close reconstruction (see services/options_reconstruction.py) -- the
+    # underlying's own real price/timestamp from that SAME close-window
+    # reconstruction, never today's live stock price. None for every
+    # normal live/current quote, which instead sources the underlying
+    # separately via PriceBar (_latest_close_price_on_or_before) --
+    # callers that need underlying coherence check this field first and
+    # only fall back to that daily-bar lookup when it's absent.
+    underlying_price: Decimal | None = None
+    underlying_timestamp: datetime | None = None
 
 
 class PortfolioPosition(ProvenancedModel):

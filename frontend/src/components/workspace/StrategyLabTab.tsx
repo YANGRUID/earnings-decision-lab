@@ -19,6 +19,20 @@ import type {
 
 const STALE_DATA_STATES = new Set(["stale", "previous_session"]);
 
+const ET_TIME_FORMAT = new Intl.DateTimeFormat("en-US", {
+  timeZone: "America/New_York",
+  month: "short",
+  day: "numeric",
+  hour: "2-digit",
+  minute: "2-digit",
+  hour12: false,
+});
+
+function formatEtTimestamp(iso: string | null): string | null {
+  if (!iso) return null;
+  return `${ET_TIME_FORMAT.format(new Date(iso))} ET`;
+}
+
 const EARNINGS_ANCHOR_LABELS: Record<string, string> = {
   confirmed: "Confirmed by provider",
   estimated: "Estimated",
@@ -89,7 +103,31 @@ function StrategyLabStateBar({ lab }: { lab: StrategyLab }) {
           interest on {formatPercent(lab.options_market.oi_coverage, 0)}
         </div>
       )}
-      {isStale && (
+      {lab.options_market.snapshot_purpose === "reconstructed_close" && (
+        <div className="notice" style={{ marginTop: 12, marginBottom: 0 }}>
+          <strong>Options: reconstructed from IBKR historical market data.</strong> The current
+          chain had no priceable quotes, so the previous session's close was rebuilt from real
+          IBKR historical bars (last-price only -- no historical bid/ask is exposed by this
+          endpoint) rather than reusing an old intraday snapshot.
+          {lab.snapshot_age_label && ` Reconstructed close is ${lab.snapshot_age_label} old.`}
+          <div className="grid grid-2" style={{ gap: 10, marginTop: 8 }}>
+            <div className="stat">
+              <span className="stat-label">Underlying as of</span>
+              <span className="stat-value small mono">
+                {formatEtTimestamp(lab.options_market.underlying_timestamp) ?? "—"}
+                {lab.underlying_price ? ` · ${formatMoney(lab.underlying_price)}` : ""}
+              </span>
+            </div>
+            <div className="stat">
+              <span className="stat-label">Options as of</span>
+              <span className="stat-value small mono">
+                {formatEtTimestamp(lab.snapshot_timestamp) ?? "—"}
+              </span>
+            </div>
+          </div>
+        </div>
+      )}
+      {isStale && lab.options_market.snapshot_purpose !== "reconstructed_close" && (
         <div className="notice" style={{ marginTop: 12, marginBottom: 0 }}>
           <strong>
             Using {lab.snapshot_source ? providerLabel(lab.snapshot_source) : "a"}{" "}

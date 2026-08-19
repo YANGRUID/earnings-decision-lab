@@ -170,6 +170,21 @@ class OptionsSnapshotPurpose(enum.StrEnum):
     #: Captured specifically anchored to an upcoming earnings event (T-14/
     #: T-7/T-3/T-1) by the forward-collection scheduler.
     EARNINGS = "earnings"
+    #: A live snapshot that happened to land inside the configured close
+    #: window (see services/options_reconstruction.py's CLOSE_WINDOW) but
+    #: wasn't taken by the deliberate capture_close_snapshot.py script --
+    #: ranks below CLOSE but above INTRADAY when selecting the best
+    #: available previous-session snapshot (Phase 14.13).
+    NEAR_CLOSE = "near_close"
+    #: Not captured live at all -- rebuilt after the fact from IBKR
+    #: historical bars because the regular session ended with no adequate
+    #: close/near-close snapshot on record. See
+    #: services/options_reconstruction.py. Ranks below a genuine CLOSE
+    #: capture (which reflects the real live NBBO at the time) but above
+    #: NEAR_CLOSE/INTRADAY snapshots that are further from 16:00 ET, since
+    #: it specifically targets the close window -- never conflated with a
+    #: live capture; reconstruction_source distinguishes it further.
+    RECONSTRUCTED_CLOSE = "reconstructed_close"
 
 
 class StrategyRiskPreference(enum.StrEnum):

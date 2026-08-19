@@ -212,6 +212,69 @@ class IBKROptionsProvider(OptionsDataProvider):
 
         return self._fetch_snapshots(ticker, contracts, target_expiration, as_of)
 
+    def resolve_expiration_for_reconstruction(
+        self, ticker: str, reference_date: date, earnings_date: date | None
+    ) -> date | None:
+        """Determines which expiration a historical-close reconstruction
+        should target, reusing the exact same rule live collection uses
+        (select_expiration_after / select_nearest_listed_expiration) --
+        never a separate, possibly-disagreeing rule.
+
+        Real, documented limitation: IBKR's Client Portal API has no
+        "what was listed as of a past date" endpoint, so this necessarily
+        queries *today's currently listed* expirations/strikes, not
+        target_session_date's own -- an honest approximation, accurate for
+        reconstructing yesterday's (or a few sessions ago) close, since
+        listed expirations don't change day to day except by rolling off
+        after they themselves expire.
+        """
+        self._client.ensure_authenticated()
+        conid, available_months = self._resolve_underlying(ticker)
+        underlying_price, _quality = self._underlying_quote(conid)
+        if underlying_price is None:
+            return None
+        # _resolve_target_expiration's own reference_date argument doubles
+        # as "the earnings date" when earnings_anchored=True (it's fed
+        # straight into select_expiration_after) -- so the actual earnings
+        # date must be passed there, not the reconstruction's
+        # target-session date, when one is known.
+        select_against = earnings_date if earnings_date is not None else reference_date
+        target, _month = self._resolve_target_expiration(
+            conid,
+            available_months,
+            underlying_price,
+            select_against,
+            earnings_anchored=earnings_date is not None,
+        )
+        return target
+
+    def discover_contracts_for_expiration(
+        self, ticker: str, target_expiration: date
+    ) -> tuple[int, Decimal | None, list[tuple[Decimal, str, int]]]:
+        """Public entrypoint for callers that already know which expiration
+        they want (e.g. services/options_reconstruction.py, rebuilding a
+        past session's close where the live-quote-driven expiration
+        selection above doesn't apply) -- reuses the exact same
+        underlying/strikes/contract-resolution flow as get_option_chain
+        rather than duplicating it. Returns (underlying_conid,
+        current_underlying_price_or_None, [(strike, right, option_conid)]).
+        The underlying price returned here is IBKR's *current* live quote
+        (used only to center the strike window) -- never confused with a
+        reconstructed historical underlying price, which callers compute
+        separately from historical bars.
+        """
+        self._client.ensure_authenticated()
+        conid, _available_months = self._resolve_underlying(ticker)
+        underlying_price, _quality = self._underlying_quote(conid)
+        if underlying_price is None:
+            return conid, None, []
+        month = _month_code(target_expiration)
+        strikes = self._strikes_near_atm(conid, month, underlying_price)
+        if not strikes:
+            return conid, underlying_price, []
+        contracts = self._resolve_contracts(conid, month, target_expiration, strikes)
+        return conid, underlying_price, contracts
+
     def _resolve_underlying(self, ticker: str) -> tuple[int, list[str]]:
         """Deterministic rule, verified live for NVDA during Phase 13: the
         first secdef/search result whose symbol matches exactly and that

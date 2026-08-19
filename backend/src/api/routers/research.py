@@ -79,11 +79,12 @@ from services.historical_moves import get_historical_move_pcts, get_historical_m
 from services.llm.errors import LLMError
 from services.market_expectations import get_latest_earnings_estimate, set_manual_earnings_date
 from services.options_analytics import (
+    compute_and_persist_volatility_snapshot,
     compute_options_market_state,
     get_latest_close_price,
     get_latest_volatility_snapshot,
-    select_pricing_snapshot,
 )
+from services.options_reconstruction import resolve_best_actionable_option_market
 from services.research_history import (
     ThesisProvenance,
     delete_research_query,
@@ -338,9 +339,31 @@ def research_overview(symbol: str, db: DbSession) -> ResearchOverviewResponse:
     latest_estimate = get_latest_earnings_estimate(db, company.id)
     latest_volatility = get_latest_volatility_snapshot(db, company.id)
     move_stats = get_historical_move_stats(db, company.id)
-    selection = select_pricing_snapshot(db, company)
+    now = datetime.now(UTC)
+    earnings_date_for_resolution = (
+        latest_estimate.estimated_report_date if latest_estimate is not None else None
+    )
+    resolution = resolve_best_actionable_option_market(
+        db, company, now, earnings_date_for_resolution
+    )
+    selection = resolution.selection
+    volatility_is_stale = (
+        latest_volatility is None
+        or latest_volatility.snapshot_timestamp != selection.snapshot_timestamp
+    )
+    if selection.quotes and volatility_is_stale:
+        # The selected snapshot (e.g. freshly reconstructed, or a
+        # persisted close/near-close snapshot that never had its implied
+        # move computed) has no matching VolatilitySnapshot on record yet
+        # -- compute and persist one now rather than showing stale/absent
+        # implied-move data next to genuinely usable pricing.
+        computed = compute_and_persist_volatility_snapshot(
+            db, company, earnings_date_for_resolution, selection=selection
+        )
+        if computed is not None:
+            latest_volatility = computed
     options_state = compute_options_market_state(
-        selection.quotes, datetime.now(UTC), latest_volatility, selection
+        selection.quotes, now, latest_volatility, selection
     )
 
     return ResearchOverviewResponse(
@@ -458,15 +481,29 @@ def get_strategy_lab(
         raise NotFoundError(f"no research on record yet for {ticker!r}")
 
     now = datetime.now(UTC)
-    selection = select_pricing_snapshot(db, company)
+    estimate_for_anchor = get_latest_earnings_estimate(db, company.id)
+    earnings_date_for_resolution = (
+        estimate_for_anchor.estimated_report_date if estimate_for_anchor is not None else None
+    )
+    resolution = resolve_best_actionable_option_market(
+        db, company, now, earnings_date_for_resolution
+    )
+    selection = resolution.selection
     raw_chain = selection.quotes
     chain_response = [_option_quote_response(q) for q in raw_chain]
     volatility = get_latest_volatility_snapshot(db, company.id)
+    if raw_chain and (
+        volatility is None or volatility.snapshot_timestamp != selection.snapshot_timestamp
+    ):
+        computed = compute_and_persist_volatility_snapshot(
+            db, company, earnings_date_for_resolution, selection=selection
+        )
+        if computed is not None:
+            volatility = computed
 
     options_state = compute_options_market_state(raw_chain, now, volatility, selection)
     market_session = get_market_session(now)
 
-    estimate_for_anchor = get_latest_earnings_estimate(db, company.id)
     if estimate_for_anchor is None or estimate_for_anchor.estimated_report_date is None:
         earnings_anchor_status = "unknown"
     else:

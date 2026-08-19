@@ -247,11 +247,16 @@ def _to_option_quote(row: OptionsSnapshot, ticker: str) -> OptionQuote:
         anchor=row.anchor.value if row.anchor else None,
         source_provider=row.source_provider,
         retrieved_at=row.retrieved_at,
+        underlying_price=row.underlying_price,
+        underlying_timestamp=row.underlying_timestamp,
     )
 
 
 def compute_and_persist_volatility_snapshot(
-    db: Session, company: Company, earnings_date: date | None
+    db: Session,
+    company: Company,
+    earnings_date: date | None,
+    selection: "PricingSnapshotSelection | None" = None,
 ) -> VolatilitySnapshot | None:
     """Computes implied move + ATM IV from the most recently ingested
     options-chain snapshot for ``company``. When ``earnings_date`` is known,
@@ -262,11 +267,18 @@ def compute_and_persist_volatility_snapshot(
     VolatilitySnapshot row, labeled with which of the two this was.
 
     Uses the canonical snapshot-selection policy (select_pricing_snapshot,
-    Phase 14.10 Part D): when the current snapshot has no priceable
-    contract, falls back to the most recent stored snapshot that IS
-    priceable rather than giving up -- this is what lets implied move stay
-    computable through a frozen/closed-market current chain, as long as
-    some real prior snapshot for this company has usable pricing.
+    Phase 14.10 Part D) by default: when the current snapshot has no
+    priceable contract, falls back to the most recent stored snapshot that
+    IS priceable rather than giving up -- this is what lets implied move
+    stay computable through a frozen/closed-market current chain, as long
+    as some real prior snapshot for this company has usable pricing.
+
+    ``selection`` lets a caller that already resolved the best available
+    market state via services/options_reconstruction.py's
+    resolve_best_actionable_option_market pass it straight through instead
+    of this function re-deriving its own (older, reconstruction-unaware)
+    selection -- required for a reconstructed close snapshot's implied
+    move to ever get computed at all.
 
     Returns None -- never a fabricated result -- when: no options quotes
     have been ingested for this company yet (in any snapshot), no matching
@@ -274,7 +286,8 @@ def compute_and_persist_volatility_snapshot(
     exists at the chosen expiration, or no price data exists to determine
     the underlying price as of the selected snapshot.
     """
-    selection = select_pricing_snapshot(db, company)
+    if selection is None:
+        selection = select_pricing_snapshot(db, company)
     if not selection.quotes or selection.snapshot_timestamp is None:
         return None
 
@@ -287,9 +300,17 @@ def compute_and_persist_volatility_snapshot(
     if expiration is None:
         return None
 
-    underlying_price = _latest_close_price_on_or_before(
-        db, company.ticker, snapshot_timestamp.date()
-    )
+    # A reconstructed close snapshot carries its own real, same-window
+    # underlying price on every quote (Phase 14.13 Part 9) -- using that
+    # instead of the daily PriceBar lookup is what keeps the implied move
+    # coherent with the options data it's actually computed from, rather
+    # than silently mixing yesterday's reconstructed premiums with
+    # whatever the latest daily close bar happens to be.
+    underlying_price = quotes[0].underlying_price
+    if underlying_price is None:
+        underlying_price = _latest_close_price_on_or_before(
+            db, company.ticker, snapshot_timestamp.date()
+        )
     if underlying_price is None:
         return None
 
@@ -624,6 +645,14 @@ class OptionsMarketState:
     # "actionable_current"/"actionable_previous_session" may back real
     # strategy generation -- see compute_actionability's docstring.
     actionability: ActionabilityStatus
+    # Phase 14.13: only set when raw_chain came from an IBKR historical
+    # close reconstruction (services/options_reconstruction.py) -- the
+    # underlying's own real price/timestamp from that SAME close-window
+    # reconstruction, so the UI can show "Underlying as of" next to
+    # "Options as of" and never imply today's live stock price was used
+    # next to yesterday's reconstructed premiums.
+    underlying_price: Decimal | None
+    underlying_timestamp: datetime | None
 
 
 def compute_options_market_state(
@@ -676,6 +705,8 @@ def compute_options_market_state(
             is_fallback_snapshot=False,
             snapshot_purpose=None,
             actionability="unavailable",
+            underlying_price=None,
+            underlying_timestamp=None,
         )
 
     snapshot_timestamp = raw_chain[0].snapshot_timestamp
@@ -818,6 +849,8 @@ def compute_options_market_state(
         is_fallback_snapshot=is_fallback_snapshot,
         snapshot_purpose=snapshot_purpose,
         actionability=actionability,
+        underlying_price=raw_chain[0].underlying_price,
+        underlying_timestamp=raw_chain[0].underlying_timestamp,
     )
 
 

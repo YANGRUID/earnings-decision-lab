@@ -72,8 +72,8 @@ def build_why_bullets(
         bullets.append("Real bid/ask quotes were available for the legs used.")
     else:
         bullets.append(
-            "Real bid/ask quotes were not available for these legs -- prices used are mid/"
-            "estimated, not tradable quotes."
+            "Real bid/ask quotes were not available for these legs -- prices used are "
+            "derived (mid-price or last trade), not a live tradable quote."
         )
 
     return bullets
