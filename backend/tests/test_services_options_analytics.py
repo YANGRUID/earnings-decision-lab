@@ -784,7 +784,7 @@ class TestComputeOptionsMarketState:
         state = compute_options_market_state(chain, as_of, None)
 
         assert state.data_state == DataState.PREVIOUS_SESSION
-        assert "previous session" in state.reason
+        assert "previous trading session" in state.reason
 
     def test_chain_with_no_priceable_quotes_reports_bid_ask_unavailable(self):
         # Real AVGO bug: a real chain with IV/Greeks but no bid/ask/last on
@@ -1036,9 +1036,55 @@ class TestComputeActionability:
         as_of = datetime.now(UTC)
         assert compute_actionability("contracts_only", as_of, as_of) == "contracts_only"
 
-    def test_current_priceable_is_always_actionable_current(self):
-        as_of = datetime.now(UTC)
-        assert compute_actionability("current_priceable", as_of, as_of) == "actionable_current"
+    def test_current_priceable_from_todays_still_open_session_is_actionable_current(self):
+        # Wednesday 11:00 ET, snapshot taken earlier the same still-open
+        # session (market opened 09:30 ET) -- genuinely live/current.
+        as_of = datetime(2026, 3, 18, 11, 0, tzinfo=EASTERN)
+        snapshot_ts = datetime(2026, 3, 18, 9, 35, tzinfo=EASTERN)
+        assert (
+            compute_actionability("current_priceable", snapshot_ts, as_of) == "actionable_current"
+        )
+
+    def test_current_priceable_that_is_actually_yesterdays_close_is_not_actionable_current(self):
+        # Regression for a real live bug (MU, 2026-08-19): the latest
+        # *collected* snapshot being priceable does not mean it's actually
+        # from today -- nothing may have re-collected since yesterday's
+        # close. That must be labeled/gated exactly like the explicit
+        # previous_priceable fallback path, never silently as "current".
+        as_of = datetime(2026, 3, 18, 11, 0, tzinfo=EASTERN)
+        snapshot_ts = datetime(2026, 3, 17, 15, 58, tzinfo=EASTERN)
+        assert (
+            compute_actionability("current_priceable", snapshot_ts, as_of)
+            == "actionable_previous_session"
+        )
+
+    def test_current_priceable_two_sessions_old_is_stale(self):
+        as_of = datetime(2026, 3, 18, 11, 0, tzinfo=EASTERN)
+        snapshot_ts = datetime(2026, 3, 16, 15, 58, tzinfo=EASTERN)  # Monday -- 2 sessions back
+        assert (
+            compute_actionability("current_priceable", snapshot_ts, as_of) == "stale_research_only"
+        )
+
+    def test_current_priceable_captured_near_todays_close_becomes_previous_session_after_close(
+        self,
+    ):
+        # A near-close capture (e.g. 15:58 ET) is genuinely live while the
+        # session is still open, but once viewed after today's own 16:00
+        # ET close it must read as "previous session", not "current" -- the
+        # market is shut, nothing is live anymore, matching
+        # previous_trading_session_date's own "today counts as previous
+        # once today's close has passed" rule.
+        snapshot_ts = datetime(2026, 3, 18, 15, 58, tzinfo=EASTERN)
+        still_open = datetime(2026, 3, 18, 15, 59, tzinfo=EASTERN)
+        assert (
+            compute_actionability("current_priceable", snapshot_ts, still_open)
+            == "actionable_current"
+        )
+        after_close = datetime(2026, 3, 18, 17, 0, tzinfo=EASTERN)
+        assert (
+            compute_actionability("current_priceable", snapshot_ts, after_close)
+            == "actionable_previous_session"
+        )
 
     def test_previous_priceable_missing_timestamp_is_stale(self):
         # Defensive-only path -- select_pricing_snapshot never actually

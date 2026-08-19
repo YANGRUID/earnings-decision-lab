@@ -580,6 +580,12 @@ class ScenarioPnlResponse(BaseModel):
 
 
 class RankedStrategyResponse(BaseModel):
+    """Strategy Lab is market-focused: real candidates, pricing, and
+    payoff analysis only -- never budget sizing (Phase 14.12). Trade
+    Budget / Max Risk / position sizing live exclusively in AI Decision,
+    which is the only place a personal risk tolerance and dollar amount
+    belong."""
+
     rank: int
     category: str
     legs: list[OptionLegResponse]
@@ -588,7 +594,6 @@ class RankedStrategyResponse(BaseModel):
     explanation: str
     scenario: ScenarioPnlResponse | None
     move_compatibility: MoveCompatibilityResponse | None
-    budget_fit: dict | None = None
 
 
 class StrategyLabResponse(BaseModel):
@@ -752,6 +757,7 @@ class AIDecisionVersionResponse(BaseModel):
     recommended_quantity: int | None
     recommended_capital_at_risk: Decimal | None
     budget_infeasible_minimum: Decimal | None
+    no_market_data_reason: str | None
     status: str
     is_final: bool
     earnings_event_id: int | None

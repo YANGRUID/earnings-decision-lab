@@ -460,7 +460,18 @@ def _prepare_options_chain(
     anchor_note = (
         f"earnings-anchored to {earnings_date}" if earnings_date is not None else "general/current"
     )
-    return StepStatus.DONE, f"{len(snapshots)} option quotes ({anchor_note})"
+    priceable_count = sum(
+        1 for s in snapshots if s.bid is not None or s.ask is not None or s.last_price is not None
+    )
+    # Phase 14.12: contract *discovery* succeeding is not the same claim as
+    # pricing being usable -- a step that reports "22 option quotes" reads
+    # as an unqualified success even when zero of them have a bid/ask/last
+    # (real, observed: pre-market IBKR frozen quotes). Always state both
+    # numbers so this step can never be mistaken for "strategies are ready."
+    return (
+        StepStatus.DONE,
+        f"{len(snapshots)} contracts, {priceable_count} priceable ({anchor_note})",
+    )
 
 
 def _prepare_earnings_analysis(db: Session, company: Company) -> _StepResult:

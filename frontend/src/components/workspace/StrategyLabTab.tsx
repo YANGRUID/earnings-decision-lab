@@ -180,43 +180,6 @@ function StrategyCard({ strategy, ticker }: { strategy: RankedStrategy; ticker: 
         </p>
       )}
 
-      {strategy.budget_fit && !strategy.budget_fit.feasible && (
-        <div className="notice" style={{ marginTop: 10, marginBottom: 0 }}>
-          <strong>Not feasible for {formatMoney(strategy.budget_fit.trade_budget, 0)} budget.</strong>{" "}
-          {strategy.budget_fit.minimum_required
-            ? `Minimum defined risk is ${formatMoney(strategy.budget_fit.minimum_required, 0)} per contract.`
-            : "This structure has no computable defined risk."}
-        </div>
-      )}
-      {strategy.budget_fit && strategy.budget_fit.feasible && (
-        <div className="grid grid-4" style={{ gap: 10, marginTop: 10 }}>
-          <div className="stat">
-            <span className="stat-label">Structures ({formatMoney(strategy.budget_fit.trade_budget, 0)} budget)</span>
-            <span className="stat-value small">{strategy.budget_fit.max_feasible_quantity}</span>
-          </div>
-          <div className="stat">
-            <span className="stat-label">Total option contracts</span>
-            <span className="stat-value small">
-              {strategy.budget_fit.max_feasible_quantity *
-                strategy.legs.reduce((sum, leg) => sum + leg.quantity, 0)}
-            </span>
-          </div>
-          <div className="stat">
-            <span className="stat-label">Max loss (position)</span>
-            <span className="stat-value small">
-              {strategy.budget_fit.total_max_loss ? formatMoney(strategy.budget_fit.total_max_loss, 0) : "—"}
-            </span>
-          </div>
-          <div className="stat">
-            <span className="stat-label">Remaining budget</span>
-            <span className="stat-value small">
-              {strategy.budget_fit.remaining_budget
-                ? formatMoney(strategy.budget_fit.remaining_budget, 0)
-                : "—"}
-            </span>
-          </div>
-        </div>
-      )}
     </div>
   );
 }
@@ -418,40 +381,15 @@ function ManualStrategyCalculator() {
 }
 
 export function StrategyLabTab({ ticker }: { ticker: string }) {
-  const [tradeBudget, setTradeBudget] = useState("");
-  const lab = useAsync(
-    () => api.getStrategyLab(ticker, tradeBudget.trim() ? { budget: tradeBudget.trim() } : {}),
-    [ticker, tradeBudget]
-  );
+  const lab = useAsync(() => api.getStrategyLab(ticker), [ticker]);
 
   if (lab.loading && !lab.data) return <LoadingState label="Loading strategy candidates…" />;
   if (lab.error && !lab.data) return <ErrorState message={lab.error} />;
   if (!lab.data) return null;
 
-  const isStale = lab.data.options_market.actionability === "stale_research_only";
-
   return (
     <div>
       <StrategyLabStateBar lab={lab.data} />
-
-      <div className="card" style={{ maxWidth: 280 }}>
-        <div className="field" style={{ marginBottom: 0 }}>
-          <label>Trade budget (optional)</label>
-          <input
-            type="number"
-            min="0"
-            placeholder="e.g. 500"
-            value={tradeBudget}
-            onChange={(e) => setTradeBudget(e.target.value)}
-            disabled={isStale}
-          />
-          {isStale && (
-            <span className="text-sm text-faint">
-              Disabled — market data is stale, so no actionable strategy can be sized.
-            </span>
-          )}
-        </div>
-      </div>
 
       {lab.data.strategies.length === 0 ? (
         <div className="card">

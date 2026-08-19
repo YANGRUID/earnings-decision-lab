@@ -1,11 +1,10 @@
 import logging
 from datetime import UTC, datetime
-from decimal import Decimal
 from typing import TypedDict
 
 from fastapi import APIRouter, BackgroundTasks, Query, Request
 
-from analytics.decision.budget import compute_budget_fit, validate_risk_cap_inputs
+from analytics.decision.budget import validate_risk_cap_inputs
 from analytics.market_session import get_market_session
 from analytics.options.move_compatibility import assess_move_compatibility
 from analytics.options.strategy_ranking import rank_strategy_candidates
@@ -62,7 +61,6 @@ from schemas.api import (
 )
 from services.decision_engine import (
     DecisionGenerationError,
-    budget_fit_to_dict,
     generate_decision,
 )
 from services.decision_history import (
@@ -428,14 +426,21 @@ def _option_quote_response(quote: OptionQuote) -> OptionQuoteResponse:
 def get_strategy_lab(
     symbol: str,
     db: DbSession,
-    budget: Decimal | None = None,
-    risk_cap: Decimal | None = None,
-    risk_cap_is_percent: bool = False,
 ) -> StrategyLabResponse:
     """Real, ranked strategy candidates built from the most recently
     ingested real options-chain snapshot -- see
     services/strategy_generation.py and
     analytics/options/strategy_ranking.py.
+
+    Market-focused only (Phase 14.12): real chain, expiration, strikes,
+    premiums, liquidity, IV/Greeks, payoff, and historical-move
+    compatibility. Deliberately carries no budget/risk-cap parameters --
+    "what strategies exist in the real market" is a different question
+    from "what should I trade given my budget," and mixing them here
+    previously produced a "Not feasible for $X budget" message on a chain
+    that had no priceable candidates at all, conflating two genuinely
+    different reasons a candidate might be absent. Budget-aware sizing
+    lives exclusively in AI Decision (services/decision_engine.py).
 
     Never blocked on a known upcoming earnings date: when one is on
     record, the snapshot is earnings-anchored; when it isn't, collection
@@ -451,11 +456,6 @@ def get_strategy_lab(
     company = db.query(Company).filter(Company.ticker == ticker).one_or_none()
     if company is None:
         raise NotFoundError(f"no research on record yet for {ticker!r}")
-
-    try:
-        validate_risk_cap_inputs(risk_cap, risk_cap_is_percent)
-    except ValueError as exc:
-        raise InvalidRequestError(str(exc)) from exc
 
     now = datetime.now(UTC)
     selection = select_pricing_snapshot(db, company)
@@ -553,16 +553,6 @@ def get_strategy_lab(
     strategies = []
     for r in ranked:
         compatibility = assess_move_compatibility(r.candidate, historical_moves)
-        budget_fit = (
-            compute_budget_fit(
-                r.candidate,
-                trade_budget=budget,
-                risk_cap=risk_cap,
-                risk_cap_is_percent=risk_cap_is_percent,
-            )
-            if budget is not None
-            else None
-        )
         strategies.append(
             RankedStrategyResponse(
                 rank=r.rank,
@@ -605,7 +595,6 @@ def get_strategy_lab(
                 )
                 if compatibility
                 else None,
-                budget_fit=budget_fit_to_dict(budget_fit),
             )
         )
 

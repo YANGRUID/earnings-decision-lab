@@ -133,19 +133,7 @@ export const api = {
   getResearchStatus: (ticker: string) => request<ResearchJob>(`/research/${ticker}/status`),
   getResearchOverview: (ticker: string) =>
     request<ResearchOverview>(`/research/${ticker}/overview`),
-  getStrategyLab: (
-    ticker: string,
-    params: { budget?: string; risk_cap?: string; risk_cap_is_percent?: boolean } = {}
-  ) => {
-    const qs = new URLSearchParams();
-    if (params.budget) qs.set("budget", params.budget);
-    if (params.risk_cap) qs.set("risk_cap", params.risk_cap);
-    if (params.risk_cap_is_percent !== undefined) {
-      qs.set("risk_cap_is_percent", String(params.risk_cap_is_percent));
-    }
-    const suffix = qs.toString() ? `?${qs.toString()}` : "";
-    return request<StrategyLab>(`/research/${ticker}/strategies${suffix}`);
-  },
+  getStrategyLab: (ticker: string) => request<StrategyLab>(`/research/${ticker}/strategies`),
   getEarningsThesis: (ticker: string) =>
     request<EarningsThesis>(`/research/${ticker}/thesis`, { method: "POST" }),
   setEarningsDateOverride: (

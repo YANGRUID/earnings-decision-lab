@@ -102,6 +102,12 @@ class AIDecisionVersion(TimestampMixin, Base):
     recommended_quantity: Mapped[int | None] = mapped_column(Integer)
     recommended_capital_at_risk: Mapped[Decimal | None] = mapped_column(NUM)
     budget_infeasible_minimum: Mapped[Decimal | None] = mapped_column(NUM)
+    # Phase 14.12: set only when zero real strategy candidates existed
+    # *before* budget filtering -- the real options market had nothing
+    # computable, independent of budget. Lets the UI distinguish "no market
+    # data" from "candidates existed but didn't fit the budget" instead of
+    # conflating them into one "not feasible for $X budget" message.
+    no_market_data_reason: Mapped[str | None] = mapped_column(Text)
 
     provider: Mapped[str] = mapped_column(String(32))
     model: Mapped[str] = mapped_column(String(128))

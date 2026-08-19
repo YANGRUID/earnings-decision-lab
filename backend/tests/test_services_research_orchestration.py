@@ -178,6 +178,27 @@ def _stub_option_quote(strike: Decimal, option_type: str, expiration: date) -> O
     )
 
 
+def _stub_frozen_option_quote(strike: Decimal, option_type: str, expiration: date) -> OptionQuote:
+    """A real, discoverable contract with no usable premium -- the exact
+    pre-market IBKR shape (IV/Greeks present, bid/ask/last all null) this
+    project has repeatedly hit live (AMD, WMT)."""
+    now = datetime.now(UTC)
+    return OptionQuote(
+        ticker="ZZNEWC",
+        snapshot_timestamp=now,
+        expiration_date=expiration,
+        strike=strike,
+        option_type=option_type,
+        bid=None,
+        ask=None,
+        last_price=None,
+        implied_volatility=Decimal("0.45"),
+        delta=Decimal("0.5"),
+        source_provider="fake",
+        retrieved_at=now,
+    )
+
+
 class _FakeEmbedder(EmbeddingProvider):
     model_name = "fake-model"
     dimension = EMBEDDING_DIM
@@ -466,7 +487,9 @@ def test_options_chain_still_collects_with_no_known_earnings_date(db_session):
         == StepStatus.SKIPPED.value
     )
     assert steps_by_name[PreparationStep.OPTIONS_CHAIN.value]["status"] == StepStatus.DONE.value
-    assert "general/current" in steps_by_name[PreparationStep.OPTIONS_CHAIN.value]["detail"]
+    options_chain_detail = steps_by_name[PreparationStep.OPTIONS_CHAIN.value]["detail"]
+    assert "general/current" in options_chain_detail
+    assert "2 contracts, 2 priceable" in options_chain_detail
     assert options.calls == 1
 
     company = db_session.query(Company).filter(Company.ticker == "ZZOPTG").one()
@@ -480,6 +503,32 @@ def test_options_chain_still_collects_with_no_known_earnings_date(db_session):
     assert volatility is not None
     assert volatility.anchor == OptionsSnapshotAnchor.GENERAL_CURRENT
     assert volatility.target_earnings_date is None
+
+
+def test_options_chain_step_never_claims_pricing_when_none_is_usable(db_session):
+    """Phase 14.12: the real WMT case -- 22 real contracts discovered
+    pre-market, real IV/Greeks, but zero with a bid/ask/last. The step
+    still completes (contract discovery genuinely succeeded), but its
+    detail text must say so explicitly rather than reading as an
+    unqualified "N option quotes" success that a user (or Strategy Lab's
+    own summary) could mistake for "pricing is ready."""
+    expiration = NOW.date() + timedelta(days=30)
+    options = _FakeOptionsProvider(
+        quotes=[
+            _stub_frozen_option_quote(Decimal("10"), "call", expiration),
+            _stub_frozen_option_quote(Decimal("10"), "put", expiration),
+            _stub_frozen_option_quote(Decimal("15"), "call", expiration),
+        ]
+    )
+    providers = _providers(estimates=_FakeEstimatesProvider(None), options=options)
+
+    job = prepare_company_research(db_session, "zzoptf", providers, now=NOW)
+
+    assert job.status == JobStatus.COMPLETED
+    steps_by_name = {s["step"]: s for s in job.steps}
+    detail = steps_by_name[PreparationStep.OPTIONS_CHAIN.value]["detail"]
+    assert steps_by_name[PreparationStep.OPTIONS_CHAIN.value]["status"] == StepStatus.DONE.value
+    assert "3 contracts, 0 priceable" in detail
 
 
 def test_existing_estimate_snapshot_reused_when_fresh(db_session):

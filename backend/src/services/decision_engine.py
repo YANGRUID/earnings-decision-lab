@@ -101,6 +101,13 @@ class DecisionResult:
     risk_cap: Decimal | None = None
     risk_cap_is_percent: bool = False
     budget_infeasible_minimum: Decimal | None = None
+    # Phase 14.12: set only when zero real strategy candidates existed
+    # *before* budget filtering ran at all -- i.e. the real options market
+    # itself had nothing computable (no chain, contracts-only, stale
+    # snapshot), never a budget question. Lets the UI show "no market data"
+    # instead of "not feasible for $X budget" in that case -- budget must
+    # never determine whether market data exists.
+    no_market_data_reason: str | None = None
 
 
 def leg_to_dict(leg: OptionLeg) -> dict:
@@ -426,6 +433,15 @@ def generate_decision(
         market_data_quality=market_state.market_data_quality,
     )
 
+    # Phase 14.12: captured *before* budget filtering runs -- zero real
+    # candidates here means the real options market had nothing computable
+    # (no chain, contracts-only, stale snapshot, no risk-preference-eligible
+    # structure), which is categorically different from "candidates existed
+    # but didn't fit the budget." Budget must never determine whether market
+    # data exists (see api/routers/research.py's equivalent hard gate) --
+    # this is what lets the UI show the right one of those two messages.
+    no_market_data_reason = market_state.reason if not ranked_all else None
+
     ranked_all, budget_fits, budget_infeasible_minimum = filter_and_size_by_budget(
         ranked_all,
         trade_budget=trade_budget,
@@ -469,4 +485,5 @@ def generate_decision(
         risk_cap=risk_cap,
         risk_cap_is_percent=risk_cap_is_percent,
         budget_infeasible_minimum=budget_infeasible_minimum,
+        no_market_data_reason=no_market_data_reason,
     )

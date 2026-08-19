@@ -133,6 +133,7 @@ def persist_decision(
             else None
         ),
         budget_infeasible_minimum=result.budget_infeasible_minimum,
+        no_market_data_reason=result.no_market_data_reason,
     )
     db.add(row)
     db.commit()

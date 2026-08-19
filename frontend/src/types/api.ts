@@ -544,7 +544,6 @@ export interface RankedStrategy {
   explanation: string;
   scenario: ScenarioPnl | null;
   move_compatibility: MoveCompatibility | null;
-  budget_fit: BudgetFit | null;
 }
 
 export interface StrategyLab {
@@ -682,6 +681,7 @@ export interface AIDecisionVersion {
   recommended_quantity: number | null;
   recommended_capital_at_risk: string | null;
   budget_infeasible_minimum: string | null;
+  no_market_data_reason: string | null;
   status: "open" | "settled" | "void";
   is_final: boolean;
   earnings_event_id: number | null;

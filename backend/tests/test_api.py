@@ -744,7 +744,12 @@ def test_strategy_lab_unknown_company_returns_404(client):
     assert response.status_code == 404
 
 
-def test_strategy_lab_rejects_percent_risk_cap_above_100(client, db_session):
+def test_strategy_lab_ignores_legacy_budget_query_params(client, db_session):
+    """Strategy Lab is market-focused only (Phase 14.12): budget/risk_cap were
+    removed from this endpoint entirely, so even if a caller still sends them
+    (e.g. a stale client) they must be silently ignored, never validated or
+    used to gate the response, since FastAPI drops unrecognized query params.
+    """
     from models.company import Company
 
     db_session.add(Company(ticker="ZZSLABRISK", name="ZZ Strategy Lab Risk Co", cik="0009999916"))
@@ -755,8 +760,8 @@ def test_strategy_lab_rejects_percent_risk_cap_above_100(client, db_session):
         params={"budget": "10000", "risk_cap": "5000", "risk_cap_is_percent": "true"},
     )
 
-    assert response.status_code == 422
-    assert "risk_cap_is_percent" in response.json()["error"]
+    assert response.status_code == 200
+    assert "budget_fit" not in response.text
 
 
 def test_strategy_lab_no_earnings_estimate_explains_missing_anchor_date(client, db_session):
@@ -1080,9 +1085,17 @@ def test_strategy_lab_general_current_still_returns_real_strategies(client, db_s
 def test_strategy_lab_exposes_real_state_bar_provenance_for_a_stale_snapshot(client, db_session):
     """The state bar (market_session/data_state/snapshot_source/snapshot_age
     /earnings_anchor_status) must be real and consistent, and a snapshot
-    from a prior calendar day must be labeled previous_session -- never
-    presented as current. A fixed, clearly-past snapshot_timestamp keeps
-    this deterministic regardless of when the suite actually runs."""
+    many real trading sessions old -- even though it's the only/"latest"
+    one on file, so select_pricing_snapshot's tier is "current_priceable"
+    -- must be labeled stale and hard-gated out of strategy generation,
+    never presented as current just because nothing newer was collected
+    since. (Regression: this used to assert the opposite -- the
+    "current_priceable" tier was treated as unconditionally
+    actionable_current with no staleness check at all, so this same
+    2020-dated snapshot silently produced real strategy candidates as if
+    it were live data; caught live off a real MU state check, Phase
+    14.12.) A fixed, clearly-past snapshot_timestamp keeps this
+    deterministic regardless of when the suite actually runs."""
     from datetime import UTC, date, datetime
     from decimal import Decimal
 
@@ -1159,7 +1172,7 @@ def test_strategy_lab_exposes_real_state_bar_provenance_for_a_stale_snapshot(cli
 
     assert response.status_code == 200
     body = response.json()
-    assert body["data_state"] == "previous_session"
+    assert body["data_state"] == "stale"
     assert body["snapshot_source"] == "ibkr"
     assert body["snapshot_timestamp"] is not None
     assert body["snapshot_age_minutes"] is not None and body["snapshot_age_minutes"] > 0
@@ -1171,9 +1184,12 @@ def test_strategy_lab_exposes_real_state_bar_provenance_for_a_stale_snapshot(cli
         "after_hours",
         "closed",
     )
-    # Real strategies are still generated from the stale data -- the UI, not
-    # the API, is responsible for the "stale, use with care" presentation.
-    assert body["strategies"] != []
+    assert body["options_market"]["actionability"] == "stale_research_only"
+    # Hard gate (Phase 14.11 Part 3/4): stale data must never back a
+    # generated strategy recommendation, no matter how complete its
+    # pricing looked at capture time.
+    assert body["strategies"] == []
+    assert "STALE" in body["reason"]
 
 
 def test_thesis_unknown_company_returns_404(client):
@@ -1366,6 +1382,34 @@ def test_decision_generates_from_stub_llm(client, db_session):
     assert body["is_final"] is False
     assert 0 <= body["confidence_score"] <= 100
     assert "not investment advice" in body["disclaimer"]
+    # No options chain exists at all for this company -- real market-data
+    # unavailability, nothing to do with budget (none was even supplied).
+    assert body["no_market_data_reason"] is not None
+    assert body["recommended_strategy_category"] is None
+
+
+def test_decision_no_market_data_reason_is_independent_of_budget(client, db_session):
+    """Regression for the real reported bug (WMT, 2026-08-19): a company
+    with zero real strategy candidates -- no options chain collected at all
+    -- must report *why* via no_market_data_reason regardless of whether a
+    trade_budget was supplied, and must never populate
+    budget_infeasible_minimum for this case (that field means "real
+    candidates existed but didn't fit the budget", a different, unrelated
+    condition). Budget must never determine whether market data exists."""
+    from models.company import Company
+
+    db_session.add(Company(ticker="ZZDECNMD", name="ZZ Decision No Data Co", cik="0009999933"))
+    db_session.flush()
+
+    response = client.post(
+        "/api/v1/research/zzdecnmd/decision", json={"trade_budget": "3000"}
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["recommended_strategy_category"] is None
+    assert body["no_market_data_reason"] is not None
+    assert body["budget_infeasible_minimum"] is None
 
 
 def test_decision_generation_persists_a_real_row(client, db_session):

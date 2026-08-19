@@ -106,25 +106,31 @@ def compute_actionability(
     tier: SnapshotTier, snapshot_timestamp: datetime | None, as_of: datetime
 ) -> ActionabilityStatus:
     """Turns a snapshot-selection tier into the hard actionability gate
-    (Phase 14.11 Part 3/4). The only tier that needs a real decision here
-    is "previous_priceable": that fallback snapshot is only genuinely
-    actionable if its own session date is exactly the most recently
-    completed US trading session as of ``as_of`` -- one session old, not
-    "the latest priceable snapshot we happen to have stored," which is
-    what this project's snapshot-selection fallback used to treat as
-    interchangeably fine. Two or more sessions old is real, stale data
-    and must not back an actionable recommendation."""
+    (Phase 14.11 Part 3/4, tightened in 14.12 after a live MU check found
+    the gap below). "current_priceable" means "the single most recently
+    *collected* snapshot is priceable" -- it makes no promise about actual
+    recency, since select_pricing_snapshot only falls back to an older
+    snapshot when the latest one is *unpriceable*. A company whose latest
+    (and possibly only) snapshot happens to be priceable but days old --
+    nothing has re-collected since -- must not be labeled
+    "actionable_current": that would silently back a live recommendation
+    with genuinely stale prices, no staleness warning at all. Both
+    "current_priceable" and "previous_priceable" are therefore judged the
+    same way: a snapshot dated after the most recently completed session
+    is genuinely live/current; one dated exactly on that session is a real,
+    still-usable "previous session" snapshot; anything older is stale and
+    must not back an actionable recommendation."""
     if tier == "none":
         return "unavailable"
     if tier == "contracts_only":
         return "contracts_only"
-    if tier == "current_priceable":
-        return "actionable_current"
-    # tier == "previous_priceable"
     if snapshot_timestamp is None:
         return "stale_research_only"
     session_date = snapshot_timestamp.astimezone(EASTERN).date()
-    if session_date == previous_trading_session_date(as_of):
+    most_recent_completed = previous_trading_session_date(as_of)
+    if tier == "current_priceable" and session_date > most_recent_completed:
+        return "actionable_current"
+    if session_date == most_recent_completed:
         return "actionable_previous_session"
     return "stale_research_only"
 
@@ -710,11 +716,28 @@ def compute_options_market_state(
                 "from this earlier, still-priceable snapshot rather than treated as unavailable."
             )
     elif data_state in (DataState.PREVIOUS_SESSION, DataState.STALE):
-        reason = (
-            f"Real options-chain snapshot with {contract_count} contracts, but it's from a "
-            f"previous session ({age.label} ago) -- treat any pricing as indicative only, not "
-            "current."
-        )
+        # Not a deliberate fallback (the latest-collected snapshot IS this
+        # one) -- but compute_options_data_state only distinguishes "same
+        # calendar day" from "not," so a snapshot several real trading
+        # sessions old and one exactly one session old both land here.
+        # actionability (already computed above, same date-based check as
+        # the fallback branch) is what actually tells them apart -- trust
+        # it, not the coarser data_state, for both the label and the gate.
+        if actionability == "stale_research_only":
+            data_state = DataState.STALE
+            reason = (
+                "STALE -- RESEARCH ONLY. The latest options-chain snapshot on record "
+                f"({contract_count} contracts) is from {age.label} ago, more than one real US "
+                "trading session back, and nothing newer has been collected since. A newer "
+                "priceable option chain is required before recommendations can be generated."
+            )
+        else:
+            data_state = DataState.PREVIOUS_SESSION
+            reason = (
+                f"Real options-chain snapshot with {contract_count} contracts, but it's from the "
+                f"previous trading session ({age.label} ago, nothing newer collected since) -- "
+                "treat any pricing as indicative only, not live."
+            )
     elif implied_move_available:
         reason = (
             f"Real options-chain snapshot with {contract_count} contracts; an implied move was "

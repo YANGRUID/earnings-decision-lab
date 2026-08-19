@@ -728,32 +728,52 @@ export function DecisionTab({ ticker }: { ticker: string }) {
             <StrategyDecisionCard key={i} label={`#${i + 2} Alternative`} strategy={alt} />
           ))}
 
-          {!active.recommended_strategy_category && active.trade_budget && (
+          {!active.recommended_strategy_category && active.no_market_data_reason && (
             <div className="card">
               <h2>Strategy Candidates</h2>
               <div className="notice" style={{ marginBottom: 0 }}>
-                <strong>Not feasible for {formatMoney(active.trade_budget, 0)} budget.</strong>{" "}
-                {active.budget_infeasible_minimum
-                  ? `Minimum defined risk among this chain's real candidates is ${formatMoney(
-                      active.budget_infeasible_minimum,
-                      0
-                    )} per contract.`
-                  : "No real strategy candidate on this chain has a computable defined risk."}
+                <strong>NO ACTIONABLE OPTIONS RECOMMENDATION.</strong> {active.no_market_data_reason}
+                {active.trade_budget && (
+                  <>
+                    {" "}
+                    Budget is irrelevant here — no priceable strategy exists to size against, with
+                    or without a {formatMoney(active.trade_budget, 0)} budget.
+                  </>
+                )}
               </div>
             </div>
           )}
 
-          {!active.recommended_strategy_category && !active.trade_budget && (
-            <div className="card">
-              <h2>Strategy Candidates</h2>
-              <p className="text-sm text-muted" style={{ marginBottom: 0 }}>
-                No strategy candidates were available at generation time — the real options chain
-                for {ticker} did not have priceable bid/ask/last data on any contract (see the
-                Strategy Lab and Upcoming Earnings tabs for the same real options-chain state).
-                No strategy is fabricated when this happens.
-              </p>
-            </div>
-          )}
+          {!active.recommended_strategy_category &&
+            !active.no_market_data_reason &&
+            active.trade_budget && (
+              <div className="card">
+                <h2>Strategy Candidates</h2>
+                <div className="notice" style={{ marginBottom: 0 }}>
+                  <strong>Not feasible for {formatMoney(active.trade_budget, 0)} budget.</strong>{" "}
+                  {active.budget_infeasible_minimum
+                    ? `Real candidates exist, but the minimum defined risk among them is ${formatMoney(
+                        active.budget_infeasible_minimum,
+                        0
+                      )} per contract -- more than this budget can size even a single contract for.`
+                    : "Real candidates exist on this chain, but none fit within this budget."}
+                </div>
+              </div>
+            )}
+
+          {!active.recommended_strategy_category &&
+            !active.no_market_data_reason &&
+            !active.trade_budget && (
+              <div className="card">
+                <h2>Strategy Candidates</h2>
+                <p className="text-sm text-muted" style={{ marginBottom: 0 }}>
+                  No strategy candidates were available at generation time — the real options chain
+                  for {ticker} did not have priceable bid/ask/last data on any contract (see the
+                  Strategy Lab and Upcoming Earnings tabs for the same real options-chain state).
+                  No strategy is fabricated when this happens.
+                </p>
+              </div>
+            )}
 
           {active.citations.length > 0 && (
             <div className="card">
