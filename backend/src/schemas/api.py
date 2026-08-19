@@ -491,6 +491,11 @@ class OptionsMarketStateResponse(BaseModel):
     has_bid_ask: bool
     has_iv: bool
     has_greeks: bool
+    bid_ask_contract_count: int
+    iv_contract_count: int
+    greeks_contract_count: int
+    volume_coverage: float
+    oi_coverage: float
     implied_move_available: bool
     earnings_anchored: bool | None
     expiration: date | None

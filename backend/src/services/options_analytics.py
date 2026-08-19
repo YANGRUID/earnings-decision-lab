@@ -587,6 +587,22 @@ class OptionsMarketState:
     has_bid_ask: bool
     has_iv: bool
     has_greeks: bool
+    # Chain quality summary (Phase 14.12): has_bid_ask/has_iv/has_greeks only
+    # say "at least one contract" -- a chain with 1 of 22 contracts
+    # priceable and one with 22 of 22 both read has_bid_ask=True, even
+    # though they're very different situations for actually building a
+    # strategy. These counts/coverage fractions are what a chain-usability
+    # judgment should actually be based on, not just the booleans above.
+    bid_ask_contract_count: int
+    iv_contract_count: int
+    greeks_contract_count: int
+    volume_coverage: float
+    """Fraction (0.0-1.0) of contracts with a real (non-null) volume figure
+    -- 0 real trades is still real coverage; only a missing value counts
+    against this."""
+    oi_coverage: float
+    """Fraction (0.0-1.0) of contracts with a real (non-null) open-interest
+    figure."""
     implied_move_available: bool
     earnings_anchored: bool | None
     expiration: date | None
@@ -641,6 +657,11 @@ def compute_options_market_state(
             has_bid_ask=False,
             has_iv=False,
             has_greeks=False,
+            bid_ask_contract_count=0,
+            iv_contract_count=0,
+            greeks_contract_count=0,
+            volume_coverage=0.0,
+            oi_coverage=0.0,
             implied_move_available=False,
             earnings_anchored=None,
             expiration=None,
@@ -668,6 +689,13 @@ def compute_options_market_state(
     has_bid_ask = len(priceable) > 0
     has_iv = any(q.implied_volatility is not None for q in raw_chain)
     has_greeks = any(q.delta is not None for q in raw_chain)
+    bid_ask_contract_count = sum(
+        1 for q in raw_chain if q.bid is not None and q.ask is not None
+    )
+    iv_contract_count = sum(1 for q in raw_chain if q.implied_volatility is not None)
+    greeks_contract_count = sum(1 for q in raw_chain if q.delta is not None)
+    volume_coverage = sum(1 for q in raw_chain if q.volume is not None) / contract_count
+    oi_coverage = sum(1 for q in raw_chain if q.open_interest is not None) / contract_count
     implied_move_available = volatility is not None
     snapshot_tier: SnapshotTier = (
         selection.tier if selection else ("current_priceable" if has_bid_ask else "contracts_only")
@@ -771,6 +799,11 @@ def compute_options_market_state(
         has_bid_ask=has_bid_ask,
         has_iv=has_iv,
         has_greeks=has_greeks,
+        bid_ask_contract_count=bid_ask_contract_count,
+        iv_contract_count=iv_contract_count,
+        greeks_contract_count=greeks_contract_count,
+        volume_coverage=volume_coverage,
+        oi_coverage=oi_coverage,
         implied_move_available=implied_move_available,
         earnings_anchored=earnings_anchored,
         expiration=expiration,

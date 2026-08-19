@@ -810,6 +810,49 @@ class TestComputeOptionsMarketState:
         assert state.implied_move_available is False
         assert state.earnings_anchored is True
         assert "no contract has a usable bid/ask/last price" in state.reason
+        # bid_ask_contract_count requires BOTH bid and ask -- this quote has
+        # neither -- but IV/Greeks were both supplied on the one contract.
+        assert state.bid_ask_contract_count == 0
+        assert state.iv_contract_count == 1
+        assert state.greeks_contract_count == 1
+        assert state.volume_coverage == 0.0
+        assert state.oi_coverage == 0.0
+
+    def test_chain_quality_summary_counts_and_coverage_are_per_contract(self):
+        # A mixed chain: one contract with a full two-sided market, real
+        # volume, and OI; one with only an IV/Greeks read (no bid/ask, no
+        # volume, no OI) -- the counts must reflect exactly this split, not
+        # collapse into the has_bid_ask/has_iv/has_greeks booleans.
+        as_of = datetime(2026, 3, 18, 12, 0, tzinfo=UTC)
+        priced = OptionQuote(
+            ticker="ZZSTATE",
+            snapshot_timestamp=as_of,
+            expiration_date=NEAR_EXP,
+            strike=Decimal("100"),
+            option_type="call",
+            bid=Decimal("1.90"),
+            ask=Decimal("2.10"),
+            volume=42,
+            open_interest=100,
+            implied_volatility=Decimal("0.5"),
+            delta=Decimal("0.5"),
+            market_data_quality="live",
+            source_provider="ibkr",
+            retrieved_at=as_of,
+        )
+        frozen = _quote_with(
+            as_of, "frozen", implied_volatility=Decimal("0.6"), delta=Decimal("0.4")
+        )
+
+        state = compute_options_market_state([priced, frozen], as_of, None)
+
+        assert state.contract_count == 2
+        assert state.priceable_contract_count == 1
+        assert state.bid_ask_contract_count == 1
+        assert state.iv_contract_count == 2
+        assert state.greeks_contract_count == 2
+        assert state.volume_coverage == 0.5
+        assert state.oi_coverage == 0.5
 
     def test_chain_with_bid_ask_but_no_volatility_snapshot_yet(self):
         as_of = datetime(2026, 3, 18, 12, 0, tzinfo=UTC)

@@ -22,6 +22,22 @@ function availability(has: boolean): string {
   return has ? "Available" : "Unavailable";
 }
 
+/** "Current" must mean the snapshot is actually from the live/in-progress
+ * session, not merely "wasn't a deliberate fallback" -- is_fallback_snapshot
+ * is false for a company's only/latest snapshot even when that snapshot is
+ * hours or days old (real case: AAPL, 2026-08-19, 11h54m-old snapshot was
+ * showing "Current" here while Strategy Lab correctly said "previous
+ * session" for the same data). actionability is the authoritative,
+ * session-date-aware signal -- see services/options_analytics.py. */
+function pricingSnapshotLabel(market: OptionsMarketState): string {
+  if (market.actionability === "actionable_current") return "Current";
+  if (market.actionability === "actionable_previous_session") {
+    return market.snapshot_purpose === "close" ? "Previous close" : "Previous session";
+  }
+  if (market.actionability === "stale_research_only") return "Stale (previous session)";
+  return "Not currently priceable";
+}
+
 /** The canonical options-market state for every case where an implied move
  * *isn't* available -- see services/options_analytics.py::OptionsMarketState.
  * Never collapses "no chain at all" / "chain but no bid-ask" / "chain with
@@ -47,13 +63,7 @@ function OptionsMarketStateCard({ market }: { market: OptionsMarketState }) {
           <>
             <div className="stat">
               <span className="stat-label">Pricing snapshot</span>
-              <span className="stat-value small">
-                {market.is_fallback_snapshot
-                  ? market.snapshot_purpose === "close"
-                    ? "Previous close"
-                    : "Previous session"
-                  : "Current"}
-              </span>
+              <span className="stat-value small">{pricingSnapshotLabel(market)}</span>
             </div>
             <div className="stat">
               <span className="stat-label">Data quality</span>

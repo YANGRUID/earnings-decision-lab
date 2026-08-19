@@ -445,6 +445,11 @@ export interface OptionsMarketState {
   has_bid_ask: boolean;
   has_iv: boolean;
   has_greeks: boolean;
+  bid_ask_contract_count: number;
+  iv_contract_count: number;
+  greeks_contract_count: number;
+  volume_coverage: number;
+  oi_coverage: number;
   implied_move_available: boolean;
   earnings_anchored: boolean | null;
   expiration: string | null;

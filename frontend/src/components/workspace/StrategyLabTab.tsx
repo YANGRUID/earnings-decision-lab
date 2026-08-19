@@ -80,6 +80,15 @@ function StrategyLabStateBar({ lab }: { lab: StrategyLab }) {
           </span>
         </div>
       </div>
+      {lab.options_market.chain_exists && (
+        <div className="text-sm text-faint" style={{ marginTop: 10 }}>
+          Chain quality: {lab.options_market.contract_count} contracts ·{" "}
+          {lab.options_market.bid_ask_contract_count} with bid/ask ·{" "}
+          {lab.options_market.iv_contract_count} with IV · {lab.options_market.greeks_contract_count}{" "}
+          with Greeks · volume on {formatPercent(lab.options_market.volume_coverage, 0)} · open
+          interest on {formatPercent(lab.options_market.oi_coverage, 0)}
+        </div>
+      )}
       {isStale && (
         <div className="notice" style={{ marginTop: 12, marginBottom: 0 }}>
           <strong>
@@ -128,7 +137,7 @@ function StrategyCard({ strategy, ticker }: { strategy: RankedStrategy; ticker: 
             <th>Qty</th>
             <th>Type</th>
             <th>Strike</th>
-            <th>Premium</th>
+            <th>Est. entry (mid)</th>
           </tr>
         </thead>
         <tbody>
@@ -143,6 +152,11 @@ function StrategyCard({ strategy, ticker }: { strategy: RankedStrategy; ticker: 
           ))}
         </tbody>
       </table>
+      <p className="text-sm text-faint" style={{ marginTop: 4, marginBottom: 0 }}>
+        Premiums are estimated at the bid/ask midpoint ((bid+ask)/2) as of the snapshot above —
+        never an execution price. See the real option chain below for each contract's actual
+        bid/ask and spread.
+      </p>
 
       <div className="grid grid-3" style={{ gap: 10, marginTop: 12 }}>
         <div className="stat">
@@ -207,6 +221,7 @@ function OptionChainTable({ chain }: { chain: OptionQuote[] }) {
                 <th>Strike</th>
                 <th>Bid</th>
                 <th>Ask</th>
+                <th>Spread</th>
                 <th>IV</th>
                 <th>Delta</th>
                 <th>OI</th>
@@ -216,24 +231,38 @@ function OptionChainTable({ chain }: { chain: OptionQuote[] }) {
             <tbody>
               {quotes
                 .sort((x, y) => Number(x.strike) - Number(y.strike))
-                .map((q, i) => (
-                  <tr key={i}>
-                    <td className="mono">{q.option_type}</td>
-                    <td className="mono">{formatMoney(q.strike)}</td>
-                    <td className="mono">{q.bid ? formatMoney(q.bid) : "—"}</td>
-                    <td className="mono">{q.ask ? formatMoney(q.ask) : "—"}</td>
-                    <td className="mono">{q.implied_volatility ? pct(q.implied_volatility) : "—"}</td>
-                    <td className="mono">{q.delta ?? "—"}</td>
-                    <td className="mono">{q.open_interest ?? "—"}</td>
-                    <td>
-                      {q.market_data_quality ? (
-                        <span className="pill pill-neutral">{q.market_data_quality}</span>
-                      ) : (
-                        "—"
-                      )}
-                    </td>
-                  </tr>
-                ))}
+                .map((q, i) => {
+                  const bid = q.bid !== null ? Number(q.bid) : null;
+                  const ask = q.ask !== null ? Number(q.ask) : null;
+                  const mid = bid !== null && ask !== null ? (bid + ask) / 2 : null;
+                  const spreadAbs = bid !== null && ask !== null ? ask - bid : null;
+                  const spreadPct = spreadAbs !== null && mid && mid > 0 ? spreadAbs / mid : null;
+                  return (
+                    <tr key={i}>
+                      <td className="mono">{q.option_type}</td>
+                      <td className="mono">{formatMoney(q.strike)}</td>
+                      <td className="mono">{q.bid ? formatMoney(q.bid) : "—"}</td>
+                      <td className="mono">{q.ask ? formatMoney(q.ask) : "—"}</td>
+                      <td className="mono">
+                        {spreadAbs !== null && spreadPct !== null
+                          ? `${spreadAbs.toFixed(2)} (${formatPercent(spreadPct, 0)})`
+                          : "—"}
+                      </td>
+                      <td className="mono">
+                        {q.implied_volatility ? pct(q.implied_volatility) : "—"}
+                      </td>
+                      <td className="mono">{q.delta ?? "—"}</td>
+                      <td className="mono">{q.open_interest ?? "—"}</td>
+                      <td>
+                        {q.market_data_quality ? (
+                          <span className="pill pill-neutral">{q.market_data_quality}</span>
+                        ) : (
+                          "—"
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
             </tbody>
           </table>
         </div>
