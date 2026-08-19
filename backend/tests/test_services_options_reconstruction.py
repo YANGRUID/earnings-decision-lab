@@ -232,7 +232,15 @@ class TestFindBestPersistedCloseSnapshot:
 
 
 class TestResolveBestActionableOptionMarket:
-    def test_market_open_never_attempts_reconstruction(self, db_session):
+    def test_market_open_with_no_current_data_falls_back_to_previous_close(self, db_session):
+        """A company with zero options history ever collected: market-open no
+        longer short-circuits straight to an empty selection (the old, buggy
+        behavior). It now falls through to the previous-session-close
+        fallback path (CASE 2/4) same as if the current snapshot had been
+        contracts-only, computing a real target_session_date even though
+        nothing is ultimately found. reconstruction_attempted stays False
+        here because this test's default provider is alpha_vantage, not
+        ibkr, so the reconstruction branch is never reached."""
         company = _seed_company(db_session, "ZZRECON6")
         # Wednesday 2026-03-18, 11:00 ET -- regular session.
         as_of = datetime(2026, 3, 18, 15, 0, tzinfo=UTC)
@@ -240,7 +248,47 @@ class TestResolveBestActionableOptionMarket:
             db_session, company, as_of, earnings_date=None
         )
         assert resolution.reconstruction_attempted is False
+        assert resolution.target_session_date == date(2026, 3, 17)
+        assert resolution.selection.tier == "none"
+
+    def test_market_open_with_good_current_snapshot_never_attempts_reconstruction(
+        self, db_session
+    ):
+        company = _seed_company(db_session, "ZZRECON7")
+        as_of = datetime(2026, 3, 18, 15, 0, tzinfo=UTC)
+        _seed_snapshot(
+            db_session,
+            company,
+            snapshot_timestamp=as_of,
+            bid=Decimal("1.00"),
+            ask=Decimal("1.10"),
+            last_price=Decimal("1.05"),
+        )
+        resolution = resolve_best_actionable_option_market(
+            db_session, company, as_of, earnings_date=None
+        )
+        assert resolution.reconstruction_attempted is False
         assert resolution.target_session_date is None
+        assert resolution.selection.tier == "current_priceable"
+
+    def test_market_open_with_contracts_only_current_snapshot_falls_back_to_previous_close(
+        self, db_session
+    ):
+        """The exact AVGO shape: market is open, a current snapshot exists,
+        but it has zero priceable contracts (no bid/ask/last on any leg).
+        The resolver must not accept it as final -- it must attempt a live
+        retry (which, with the default alpha_vantage test provider, is
+        skipped) and then fall through to the previous-session-close
+        fallback rather than silently returning the unusable snapshot."""
+        company = _seed_company(db_session, "ZZRECON8")
+        as_of = datetime(2026, 3, 18, 15, 0, tzinfo=UTC)
+        _seed_snapshot(db_session, company, snapshot_timestamp=as_of)
+        resolution = resolve_best_actionable_option_market(
+            db_session, company, as_of, earnings_date=None
+        )
+        assert resolution.reconstruction_attempted is False
+        assert resolution.target_session_date == date(2026, 3, 17)
+        assert resolution.selection.tier != "current_priceable"
 
     def test_market_closed_uses_a_good_persisted_close_snapshot_without_reconstruction(
         self, db_session

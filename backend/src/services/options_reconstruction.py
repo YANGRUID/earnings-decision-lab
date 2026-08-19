@@ -56,6 +56,7 @@ from providers.ibkr_options import IBKROptionsProvider
 from providers.types import OptionQuote
 from services.options_analytics import (
     PricingSnapshotSelection,
+    _fetch_and_persist_options_snapshot,  # noqa: PLC2701 -- shared private helper, see below
     _to_option_quote,  # noqa: PLC2701 -- shared private helper, see strategy_generation.py's identical reuse
     select_pricing_snapshot,
 )
@@ -587,43 +588,40 @@ class MarketResolution:
     target_session_date: date | None
 
 
-def resolve_best_actionable_option_market(
+def _is_good_or_acceptable(quotes: list[OptionQuote]) -> bool:
+    if not quotes:
+        return False
+    return classify_chain_quality(quotes).quality in ("good", "acceptable")
+
+
+def _effective_options_provider(db: Session, settings: Settings) -> str:
+    """Checks the owner's DB-stored override (Settings -> Data Providers)
+    first, not just the raw env default -- an override to "ibkr" there is
+    exactly what System Status already shows as the active provider."""
+    app_settings = get_app_provider_settings(db)
+    return (app_settings.options_primary or settings.options_provider).lower()
+
+
+def _resolve_via_previous_session_close(
     db: Session,
     company: Company,
     as_of: datetime,
     earnings_date: date | None,
-    settings: Settings | None = None,
+    settings: Settings,
+    effective_provider: str,
 ) -> MarketResolution:
-    """The single canonical resolver (Phase 14.13 Part 17) every caller
-    that needs "the best real option market state for this company right
-    now" should use in place of calling select_pricing_snapshot directly.
-
-    Priority:
-      A. Market open -> select_pricing_snapshot's existing current-session
-         logic (unchanged; a fresh live snapshot already ranks correctly
-         there).
-      B/C. Market closed -> the best already-PERSISTED close/near-close
-         snapshot for the immediately previous completed session, if one
-         meets the close-window bar.
-      D. Otherwise -> attempt a real IBKR historical reconstruction of
-         that session's close, persist it if it succeeds, and use it.
-      E/F. If reconstruction isn't possible (wrong provider configured) or
-         fails -> defer entirely to select_pricing_snapshot's own,
-         already-correct fallback/staleness-gate logic (an intraday
-         snapshot may still surface as research-only; two-or-more-sessions
-         stale is still hard-gated).
+    """Shared fallback path (Phase 14.14): the immediately previous
+    completed trading session's close, from whatever source actually has
+    it -- persisted close/near-close/reconstructed_close first, else a
+    real IBKR historical reconstruction. Used both when the market is
+    closed (there's no "current" to speak of) and when the market is open
+    but the current snapshot isn't priceable even after a live retry
+    (Part CASE 2's fallback step). Never a random older intraday snapshot
+    "just because it exists" -- if this fails too, the caller defers to
+    select_pricing_snapshot's own actionability gate, which is honest
+    about anything older (stale_research_only, hard-gated from strategy
+    generation).
     """
-    settings = settings or get_settings()
-    market = get_market_session(as_of)
-
-    if market.session == MarketSession.REGULAR:
-        return MarketResolution(
-            selection=select_pricing_snapshot(db, company),
-            reconstruction_attempted=False,
-            reconstruction_result=None,
-            target_session_date=None,
-        )
-
     target_session_date, _window_start, _window_end = determine_target_close_window(as_of)
 
     persisted = find_best_persisted_close_snapshot(db, company, target_session_date)
@@ -641,15 +639,7 @@ def resolve_best_actionable_option_market(
             target_session_date=target_session_date,
         )
 
-    app_settings = get_app_provider_settings(db)
-    effective_provider = (app_settings.options_primary or settings.options_provider).lower()
     if effective_provider != "ibkr":
-        # No historical-reconstruction source is configured -- defer to
-        # the existing, already-correct DB-only fallback logic (Part
-        # 17E/F) rather than silently doing nothing. Checks the owner's
-        # DB-stored override (Settings -> Data Providers) first, not just
-        # the raw env default -- an override to "ibkr" there is exactly
-        # what System Status already shows as the active provider.
         return MarketResolution(
             selection=select_pricing_snapshot(db, company),
             reconstruction_attempted=False,
@@ -672,8 +662,10 @@ def resolve_best_actionable_option_market(
     result = reconstruct_close_snapshot(
         db, company, provider, client, target_session_date, earnings_date
     )
-    good_quality = result.quality is not None and result.quality.quality in ("good", "acceptable")
-    if result.succeeded and good_quality:
+    if result.succeeded and result.quality is not None and result.quality.quality in (
+        "good",
+        "acceptable",
+    ):
         persist_reconstruction(db, company, result, target_session_date)
         return MarketResolution(
             selection=PricingSnapshotSelection(
@@ -690,12 +682,95 @@ def resolve_best_actionable_option_market(
 
     # Reconstruction failed or produced poor/untradeable quality -- persist
     # nothing, and defer to select_pricing_snapshot's existing, correct
-    # fallback/staleness-gate logic (Part 17E/F): an intraday snapshot may
-    # still surface as research-only; a snapshot two-or-more sessions old
-    # is still hard-gated as stale.
+    # fallback/staleness-gate logic: an intraday snapshot may still
+    # surface as research-only; a snapshot two-or-more sessions old is
+    # still hard-gated as stale. This is CASE 4 ("neither current nor
+    # previous-close data is usable") whenever that gate also comes up
+    # empty/stale.
     return MarketResolution(
         selection=select_pricing_snapshot(db, company),
         reconstruction_attempted=True,
         reconstruction_result=result,
         target_session_date=target_session_date,
+    )
+
+
+def resolve_best_actionable_option_market(
+    db: Session,
+    company: Company,
+    as_of: datetime,
+    earnings_date: date | None,
+    settings: Settings | None = None,
+) -> MarketResolution:
+    """The single canonical resolver (Phase 14.13/14.14) every caller that
+    needs "the best real option market state for this company right now"
+    should use in place of calling select_pricing_snapshot directly.
+
+    Driven by PRICEABILITY, never merely by whether the market is open
+    (Phase 14.14 -- the real AVGO bug this fixes: market open plus a
+    22-contract, zero-priceable "current" snapshot used to be accepted
+    as-is with no fallback attempted at all, just because the market
+    happened to be open).
+
+      CASE 1: market open, current snapshot already GOOD/ACCEPTABLE and
+        priceable -> use it directly, no retry, no reconstruction.
+      CASE 2: market open, current snapshot CONTRACTS_ONLY/UNTRADEABLE (or
+        no chain at all) -> retry a real live IBKR fetch once. If that
+        still isn't priceable -> fall through to the immediately-previous
+        completed session's close (persisted or reconstructed), used as
+        an explicitly labeled fallback (is_fallback=True,
+        tier="previous_priceable") -- NEVER presented as real-time.
+      CASE 3: market closed/pre-market/weekend/holiday -> the same
+        previous-session-close fallback directly (no live retry -- there's
+        no live quote to retry while the market is shut).
+      CASE 4: neither current nor a usable previous close exists -> defer
+        to select_pricing_snapshot's own actionability gate, which
+        reports NO ACTIONABLE OPTIONS RECOMMENDATION (contracts_only /
+        stale_research_only) rather than fabricating anything.
+    """
+    settings = settings or get_settings()
+    market = get_market_session(as_of)
+
+    current_selection = select_pricing_snapshot(db, company)
+    current_is_good = current_selection.tier == "current_priceable" and _is_good_or_acceptable(
+        current_selection.quotes
+    )
+
+    if market.session == MarketSession.REGULAR and current_is_good:
+        return MarketResolution(
+            selection=current_selection,
+            reconstruction_attempted=False,
+            reconstruction_result=None,
+            target_session_date=None,
+        )
+
+    effective_provider = _effective_options_provider(db, settings)
+
+    if market.session == MarketSession.REGULAR:
+        # CASE 2: market open but current isn't good enough -- a single
+        # real live retry before falling back to the previous close. The
+        # stored "current" snapshot may simply be stale from earlier in
+        # the session (e.g. captured before quotes settled) -- worth one
+        # fresh attempt, never a loop.
+        if effective_provider == "ibkr":
+            client = IBKRClient(base_url=settings.ibkr_base_url)
+            try:
+                client.ensure_authenticated()
+                provider = IBKROptionsProvider(base_url=settings.ibkr_base_url)
+                _fetch_and_persist_options_snapshot(db, provider, company, earnings_date, as_of)
+                retried_selection = select_pricing_snapshot(db, company)
+                if retried_selection.tier == "current_priceable" and _is_good_or_acceptable(
+                    retried_selection.quotes
+                ):
+                    return MarketResolution(
+                        selection=retried_selection,
+                        reconstruction_attempted=False,
+                        reconstruction_result=None,
+                        target_session_date=None,
+                    )
+            except IBKRError:
+                pass  # fall through to the previous-session-close fallback below
+
+    return _resolve_via_previous_session_close(
+        db, company, as_of, earnings_date, settings, effective_provider
     )

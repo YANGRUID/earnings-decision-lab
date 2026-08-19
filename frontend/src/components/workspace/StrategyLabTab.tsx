@@ -103,30 +103,65 @@ function StrategyLabStateBar({ lab }: { lab: StrategyLab }) {
           interest on {formatPercent(lab.options_market.oi_coverage, 0)}
         </div>
       )}
-      {lab.options_market.snapshot_purpose === "reconstructed_close" && (
-        <div className="notice" style={{ marginTop: 12, marginBottom: 0 }}>
-          <strong>Options: reconstructed from IBKR historical market data.</strong> The current
-          chain had no priceable quotes, so the previous session's close was rebuilt from real
-          IBKR historical bars (last-price only -- no historical bid/ask is exposed by this
-          endpoint) rather than reusing an old intraday snapshot.
-          {lab.snapshot_age_label && ` Reconstructed close is ${lab.snapshot_age_label} old.`}
-          <div className="grid grid-2" style={{ gap: 10, marginTop: 8 }}>
-            <div className="stat">
-              <span className="stat-label">Underlying as of</span>
-              <span className="stat-value small mono">
-                {formatEtTimestamp(lab.options_market.underlying_timestamp) ?? "—"}
-                {lab.underlying_price ? ` · ${formatMoney(lab.underlying_price)}` : ""}
-              </span>
-            </div>
-            <div className="stat">
-              <span className="stat-label">Options as of</span>
-              <span className="stat-value small mono">
-                {formatEtTimestamp(lab.snapshot_timestamp) ?? "—"}
-              </span>
+      {lab.options_market.snapshot_purpose === "reconstructed_close" &&
+        lab.market_session === "regular" && (
+          <div className="notice" style={{ marginTop: 12, marginBottom: 0 }}>
+            <strong>
+              This is not real-time. The market is open, but the current options chain has no
+              usable pricing even after a live retry, so pricing below is a fallback rebuilt from
+              the previous session&apos;s close.
+            </strong>
+            <div className="grid grid-2" style={{ gap: 10, marginTop: 8 }}>
+              <div className="stat">
+                <span className="stat-label">Current market</span>
+                <span className="stat-value small">Open</span>
+              </div>
+              <div className="stat">
+                <span className="stat-label">Current options pricing</span>
+                <span className="stat-value small">Unavailable</span>
+              </div>
+              <div className="stat">
+                <span className="stat-label">Fallback pricing</span>
+                <span className="stat-value small">Previous-session close</span>
+              </div>
+              <div className="stat">
+                <span className="stat-label">As of</span>
+                <span className="stat-value small mono">
+                  {formatEtTimestamp(lab.snapshot_timestamp) ?? "—"}
+                </span>
+              </div>
+              <div className="stat" style={{ gridColumn: "span 2" }}>
+                <span className="stat-label">Source</span>
+                <span className="stat-value small">IBKR historical reconstruction</span>
+              </div>
             </div>
           </div>
-        </div>
-      )}
+        )}
+      {lab.options_market.snapshot_purpose === "reconstructed_close" &&
+        lab.market_session !== "regular" && (
+          <div className="notice" style={{ marginTop: 12, marginBottom: 0 }}>
+            <strong>Options: reconstructed from IBKR historical market data.</strong> The current
+            chain had no priceable quotes, so the previous session's close was rebuilt from real
+            IBKR historical bars (last-price only -- no historical bid/ask is exposed by this
+            endpoint) rather than reusing an old intraday snapshot.
+            {lab.snapshot_age_label && ` Reconstructed close is ${lab.snapshot_age_label} old.`}
+            <div className="grid grid-2" style={{ gap: 10, marginTop: 8 }}>
+              <div className="stat">
+                <span className="stat-label">Underlying as of</span>
+                <span className="stat-value small mono">
+                  {formatEtTimestamp(lab.options_market.underlying_timestamp) ?? "—"}
+                  {lab.underlying_price ? ` · ${formatMoney(lab.underlying_price)}` : ""}
+                </span>
+              </div>
+              <div className="stat">
+                <span className="stat-label">Options as of</span>
+                <span className="stat-value small mono">
+                  {formatEtTimestamp(lab.snapshot_timestamp) ?? "—"}
+                </span>
+              </div>
+            </div>
+          </div>
+        )}
       {isStale && lab.options_market.snapshot_purpose !== "reconstructed_close" && (
         <div className="notice" style={{ marginTop: 12, marginBottom: 0 }}>
           <strong>

@@ -452,6 +452,33 @@ function MarketDataHeader({ ticker }: { ticker: string }) {
           {om.reason}
         </div>
       )}
+      {om.snapshot_purpose === "reconstructed_close" && lab.data.market_session === "regular" && (
+        <div className="notice" style={{ marginTop: 12, marginBottom: 0 }}>
+          <strong>
+            This is not real-time. The market is open, but the current options chain has no
+            usable pricing even after a live retry, so this decision is based on a fallback
+            rebuilt from the previous session&apos;s close.
+          </strong>
+          <div className="grid grid-2" style={{ gap: 10, marginTop: 8 }}>
+            <div className="stat">
+              <span className="stat-label">Current market</span>
+              <span className="stat-value small">Open</span>
+            </div>
+            <div className="stat">
+              <span className="stat-label">Current options pricing</span>
+              <span className="stat-value small">Unavailable</span>
+            </div>
+            <div className="stat">
+              <span className="stat-label">Fallback pricing</span>
+              <span className="stat-value small">Previous-session close</span>
+            </div>
+            <div className="stat">
+              <span className="stat-label">Source</span>
+              <span className="stat-value small">IBKR historical reconstruction</span>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
