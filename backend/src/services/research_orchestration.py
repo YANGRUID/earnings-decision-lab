@@ -74,7 +74,9 @@ from services.options_analytics import (
     get_implied_vs_realized_moves,
 )
 from services.provider_settings import get_app_provider_settings
+from services.secret_store import resolve_secret
 from services.symbol_resolution import SymbolResolution, resolve_symbol
+from services.usage_instrumentation import instrument_data_provider
 
 log = logging.getLogger("research_orchestration")
 
@@ -120,21 +122,31 @@ def build_research_providers(
     """
     overrides = get_app_provider_settings(db) if db is not None else None
 
-    edgar = SECEdgarProvider(user_agent=settings.sec_edgar_user_agent)
+    edgar = instrument_data_provider(
+        SECEdgarProvider(user_agent=settings.sec_edgar_user_agent), db, "sec_edgar", "filings"
+    )
     market_data = build_market_data_chain(
         settings,
         primary_override=overrides.price_history_primary if overrides else None,
         fallback_override=overrides.price_history_fallback if overrides else None,
+        db=db,
     )
 
     estimates: EarningsEstimatesProvider | None = None
-    if settings.alpha_vantage_api_key:
-        estimates = AlphaVantageEarningsEstimatesProvider(api_key=settings.alpha_vantage_api_key)
+    alpha_vantage_key = resolve_secret(settings, "alpha_vantage", db)
+    if alpha_vantage_key:
+        estimates = instrument_data_provider(
+            AlphaVantageEarningsEstimatesProvider(api_key=alpha_vantage_key),
+            db,
+            "alpha_vantage",
+            "earnings_estimates",
+        )
 
     options = build_options_provider_chain(
         settings,
         primary_override=overrides.options_primary if overrides else None,
         fallback_override=overrides.options_fallback if overrides else None,
+        db=db,
     )
 
     return ResearchProviders(

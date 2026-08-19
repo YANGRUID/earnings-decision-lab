@@ -1,4 +1,4 @@
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 
 from analytics.decision.confidence import ConfidenceComponents
@@ -6,14 +6,26 @@ from analytics.decision.strategy_scoring import ViewRankedStrategy, score_candid
 from analytics.options.payoff import Action, OptionLeg, analyze
 from analytics.options.strategy_candidates import StrategyCandidate, StrategyCategory
 from models.company import Company
+from models.earnings_estimate_snapshot import EarningsEstimateSnapshot
 from models.earnings_event import EarningsEvent
-from models.enums import DecisionDirection, DecisionStatus, OptionType, StrategyRiskPreference
+from models.enums import (
+    DecisionDirection,
+    DecisionStatus,
+    DecisionVolatilityView,
+    OptionType,
+    StrategyRiskPreference,
+)
 from models.price_reaction import PriceReaction
 from rag.context import Citation
 from schemas.decision import DecisionView
 from services.decision_engine import DecisionResult, ScoredStrategy
-from services.decision_history import persist_decision
-from services.decision_settlement import find_settlement_event, settle_all_pending, settle_decision
+from services.decision_history import mark_final, persist_decision
+from services.decision_settlement import (
+    compute_settlement_eligibility,
+    find_settlement_event,
+    settle_all_pending,
+    settle_decision,
+)
 
 EXP = date(2026, 9, 18)
 UNDERLYING = Decimal("100")
@@ -49,6 +61,23 @@ def _seed_earnings_event(
     return event
 
 
+def _seed_estimate_snapshot(
+    db_session, company: Company, *, estimated_report_date: date
+) -> EarningsEstimateSnapshot:
+    snapshot = EarningsEstimateSnapshot(
+        company_id=company.id,
+        fiscal_period_end_date=estimated_report_date,
+        horizon="current_quarter",
+        snapshot_timestamp=datetime.now(UTC),
+        estimated_report_date=estimated_report_date,
+        source_provider="test",
+        retrieved_at=datetime.now(UTC),
+    )
+    db_session.add(snapshot)
+    db_session.flush()
+    return snapshot
+
+
 def _long_call_candidate(underlying: Decimal = UNDERLYING) -> StrategyCandidate:
     legs = [OptionLeg(OptionType.CALL, Action.BUY, Decimal("100"), Decimal("2"))]
     return StrategyCandidate(
@@ -67,6 +96,7 @@ def _decision_result(
     breakdown, target_price, payoff, compat = score_candidate_for_view(
         candidate,
         direction=DecisionDirection(direction),
+        volatility_view=DecisionVolatilityView.NEUTRAL_VOL,
         implied_move_pct=Decimal("0.05"),
         historical_move_pcts=[],
         has_bid_ask=True,
@@ -280,3 +310,92 @@ class TestSettleAllPending:
         settled_ids = {d.id for d in settled}
         assert ready.id in settled_ids
         assert not_ready.id not in settled_ids
+
+
+class TestComputeSettlementEligibility:
+    def test_not_final_when_decision_is_not_marked_final(self, db_session):
+        company = _seed_company(db_session, ticker="ZZELIGNF")
+        decision = persist_decision(db_session, company=company, result=_decision_result())
+
+        eligibility = compute_settlement_eligibility(db_session, decision)
+
+        assert eligibility.eligible is False
+        assert eligibility.state == "not_final"
+        assert eligibility.missing_requirements == ["is_final"]
+
+    def test_earnings_date_unknown_when_final_but_no_snapshot(self, db_session):
+        company = _seed_company(db_session, ticker="ZZELIGUNK")
+        decision = persist_decision(db_session, company=company, result=_decision_result())
+        decision = mark_final(db_session, decision.id)
+        assert decision is not None
+
+        eligibility = compute_settlement_eligibility(db_session, decision)
+
+        assert eligibility.eligible is False
+        assert eligibility.state == "earnings_date_unknown"
+
+    def test_waiting_for_event_when_earnings_date_is_in_the_future(self, db_session):
+        company = _seed_company(db_session, ticker="ZZELIGFUT")
+        decision = persist_decision(db_session, company=company, result=_decision_result())
+        future_date = datetime.now(UTC).date() + timedelta(days=30)
+        snapshot = _seed_estimate_snapshot(db_session, company, estimated_report_date=future_date)
+        decision.earnings_estimate_snapshot_id = snapshot.id
+        db_session.add(decision)
+        db_session.commit()
+        decision = mark_final(db_session, decision.id)
+        assert decision is not None
+
+        eligibility = compute_settlement_eligibility(db_session, decision)
+
+        assert eligibility.eligible is False
+        assert eligibility.state == "waiting_for_event"
+        assert eligibility.earliest_settlement_date == future_date + timedelta(days=1)
+
+    def test_waiting_for_post_event_price_when_date_passed_but_no_reaction_yet(self, db_session):
+        company = _seed_company(db_session, ticker="ZZELIGWAIT")
+        decision = persist_decision(db_session, company=company, result=_decision_result())
+        past_date = datetime.now(UTC).date() - timedelta(days=5)
+        snapshot = _seed_estimate_snapshot(db_session, company, estimated_report_date=past_date)
+        decision.earnings_estimate_snapshot_id = snapshot.id
+        decision.created_at = datetime.now(UTC) - timedelta(days=10)
+        db_session.add(decision)
+        db_session.commit()
+        decision = mark_final(db_session, decision.id)
+        assert decision is not None
+
+        eligibility = compute_settlement_eligibility(db_session, decision)
+
+        assert eligibility.eligible is False
+        assert eligibility.state == "waiting_for_post_event_price"
+
+    def test_ready_when_real_post_event_price_exists(self, db_session):
+        company = _seed_company(db_session, ticker="ZZELIGREADY")
+        decision = persist_decision(db_session, company=company, result=_decision_result())
+        past_date = datetime.now(UTC).date() - timedelta(days=5)
+        snapshot = _seed_estimate_snapshot(db_session, company, estimated_report_date=past_date)
+        decision.earnings_estimate_snapshot_id = snapshot.id
+        decision.created_at = datetime.now(UTC) - timedelta(days=10)
+        db_session.add(decision)
+        db_session.commit()
+        decision = mark_final(db_session, decision.id)
+        assert decision is not None
+        _seed_earnings_event(
+            db_session, company, earnings_date=past_date, next_day_move_pct=Decimal("0.04")
+        )
+
+        eligibility = compute_settlement_eligibility(db_session, decision)
+
+        assert eligibility.eligible is True
+        assert eligibility.state == "ready"
+
+    def test_settled_state_takes_priority_over_everything_else(self, db_session):
+        company = _seed_company(db_session, ticker="ZZELIGDONE")
+        decision = persist_decision(db_session, company=company, result=_decision_result())
+        decision.status = DecisionStatus.SETTLED
+        db_session.add(decision)
+        db_session.commit()
+
+        eligibility = compute_settlement_eligibility(db_session, decision)
+
+        assert eligibility.eligible is False
+        assert eligibility.state == "settled"

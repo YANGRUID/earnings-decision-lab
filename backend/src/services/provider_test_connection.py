@@ -8,6 +8,7 @@ result stays visible even after this process restarts.
 from datetime import UTC, date, datetime, timedelta
 
 import httpx
+from sqlalchemy.orm import Session
 
 from core.config import Settings
 from models.enums import ProviderHealthStatus
@@ -29,6 +30,7 @@ from providers.tiingo import TiingoMarketDataProvider
 from services.llm.errors import LLMError, MissingAPIKeyError, UnknownProviderError
 from services.llm.factory import get_llm_provider
 from services.llm.types import ChatMessage
+from services.secret_store import resolve_secret
 
 # A real, always-listed, large-cap ticker -- cheap and reliable to probe
 # with, never the research subject of the test itself.
@@ -51,10 +53,13 @@ def _map_http_status(exc: httpx.HTTPStatusError) -> tuple[ProviderHealthStatus, 
     return ProviderHealthStatus.UNAVAILABLE, f"HTTP {code}"
 
 
-def _test_tiingo(settings: Settings) -> tuple[ProviderHealthStatus, str | None]:
-    if not settings.tiingo_api_key:
+def _test_tiingo(
+    settings: Settings, db: Session | None
+) -> tuple[ProviderHealthStatus, str | None]:
+    key = resolve_secret(settings, "tiingo", db)
+    if not key:
         return ProviderHealthStatus.AUTH_FAILED, "TIINGO_API_KEY not configured"
-    provider = TiingoMarketDataProvider(api_key=settings.tiingo_api_key)
+    provider = TiingoMarketDataProvider(api_key=key)
     try:
         end = date.today()
         provider.get_daily_bars(_PROBE_TICKER, end - timedelta(days=5), end)
@@ -65,10 +70,13 @@ def _test_tiingo(settings: Settings) -> tuple[ProviderHealthStatus, str | None]:
         return ProviderHealthStatus.UNAVAILABLE, str(exc)
 
 
-def _test_alpha_vantage_prices(settings: Settings) -> tuple[ProviderHealthStatus, str | None]:
-    if not settings.alpha_vantage_api_key:
+def _test_alpha_vantage_prices(
+    settings: Settings, db: Session | None
+) -> tuple[ProviderHealthStatus, str | None]:
+    key = resolve_secret(settings, "alpha_vantage", db)
+    if not key:
         return ProviderHealthStatus.AUTH_FAILED, "ALPHA_VANTAGE_API_KEY not configured"
-    provider = AlphaVantageMarketDataProvider(api_key=settings.alpha_vantage_api_key)
+    provider = AlphaVantageMarketDataProvider(api_key=key)
     try:
         end = date.today()
         provider.get_daily_bars(_PROBE_TICKER, end - timedelta(days=5), end)
@@ -86,10 +94,13 @@ def _test_alpha_vantage_prices(settings: Settings) -> tuple[ProviderHealthStatus
         return ProviderHealthStatus.UNAVAILABLE, str(exc)
 
 
-def _test_alpha_vantage_estimates(settings: Settings) -> tuple[ProviderHealthStatus, str | None]:
-    if not settings.alpha_vantage_api_key:
+def _test_alpha_vantage_estimates(
+    settings: Settings, db: Session | None
+) -> tuple[ProviderHealthStatus, str | None]:
+    key = resolve_secret(settings, "alpha_vantage", db)
+    if not key:
         return ProviderHealthStatus.AUTH_FAILED, "ALPHA_VANTAGE_API_KEY not configured"
-    provider = AlphaVantageEarningsEstimatesProvider(api_key=settings.alpha_vantage_api_key)
+    provider = AlphaVantageEarningsEstimatesProvider(api_key=key)
     try:
         provider.get_next_earnings_date(_PROBE_TICKER)
         return ProviderHealthStatus.CONNECTED, None
@@ -106,10 +117,13 @@ def _test_alpha_vantage_estimates(settings: Settings) -> tuple[ProviderHealthSta
         return ProviderHealthStatus.UNAVAILABLE, str(exc)
 
 
-def _test_alpha_vantage_options(settings: Settings) -> tuple[ProviderHealthStatus, str | None]:
-    if not settings.alpha_vantage_api_key:
+def _test_alpha_vantage_options(
+    settings: Settings, db: Session | None
+) -> tuple[ProviderHealthStatus, str | None]:
+    key = resolve_secret(settings, "alpha_vantage", db)
+    if not key:
         return ProviderHealthStatus.AUTH_FAILED, "ALPHA_VANTAGE_API_KEY not configured"
-    provider = AlphaVantageOptionsProvider(api_key=settings.alpha_vantage_api_key)
+    provider = AlphaVantageOptionsProvider(api_key=key)
     try:
         provider.get_option_chain(_PROBE_TICKER, datetime.now(UTC))
         return ProviderHealthStatus.CONNECTED, None
@@ -152,9 +166,11 @@ def _test_ibkr(settings: Settings) -> tuple[ProviderHealthStatus, str | None]:
         return ProviderHealthStatus.RATE_LIMITED, str(exc)
 
 
-def _test_llm(settings: Settings, provider_name: str) -> tuple[ProviderHealthStatus, str | None]:
+def _test_llm(
+    settings: Settings, provider_name: str, db: Session | None
+) -> tuple[ProviderHealthStatus, str | None]:
     try:
-        provider = get_llm_provider(settings, override_provider=provider_name)
+        provider = get_llm_provider(settings, override_provider=provider_name, db=db)
     except MissingAPIKeyError as exc:
         return ProviderHealthStatus.AUTH_FAILED, str(exc)
     except UnknownProviderError as exc:
@@ -181,26 +197,29 @@ def _test_llm(settings: Settings, provider_name: str) -> tuple[ProviderHealthSta
 
 
 def test_connection(
-    settings: Settings, provider: str, domain: str
+    settings: Settings, provider: str, domain: str, db: Session | None = None
 ) -> tuple[ProviderHealthStatus, str | None]:
     """Runs the real, minimal connectivity check for ``provider`` in
-    ``domain``. Raises UnknownTestConnectionTargetError for any
-    (provider, domain) pair that isn't a real, wired-up adapter -- never
-    silently returns a fabricated "connected"."""
+    ``domain``, against whichever key is actually live right now -- an
+    owner-configured credential (see services/secret_store/) if one is
+    stored, else the env var, exactly what a real research request would
+    use. Raises UnknownTestConnectionTargetError for any (provider, domain)
+    pair that isn't a real, wired-up adapter -- never silently returns a
+    fabricated "connected"."""
     if domain == "price_history" and provider == "tiingo":
-        return _test_tiingo(settings)
+        return _test_tiingo(settings, db)
     if domain == "price_history" and provider == "alpha_vantage":
-        return _test_alpha_vantage_prices(settings)
+        return _test_alpha_vantage_prices(settings, db)
     if domain == "earnings_estimates" and provider == "alpha_vantage":
-        return _test_alpha_vantage_estimates(settings)
+        return _test_alpha_vantage_estimates(settings, db)
     if domain == "filings" and provider == "sec_edgar":
         return _test_sec_edgar(settings)
     if domain == "options" and provider == "ibkr":
         return _test_ibkr(settings)
     if domain == "options" and provider == "alpha_vantage":
-        return _test_alpha_vantage_options(settings)
+        return _test_alpha_vantage_options(settings, db)
     if domain == "llm" and provider in ("deepseek", "openai", "anthropic", "openai_compatible"):
-        return _test_llm(settings, provider)
+        return _test_llm(settings, provider, db)
 
     raise UnknownTestConnectionTargetError(
         f"no test-connection check exists for provider={provider!r} domain={domain!r}"

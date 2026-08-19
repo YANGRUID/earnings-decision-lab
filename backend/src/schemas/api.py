@@ -358,6 +358,47 @@ class ProviderDashboardResponse(BaseModel):
     strategy_risk_preference: str = "defined_risk_only"
 
 
+class ProviderUsageSummaryResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    provider: str
+    domain: str
+    request_count: int
+    success_count: int
+    error_count: int
+    rate_limited_count: int
+    avg_latency_ms: float | None
+    input_tokens: int | None
+    output_tokens: int | None
+    total_tokens: int | None
+    estimated_cost: Decimal | None
+    last_event_at: datetime | None
+
+
+class UsageSummaryResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    window: str
+    since: datetime | None
+    total_requests: int
+    total_errors: int
+    total_rate_limited: int
+    total_llm_tokens: int | None
+    total_estimated_cost: Decimal | None
+    providers: list[ProviderUsageSummaryResponse]
+
+
+class ProviderCredentialUpdateRequest(BaseModel):
+    """Add/replace a provider's stored API key. ``base_url``/``model`` only
+    apply to openai_compatible -- ignored for every other provider. Never
+    echoed back in any response; see services/provider_credentials.py and
+    services/secret_store/."""
+
+    api_key: str
+    base_url: str | None = None
+    model: str | None = None
+
+
 class SystemStatusResponse(BaseModel):
     counts: DataCountsResponse
     freshness: DataFreshnessResponse
@@ -460,6 +501,9 @@ class OptionsMarketStateResponse(BaseModel):
     market_data_quality: str | None
     data_state: str
     reason: str
+    snapshot_tier: str
+    is_fallback_snapshot: bool
+    snapshot_purpose: str | None
 
 
 class ResearchOverviewResponse(BaseModel):
@@ -543,6 +587,7 @@ class RankedStrategyResponse(BaseModel):
     explanation: str
     scenario: ScenarioPnlResponse | None
     move_compatibility: MoveCompatibilityResponse | None
+    budget_fit: dict | None = None
 
 
 class StrategyLabResponse(BaseModel):
@@ -639,14 +684,25 @@ class AIThesisVersionResponse(BaseModel):
 
 
 class DecisionGenerateRequest(BaseModel):
-    """Both fields must be given together, or neither -- a manual view
-    override (Phase 14.9 Part K) replaces the AI's own direction/
-    volatility_view classification but leaves every downstream
-    deterministic step (strategy generation, scoring, reasoning)
-    unchanged."""
+    """``direction``/``volatility_view`` must be given together, or
+    neither -- a manual view override (Phase 14.9 Part K) replaces the
+    AI's own direction/volatility_view classification but leaves every
+    downstream deterministic step (strategy generation, scoring,
+    reasoning) unchanged.
+
+    ``trade_budget`` (Phase 14.10 Part G), when given, restricts the
+    recommended/alternative candidates to ones actually affordable at
+    that budget -- see analytics/decision/budget.py. ``risk_cap`` further
+    restricts usable risk capital below the budget itself, either as a
+    dollar amount (``risk_cap_is_percent=False``) or a percentage of
+    ``trade_budget`` (``risk_cap_is_percent=True``).
+    """
 
     direction: str | None = None
     volatility_view: str | None = None
+    trade_budget: Decimal | None = None
+    risk_cap: Decimal | None = None
+    risk_cap_is_percent: bool = False
 
 
 class AIDecisionVersionResponse(BaseModel):
@@ -689,6 +745,12 @@ class AIDecisionVersionResponse(BaseModel):
     model: str
     earnings_estimate_snapshot_id: int | None
     volatility_snapshot_id: int | None
+    trade_budget: Decimal | None
+    risk_cap: Decimal | None
+    risk_cap_is_percent: bool | None
+    recommended_quantity: int | None
+    recommended_capital_at_risk: Decimal | None
+    budget_infeasible_minimum: Decimal | None
     status: str
     is_final: bool
     earnings_event_id: int | None
@@ -701,6 +763,43 @@ class AIDecisionVersionResponse(BaseModel):
     strategy_pnl_available: bool
     settled_at: datetime | None
     created_at: datetime
+    settlement_eligible: bool = False
+    settlement_state: str = "not_final"
+    settlement_reason: str = ""
+    settlement_earliest_date: date | None = None
+
+
+class SettlementAttemptResponse(BaseModel):
+    """Every outcome of an "Attempt Settlement" click is a distinct,
+    real, structured response -- never a silent no-op (Phase 14.10 Part
+    I3). ``settled=True`` only when a real settlement genuinely
+    happened (or had already happened); every other case carries the
+    real, specific reason in ``message``."""
+
+    decision: AIDecisionVersionResponse
+    settled: bool
+    message: str
+
+
+class PendingDecisionResponse(BaseModel):
+    """One Final Decision awaiting settlement, with its company ticker
+    attached since this list spans every company (Phase 14.10 Part I4) --
+    ``AIDecisionVersionResponse`` alone has no ticker."""
+
+    ticker: str
+    decision: AIDecisionVersionResponse
+
+
+class PendingDecisionsResponse(BaseModel):
+    """Real counts of every Final Decision this journal has ever marked,
+    split by whether it has genuinely settled yet -- lets Track Record
+    show "N pending / M settled" without the caller re-deriving it from
+    the full decision list."""
+
+    pending: list[PendingDecisionResponse]
+    final_count: int
+    pending_count: int
+    settled_count: int
 
 
 class RateResponse(BaseModel):

@@ -200,18 +200,20 @@ number.
 | | |
 |---|---|
 | ![Home](docs/screenshots/home.png) **Home** — search-first, recently researched companies | ![Upcoming Earnings](docs/screenshots/upcoming_earnings.png) **Upcoming Earnings** — consensus, implied move, ATM IV, historical comparison |
-| ![Strategy Lab](docs/screenshots/strategy_lab.png) **Strategy Lab** — ranked candidates from a real option chain, with breakeven and historical compatibility | ![Option Chain](docs/screenshots/option_chain.png) **Option Chain** — real strikes, bid/ask, delta, IV, OI, market-data quality |
-| ![AI Earnings Thesis](docs/screenshots/earnings_thesis.png) **AI Earnings Thesis** — grounded, cited synthesis | ![Historical Events](docs/screenshots/history.png) **Historical Events** — real past earnings moves |
+| ![Strategy Lab](docs/screenshots/strategy_lab.png) **Strategy Lab** — ranked candidates from a real option chain (including butterflies and condors), with breakeven and historical compatibility | ![AI Decision](docs/screenshots/ai_decision.png) **AI Decision** — budget-aware recommendation with a deterministic score breakdown, "why this strategy," and settlement status |
+| ![AI Earnings Thesis](docs/screenshots/earnings_thesis.png) **AI Earnings Thesis** — grounded, cited synthesis | ![Track Record](docs/screenshots/track_record.png) **Track Record** — honest reliability metrics and pending Final Decisions awaiting a real outcome |
 
 Additional screens: [Company Overview](docs/screenshots/company_overview.png) ·
+[Historical Events](docs/screenshots/history.png) (real past earnings moves) ·
 [AI Research](docs/screenshots/ai_research.png) (grounded Q&A with tool trace) ·
 [My Exposure](docs/screenshots/my_exposure.png) (real IBKR positions) ·
 [System Status](docs/screenshots/system_status.png) (live data coverage and freshness) ·
 [Cross-Company Replay](docs/screenshots/cross_company_replay.png).
 
-These screenshots are from a recent local build. The AI Options Decision Engine and Track Record
-pages (Phase 14.9) aren't pictured yet — a full screenshot refresh is planned after the next UI
-polish pass.
+These screenshots are captured automatically — fixed viewport, real already-rendered page content,
+no manual cropping — by `npm run screenshots` (`frontend/scripts/capture_screenshots.ts`, driven by
+Playwright) against a locally running dev stack with at least one company already researched. Run
+it again after a UI change to regenerate every image in this section in one pass.
 
 ## Architecture
 

@@ -1,12 +1,104 @@
 import { useState } from "react";
-import { api } from "../api/client";
+import { api, ApiError } from "../api/client";
 import { useAsync } from "../hooks/useAsync";
 import { ErrorState, LoadingState } from "../components/StatusStates";
-import type { Rate } from "../types/api";
+import type { DecisionDirection, Rate } from "../types/api";
+
+const DIRECTION_LABELS: Record<DecisionDirection, string> = {
+  strong_bullish: "Strongly Bullish",
+  bullish: "Bullish",
+  neutral: "Neutral",
+  bearish: "Bearish",
+  strong_bearish: "Strongly Bearish",
+};
 
 function pct(rate: Rate): string {
   if (rate.pct === null) return "—";
   return `${(Number(rate.pct) * 100).toFixed(0)}%`;
+}
+
+function PendingFinalDecisions() {
+  const pendingState = useAsync(() => api.getPendingDecisions(), []);
+  const [settlingId, setSettlingId] = useState<number | null>(null);
+  const [messages, setMessages] = useState<Record<number, string>>({});
+
+  const trySettle = async (ticker: string, id: number) => {
+    setSettlingId(id);
+    setMessages((prev) => ({ ...prev, [id]: "" }));
+    try {
+      const result = await api.settleDecision(ticker, id);
+      setMessages((prev) => ({ ...prev, [id]: result.message }));
+      pendingState.reload();
+    } catch (err) {
+      setMessages((prev) => ({
+        ...prev,
+        [id]: err instanceof ApiError ? err.message : "Could not attempt settlement.",
+      }));
+    } finally {
+      setSettlingId(null);
+    }
+  };
+
+  if (pendingState.loading && !pendingState.data) return null;
+  if (pendingState.error && !pendingState.data) return null;
+  if (!pendingState.data || pendingState.data.final_count === 0) return null;
+
+  const { pending, final_count, pending_count, settled_count } = pendingState.data;
+
+  return (
+    <div className="card">
+      <h2>Pending Final Decisions</h2>
+      <p className="text-sm text-muted" style={{ marginTop: 0 }}>
+        {final_count} Final Decision{final_count === 1 ? "" : "s"} marked overall — {settled_count}{" "}
+        settled, {pending_count} still awaiting a real post-earnings outcome.
+      </p>
+      {pending.length === 0 ? (
+        <p className="text-sm text-faint" style={{ marginBottom: 0 }}>
+          Every Final Decision has been settled.
+        </p>
+      ) : (
+        <table>
+          <thead>
+            <tr>
+              <th>Ticker</th>
+              <th>Direction</th>
+              <th>Generated</th>
+              <th>Status</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {pending.map(({ ticker, decision }) => (
+              <tr key={decision.id}>
+                <td className="mono">{ticker}</td>
+                <td>{DIRECTION_LABELS[decision.direction]}</td>
+                <td className="text-sm text-faint">
+                  {new Date(decision.created_at).toLocaleDateString()}
+                </td>
+                <td className="text-sm text-muted">{decision.settlement_reason}</td>
+                <td>
+                  <button
+                    className="btn-secondary"
+                    onClick={() => trySettle(ticker, decision.id)}
+                    disabled={settlingId === decision.id}
+                  >
+                    {settlingId === decision.id ? "Attempting…" : "Attempt Settlement"}
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+      {Object.entries(messages)
+        .filter(([, message]) => message)
+        .map(([id, message]) => (
+          <div key={id} className="notice" style={{ marginTop: 8, marginBottom: 0 }}>
+            {message}
+          </div>
+        ))}
+    </div>
+  );
 }
 
 function RateRow({ label, rate }: { label: string; rate: Rate }) {
@@ -47,6 +139,8 @@ export function TrackRecord() {
           actually captured — never estimated.
         </p>
       </div>
+
+      <PendingFinalDecisions />
 
       <div className="card" style={{ display: "flex", gap: 16, alignItems: "center", flexWrap: "wrap" }}>
         <div style={{ display: "flex", gap: 4 }}>

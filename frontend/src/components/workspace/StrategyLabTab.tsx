@@ -64,10 +64,21 @@ function StrategyLabStateBar({ lab }: { lab: StrategyLab }) {
       </div>
       {isStale && (
         <div className="notice" style={{ marginTop: 12, marginBottom: 0 }}>
-          <strong>Using {lab.snapshot_source ? providerLabel(lab.snapshot_source) : "a"}{" "}
-          snapshot from a previous session</strong>
-          {lab.snapshot_age_label && ` (${lab.snapshot_age_label} ago)`} — every strategy below is
-          computed from this stale data and may differ materially from current tradable prices.
+          <strong>
+            Using {lab.snapshot_source ? providerLabel(lab.snapshot_source) : "a"}{" "}
+            {lab.options_market.is_fallback_snapshot
+              ? lab.options_market.snapshot_purpose === "close"
+                ? "previous close"
+                : "previous-session"
+              : "previous session"}{" "}
+            snapshot
+          </strong>
+          {lab.snapshot_age_label && ` (${lab.snapshot_age_label} ago)`}
+          {lab.options_market.is_fallback_snapshot
+            ? " — the current chain has no priceable quotes, so pricing was carried forward " +
+              "from this earlier snapshot instead of leaving the whole page unavailable."
+            : " — every strategy below is computed from this stale data and may differ " +
+              "materially from current tradable prices."}
         </div>
       )}
     </div>
@@ -147,6 +158,37 @@ function StrategyCard({ strategy, ticker }: { strategy: RankedStrategy; ticker: 
           {pct(strategy.move_compatibility.required_move_pct)} (
           {pct(strategy.move_compatibility.compatible_pct, 0)} of history).
         </p>
+      )}
+
+      {strategy.budget_fit && !strategy.budget_fit.feasible && (
+        <div className="notice" style={{ marginTop: 10, marginBottom: 0 }}>
+          <strong>Not feasible for {formatMoney(strategy.budget_fit.trade_budget, 0)} budget.</strong>{" "}
+          {strategy.budget_fit.minimum_required
+            ? `Minimum defined risk is ${formatMoney(strategy.budget_fit.minimum_required, 0)} per contract.`
+            : "This structure has no computable defined risk."}
+        </div>
+      )}
+      {strategy.budget_fit && strategy.budget_fit.feasible && (
+        <div className="grid grid-3" style={{ gap: 10, marginTop: 10 }}>
+          <div className="stat">
+            <span className="stat-label">Contracts ({formatMoney(strategy.budget_fit.trade_budget, 0)} budget)</span>
+            <span className="stat-value small">{strategy.budget_fit.max_feasible_quantity}</span>
+          </div>
+          <div className="stat">
+            <span className="stat-label">Max loss (position)</span>
+            <span className="stat-value small">
+              {strategy.budget_fit.total_max_loss ? formatMoney(strategy.budget_fit.total_max_loss, 0) : "—"}
+            </span>
+          </div>
+          <div className="stat">
+            <span className="stat-label">Remaining budget</span>
+            <span className="stat-value small">
+              {strategy.budget_fit.remaining_budget
+                ? formatMoney(strategy.budget_fit.remaining_budget, 0)
+                : "—"}
+            </span>
+          </div>
+        </div>
       )}
     </div>
   );
@@ -349,15 +391,32 @@ function ManualStrategyCalculator() {
 }
 
 export function StrategyLabTab({ ticker }: { ticker: string }) {
-  const lab = useAsync(() => api.getStrategyLab(ticker), [ticker]);
+  const [tradeBudget, setTradeBudget] = useState("");
+  const lab = useAsync(
+    () => api.getStrategyLab(ticker, tradeBudget.trim() ? { budget: tradeBudget.trim() } : {}),
+    [ticker, tradeBudget]
+  );
 
-  if (lab.loading) return <LoadingState label="Loading strategy candidates…" />;
-  if (lab.error) return <ErrorState message={lab.error} />;
+  if (lab.loading && !lab.data) return <LoadingState label="Loading strategy candidates…" />;
+  if (lab.error && !lab.data) return <ErrorState message={lab.error} />;
   if (!lab.data) return null;
 
   return (
     <div>
       <StrategyLabStateBar lab={lab.data} />
+
+      <div className="card" style={{ maxWidth: 280 }}>
+        <div className="field" style={{ marginBottom: 0 }}>
+          <label>Trade budget (optional)</label>
+          <input
+            type="number"
+            min="0"
+            placeholder="e.g. 500"
+            value={tradeBudget}
+            onChange={(e) => setTradeBudget(e.target.value)}
+          />
+        </div>
+      </div>
 
       {lab.data.strategies.length === 0 ? (
         <div className="card">

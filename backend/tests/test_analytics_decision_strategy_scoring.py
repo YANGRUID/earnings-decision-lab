@@ -96,6 +96,7 @@ class TestScoreCandidateForView:
         breakdown, target_price, payoff, _ = score_candidate_for_view(
             _long_call(),
             direction=DecisionDirection.STRONG_BULLISH,
+            volatility_view=DecisionVolatilityView.LONG_VOL,
             implied_move_pct=Decimal("0.10"),
             historical_move_pcts=[Decimal("0.08"), Decimal("0.12")],
             has_bid_ask=True,
@@ -105,13 +106,14 @@ class TestScoreCandidateForView:
         assert payoff is not None and payoff > 0
         assert breakdown.direction_fit > 0
         assert breakdown.liquidity == 10
-        assert breakdown.data_quality == 5
+        assert breakdown.data_quality == 10
         assert breakdown.total <= 100
 
     def test_long_call_scores_zero_direction_fit_for_bearish_view(self):
         breakdown, _, payoff, _ = score_candidate_for_view(
             _long_call(),
             direction=DecisionDirection.STRONG_BEARISH,
+            volatility_view=DecisionVolatilityView.LONG_VOL,
             implied_move_pct=Decimal("0.10"),
             historical_move_pcts=[],
             has_bid_ask=True,
@@ -124,6 +126,7 @@ class TestScoreCandidateForView:
         breakdown, *_ = score_candidate_for_view(
             _long_call(),
             direction=DecisionDirection.BULLISH,
+            volatility_view=DecisionVolatilityView.LONG_VOL,
             implied_move_pct=Decimal("0.10"),
             historical_move_pcts=[],
             has_bid_ask=False,
@@ -137,6 +140,7 @@ class TestScoreCandidateForView:
         breakdown, *_ = score_candidate_for_view(
             _put_credit_spread(),
             direction=DecisionDirection.BULLISH,
+            volatility_view=DecisionVolatilityView.SHORT_VOL,
             implied_move_pct=Decimal("0.10"),
             historical_move_pcts=[],
             has_bid_ask=True,
@@ -151,6 +155,7 @@ class TestScoreCandidateForView:
         breakdown, *_ = score_candidate_for_view(
             _uncovered_short_call(),
             direction=DecisionDirection.BEARISH,
+            volatility_view=DecisionVolatilityView.SHORT_VOL,
             implied_move_pct=Decimal("0.10"),
             historical_move_pcts=[],
             has_bid_ask=True,
@@ -162,12 +167,84 @@ class TestScoreCandidateForView:
         breakdown, *_ = score_candidate_for_view(
             _long_call(),
             direction=DecisionDirection.STRONG_BULLISH,
+            volatility_view=DecisionVolatilityView.LONG_VOL,
             implied_move_pct=Decimal("0.10"),
             historical_move_pcts=[Decimal("0.15")] * 10,
             has_bid_ask=True,
             market_data_quality="live",
         )
         assert breakdown.total <= 100
+
+    def test_long_call_scores_full_volatility_fit_for_long_vol_view(self):
+        # A long call is a net-debit position -- full volatility_fit
+        # weight under LONG_VOL, zero under SHORT_VOL.
+        breakdown, *_ = score_candidate_for_view(
+            _long_call(),
+            direction=DecisionDirection.BULLISH,
+            volatility_view=DecisionVolatilityView.LONG_VOL,
+            implied_move_pct=Decimal("0.10"),
+            historical_move_pcts=[],
+            has_bid_ask=True,
+            market_data_quality="live",
+        )
+        assert breakdown.volatility_fit == 15
+
+    def test_long_call_scores_zero_volatility_fit_for_short_vol_view(self):
+        breakdown, *_ = score_candidate_for_view(
+            _long_call(),
+            direction=DecisionDirection.BULLISH,
+            volatility_view=DecisionVolatilityView.SHORT_VOL,
+            implied_move_pct=Decimal("0.10"),
+            historical_move_pcts=[],
+            has_bid_ask=True,
+            market_data_quality="live",
+        )
+        assert breakdown.volatility_fit == 0
+
+    def test_credit_spread_scores_full_volatility_fit_for_short_vol_view(self):
+        # A put credit spread is a net-credit position -- the opposite
+        # pattern from the long call above.
+        short_breakdown, *_ = score_candidate_for_view(
+            _put_credit_spread(),
+            direction=DecisionDirection.NEUTRAL,
+            volatility_view=DecisionVolatilityView.SHORT_VOL,
+            implied_move_pct=Decimal("0.10"),
+            historical_move_pcts=[],
+            has_bid_ask=True,
+            market_data_quality="live",
+        )
+        long_breakdown, *_ = score_candidate_for_view(
+            _put_credit_spread(),
+            direction=DecisionDirection.NEUTRAL,
+            volatility_view=DecisionVolatilityView.LONG_VOL,
+            implied_move_pct=Decimal("0.10"),
+            historical_move_pcts=[],
+            has_bid_ask=True,
+            market_data_quality="live",
+        )
+        assert short_breakdown.volatility_fit == 15
+        assert long_breakdown.volatility_fit == 0
+
+    def test_neutral_vol_view_gives_a_fixed_midpoint_regardless_of_structure(self):
+        long_call_breakdown, *_ = score_candidate_for_view(
+            _long_call(),
+            direction=DecisionDirection.NEUTRAL,
+            volatility_view=DecisionVolatilityView.NEUTRAL_VOL,
+            implied_move_pct=Decimal("0.10"),
+            historical_move_pcts=[],
+            has_bid_ask=True,
+            market_data_quality="live",
+        )
+        credit_spread_breakdown, *_ = score_candidate_for_view(
+            _put_credit_spread(),
+            direction=DecisionDirection.NEUTRAL,
+            volatility_view=DecisionVolatilityView.NEUTRAL_VOL,
+            implied_move_pct=Decimal("0.10"),
+            historical_move_pcts=[],
+            has_bid_ask=True,
+            market_data_quality="live",
+        )
+        assert long_call_breakdown.volatility_fit == credit_spread_breakdown.volatility_fit == 8
 
 
 class TestRankCandidatesForView:
@@ -210,6 +287,50 @@ class TestRankCandidatesForView:
             )
             == []
         )
+
+    def test_neutral_long_vol_does_not_rank_a_short_vol_credit_structure_first(self):
+        # The real bug this component fixes: under a Neutral direction,
+        # direction_fit alone can't distinguish a long-vol long straddle
+        # from a short-vol put credit spread (neither's payoff differs
+        # much at a "no move" target price) -- volatility_fit must be what
+        # breaks that tie in favor of the structure that actually matches
+        # a stated Long Vol view.
+        straddle = _candidate(
+            StrategyCategory.LONG_STRADDLE,
+            [
+                OptionLeg(OptionType.CALL, Action.BUY, Decimal("100"), Decimal("3")),
+                OptionLeg(OptionType.PUT, Action.BUY, Decimal("100"), Decimal("3")),
+            ],
+        )
+        ranked = rank_candidates_for_view(
+            [_put_credit_spread(), straddle],
+            direction=DecisionDirection.NEUTRAL,
+            volatility_view=DecisionVolatilityView.LONG_VOL,
+            implied_move_pct=Decimal("0.10"),
+            historical_move_pcts=[],
+            has_bid_ask=True,
+            market_data_quality="live",
+        )
+        assert ranked[0].candidate.category == StrategyCategory.LONG_STRADDLE
+
+    def test_neutral_short_vol_favors_the_credit_structure_over_the_debit_one(self):
+        straddle = _candidate(
+            StrategyCategory.LONG_STRADDLE,
+            [
+                OptionLeg(OptionType.CALL, Action.BUY, Decimal("100"), Decimal("3")),
+                OptionLeg(OptionType.PUT, Action.BUY, Decimal("100"), Decimal("3")),
+            ],
+        )
+        ranked = rank_candidates_for_view(
+            [straddle, _put_credit_spread()],
+            direction=DecisionDirection.NEUTRAL,
+            volatility_view=DecisionVolatilityView.SHORT_VOL,
+            implied_move_pct=Decimal("0.10"),
+            historical_move_pcts=[],
+            has_bid_ask=True,
+            market_data_quality="live",
+        )
+        assert ranked[0].candidate.category == StrategyCategory.PUT_CREDIT_SPREAD
 
 
 class TestFilterCandidatesByRiskPreference:

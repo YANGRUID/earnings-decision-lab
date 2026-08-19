@@ -9,7 +9,7 @@ from analytics.decision.reasoning import (
 from analytics.decision.strategy_scoring import ViewRankedStrategy, score_candidate_for_view
 from analytics.options.payoff import Action, OptionLeg, analyze
 from analytics.options.strategy_candidates import StrategyCandidate, StrategyCategory
-from models.enums import DecisionDirection, OptionType
+from models.enums import DecisionDirection, DecisionVolatilityView, OptionType
 
 EXP = date(2026, 9, 18)
 UNDERLYING = Decimal("100")
@@ -30,6 +30,7 @@ def _ranked(candidate: StrategyCandidate, direction: DecisionDirection) -> ViewR
     breakdown, target_price, payoff, compat = score_candidate_for_view(
         candidate,
         direction=direction,
+        volatility_view=DecisionVolatilityView.NEUTRAL_VOL,
         implied_move_pct=Decimal("0.10"),
         historical_move_pcts=[Decimal("0.08"), Decimal("0.12"), Decimal("0.03")],
         has_bid_ask=True,
@@ -84,6 +85,7 @@ def test_risk_bullets_flag_small_sample_size():
     breakdown, target_price, payoff, compat = score_candidate_for_view(
         candidate,
         direction=DecisionDirection.BULLISH,
+        volatility_view=DecisionVolatilityView.NEUTRAL_VOL,
         implied_move_pct=Decimal("0.10"),
         historical_move_pcts=[Decimal("0.08")],  # only 1 -- small sample
         has_bid_ask=True,

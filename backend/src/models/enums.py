@@ -143,6 +143,35 @@ class DecisionStatus(enum.StrEnum):
     VOID = "void"
 
 
+class OptionsSnapshotPurpose(enum.StrEnum):
+    """Why an options/volatility snapshot was captured, set once at
+    collection time from which code path actually ran -- never inferred
+    later from its timestamp alone (see Phase 14.10 Part D). This is
+    orthogonal to OptionsSnapshotAnchor (which describes *which expiration*
+    was chosen); purpose describes *when/why* the capture happened, and is
+    what lets the snapshot-selection fallback (services/options_analytics.py)
+    honestly distinguish "captured deliberately at a session's close" from
+    "just whatever was most recently captured on demand or by the forward
+    scheduler" -- see OptionsSnapshotPurpose.CLOSE's docstring below for the
+    exact honesty rule this enables."""
+
+    #: Captured on demand (a user's Prepare/Refresh click) or by the
+    #: forward-collection cron -- the default for every snapshot this
+    #: project has ever taken before this enum existed.
+    INTRADAY = "intraday"
+    #: Deliberately captured at/near a real market close by
+    #: ingestion/capture_close_snapshot.py -- ONLY a snapshot with this
+    #: purpose may ever be labeled "Previous close" in the UI; every other
+    #: snapshot is labeled by its real timestamp instead (e.g.
+    #: "Previous-session snapshot · 15:21 ET"), never assumed to be a close.
+    CLOSE = "close"
+    #: A human-triggered one-off capture outside the normal pipeline.
+    MANUAL = "manual"
+    #: Captured specifically anchored to an upcoming earnings event (T-14/
+    #: T-7/T-3/T-1) by the forward-collection scheduler.
+    EARNINGS = "earnings"
+
+
 class StrategyRiskPreference(enum.StrEnum):
     """Owner-controlled ceiling on which strategy categories the Decision
     Engine (and Strategy Lab) may surface -- defaults to the most

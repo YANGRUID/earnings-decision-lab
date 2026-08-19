@@ -109,3 +109,52 @@ def iron_condor(
         OptionLeg(OptionType.CALL, Action.SELL, call_short_strike, call_short_premium),
         OptionLeg(OptionType.CALL, Action.BUY, call_long_strike, call_long_premium),
     ]
+
+
+def long_call_butterfly(
+    lower_strike: Decimal,
+    lower_premium: Decimal,
+    middle_strike: Decimal,
+    middle_premium: Decimal,
+    upper_strike: Decimal,
+    upper_premium: Decimal,
+) -> list[OptionLeg]:
+    """Buy 1 lower-strike call, sell 2 middle-strike calls, buy 1 upper-
+    strike call -- defined risk, profits most if the underlying pins near
+    middle_strike at expiration. Strikes must satisfy
+    lower_strike < middle_strike < upper_strike."""
+    if not (lower_strike < middle_strike < upper_strike):
+        raise ValueError(
+            "long call butterfly requires lower_strike < middle_strike < upper_strike"
+        )
+    return [
+        OptionLeg(OptionType.CALL, Action.BUY, lower_strike, lower_premium),
+        OptionLeg(OptionType.CALL, Action.SELL, middle_strike, middle_premium, quantity=2),
+        OptionLeg(OptionType.CALL, Action.BUY, upper_strike, upper_premium),
+    ]
+
+
+def iron_butterfly(
+    put_long_strike: Decimal,
+    put_long_premium: Decimal,
+    center_strike: Decimal,
+    put_short_premium: Decimal,
+    call_short_premium: Decimal,
+    call_long_strike: Decimal,
+    call_long_premium: Decimal,
+) -> list[OptionLeg]:
+    """Short iron butterfly: sell an at-the-money straddle (short put +
+    short call at the same center strike), buy OTM put/call wings for
+    protection -- defined risk, profits most if the underlying pins near
+    center_strike. Strikes must satisfy
+    put_long_strike < center_strike < call_long_strike."""
+    if not (put_long_strike < center_strike < call_long_strike):
+        raise ValueError(
+            "iron butterfly requires put_long_strike < center_strike < call_long_strike"
+        )
+    return [
+        OptionLeg(OptionType.PUT, Action.BUY, put_long_strike, put_long_premium),
+        OptionLeg(OptionType.PUT, Action.SELL, center_strike, put_short_premium),
+        OptionLeg(OptionType.CALL, Action.SELL, center_strike, call_short_premium),
+        OptionLeg(OptionType.CALL, Action.BUY, call_long_strike, call_long_premium),
+    ]

@@ -37,6 +37,8 @@ class StrategyCategory(StrEnum):
     LONG_STRADDLE = "long_straddle"
     LONG_STRANGLE = "long_strangle"
     IRON_CONDOR = "iron_condor"
+    LONG_CALL_BUTTERFLY = "long_call_butterfly"
+    IRON_BUTTERFLY = "iron_butterfly"
 
 
 @dataclass(frozen=True)
@@ -198,6 +200,46 @@ def _build_iron_condor(
     return strat.iron_condor(pls, plp, pss, psp, css, csp, cls, clp)
 
 
+def _build_long_call_butterfly(
+    quotes: list[OptionQuote], call_strikes: list[Decimal], idx: int
+) -> list[OptionLeg] | None:
+    lower = _leg_at_offset(quotes, "call", call_strikes, idx, -1)
+    middle = _leg_at_offset(quotes, "call", call_strikes, idx, 0)
+    upper = _leg_at_offset(quotes, "call", call_strikes, idx, 1)
+    if lower is None or middle is None or upper is None:
+        return None
+    (lo_s, lo_p), (mid_s, mid_p), (up_s, up_p) = lower, middle, upper
+    if not (lo_s < mid_s < up_s):
+        return None
+    return strat.long_call_butterfly(lo_s, lo_p, mid_s, mid_p, up_s, up_p)
+
+
+def _build_iron_butterfly(
+    quotes: list[OptionQuote],
+    call_strikes: list[Decimal],
+    put_strikes: list[Decimal],
+    call_idx: int,
+    put_idx: int,
+) -> list[OptionLeg] | None:
+    put_short = _leg_at_offset(quotes, "put", put_strikes, put_idx, 0)
+    call_short = _leg_at_offset(quotes, "call", call_strikes, call_idx, 0)
+    put_long = _leg_at_offset(quotes, "put", put_strikes, put_idx, -1)
+    call_long = _leg_at_offset(quotes, "call", call_strikes, call_idx, 1)
+    if put_short is None or call_short is None or put_long is None or call_long is None:
+        return None
+    (pss, psp), (css, csp) = put_short, call_short
+    (pls, plp), (cls, clp) = put_long, call_long
+    # A real iron butterfly needs one shared center strike -- if the
+    # nearest-ATM put and call strikes differ, this chain can't honestly
+    # support one at this expiration (same rule the long straddle uses).
+    if pss != css:
+        return None
+    center = pss
+    if not (pls < center < cls):
+        return None
+    return strat.iron_butterfly(pls, plp, center, psp, csp, cls, clp)
+
+
 def generate_candidates(
     quotes: list[OptionQuote], underlying_price: Decimal, expiration: date
 ) -> list[StrategyCandidate]:
@@ -229,6 +271,12 @@ def generate_candidates(
             (
                 StrategyCategory.CALL_CREDIT_SPREAD,
                 _build_call_credit_spread(same_expiration, call_strikes, call_idx),
+            )
+        )
+        builders.append(
+            (
+                StrategyCategory.LONG_CALL_BUTTERFLY,
+                _build_long_call_butterfly(same_expiration, call_strikes, call_idx),
             )
         )
     if put_idx is not None:
@@ -264,6 +312,14 @@ def generate_candidates(
             (
                 StrategyCategory.IRON_CONDOR,
                 _build_iron_condor(same_expiration, call_strikes, put_strikes, call_idx, put_idx),
+            )
+        )
+        builders.append(
+            (
+                StrategyCategory.IRON_BUTTERFLY,
+                _build_iron_butterfly(
+                    same_expiration, call_strikes, put_strikes, call_idx, put_idx
+                ),
             )
         )
 

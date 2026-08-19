@@ -1472,11 +1472,64 @@ def test_decision_settle_is_a_noop_without_real_post_earnings_data(client, db_se
     client.post("/api/v1/research/zzdecsetl/decision")
     versions = client.get("/api/v1/research/zzdecsetl/decisions").json()
     decision_id = versions[0]["id"]
+    client.post(f"/api/v1/research/zzdecsetl/decisions/{decision_id}/final")
 
     response = client.post(f"/api/v1/research/zzdecsetl/decisions/{decision_id}/settle")
 
     assert response.status_code == 200
-    assert response.json()["status"] == "open"  # no real earnings event yet -- untouched
+    body = response.json()
+    assert body["settled"] is False
+    assert body["message"]  # a real, specific reason -- never a silent no-op
+    assert body["decision"]["status"] == "open"  # no real earnings event yet -- untouched
+
+
+def test_decision_settle_reports_not_final_before_final_decision_is_marked(client, db_session):
+    from models.company import Company
+
+    db_session.add(Company(ticker="ZZDECNF", name="ZZ Decision Not Final Co", cik="0009999940"))
+    db_session.flush()
+
+    client.post("/api/v1/research/zzdecnf/decision")
+    versions = client.get("/api/v1/research/zzdecnf/decisions").json()
+    decision_id = versions[0]["id"]
+
+    response = client.post(f"/api/v1/research/zzdecnf/decisions/{decision_id}/settle")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["settled"] is False
+    assert "final" in body["message"].lower()
+    assert body["decision"]["settlement_state"] == "not_final"
+    assert body["decision"]["settlement_eligible"] is False
+
+
+def test_pending_final_decisions_lists_final_open_decisions_across_companies(client, db_session):
+    from models.company import Company
+
+    db_session.add(Company(ticker="ZZDECPEND", name="ZZ Decision Pending Co", cik="0009999941"))
+    db_session.flush()
+
+    before = client.get("/api/v1/research/decisions/pending").json()
+    before_pending_ids = {p["decision"]["id"] for p in before["pending"]}
+
+    client.post("/api/v1/research/zzdecpend/decision")
+    versions = client.get("/api/v1/research/zzdecpend/decisions").json()
+    decision_id = versions[0]["id"]
+
+    # Not final yet -- must not appear in the pending list.
+    mid = client.get("/api/v1/research/decisions/pending").json()
+    assert decision_id not in {p["decision"]["id"] for p in mid["pending"]}
+
+    client.post(f"/api/v1/research/zzdecpend/decisions/{decision_id}/final")
+
+    after = client.get("/api/v1/research/decisions/pending").json()
+    after_pending_ids = {p["decision"]["id"] for p in after["pending"]}
+    assert decision_id in after_pending_ids
+    assert after["final_count"] == before["final_count"] + 1
+    assert after["pending_count"] == len(after["pending"])
+    row = next(p for p in after["pending"] if p["decision"]["id"] == decision_id)
+    assert row["ticker"] == "ZZDECPEND"
+    assert before_pending_ids <= after_pending_ids
 
 
 def test_track_record_with_no_settled_decisions_returns_honest_empty_state(client):

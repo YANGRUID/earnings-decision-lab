@@ -6,7 +6,14 @@ from analytics.decision.strategy_scoring import ViewRankedStrategy, score_candid
 from analytics.options.payoff import Action, OptionLeg, analyze
 from analytics.options.strategy_candidates import StrategyCandidate, StrategyCategory
 from models.company import Company
-from models.enums import DecisionDirection, DecisionSource, OptionType, StrategyRiskPreference
+from models.enums import (
+    DecisionDirection,
+    DecisionSource,
+    DecisionStatus,
+    DecisionVolatilityView,
+    OptionType,
+    StrategyRiskPreference,
+)
 from rag.context import Citation
 from schemas.decision import DecisionView
 from services.decision_engine import DecisionResult, ScoredStrategy
@@ -48,6 +55,7 @@ def _scored_strategy() -> ScoredStrategy:
     breakdown, target_price, payoff, compat = score_candidate_for_view(
         candidate,
         direction=DecisionDirection.BULLISH,
+        volatility_view=DecisionVolatilityView.NEUTRAL_VOL,
         implied_move_pct=Decimal("0.10"),
         historical_move_pcts=[Decimal("0.08")],
         has_bid_ask=True,
@@ -252,3 +260,19 @@ class TestListAllDecisions:
 
         assert all(r.is_final for r in rows)
         assert any(r.id == first.id for r in rows)
+
+    def test_status_filter(self, db_session):
+        company = _seed_company(db_session, ticker="ZZDHISTST")
+        open_decision = persist_decision(db_session, company=company, result=_decision_result())
+        settled_decision = persist_decision(db_session, company=company, result=_decision_result())
+        settled_decision.status = DecisionStatus.SETTLED
+        db_session.add(settled_decision)
+        db_session.commit()
+
+        rows = list_all_decisions(
+            db_session, filters=DecisionListFilters(status=DecisionStatus.OPEN)
+        )
+
+        row_ids = {r.id for r in rows}
+        assert open_decision.id in row_ids
+        assert settled_decision.id not in row_ids

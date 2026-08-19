@@ -55,6 +55,15 @@ class Settings(BaseSettings):
     openai_compatible_base_url: str | None = None
     openai_compatible_model: str | None = None
 
+    # Encrypts owner-entered provider credentials stored in the
+    # `provider_credential` table (see services/secret_store/) so an owner
+    # can set/replace/remove API keys from the Settings UI instead of
+    # editing this .env file directly. Generate with:
+    #   python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+    # Required only to ADD a credential through the UI -- env-var-configured
+    # providers keep working with no master key set at all.
+    secret_store_master_key: str | None = None
+
     langfuse_public_key: str | None = None
     langfuse_secret_key: str | None = None
     otel_exporter_otlp_endpoint: str | None = None

@@ -7,7 +7,12 @@ from analytics.options.payoff import Action, OptionLeg, analyze
 from analytics.options.strategy_candidates import StrategyCandidate, StrategyCategory
 from models.company import Company
 from models.earnings_event import EarningsEvent
-from models.enums import DecisionDirection, OptionType, StrategyRiskPreference
+from models.enums import (
+    DecisionDirection,
+    DecisionVolatilityView,
+    OptionType,
+    StrategyRiskPreference,
+)
 from models.price_reaction import PriceReaction
 from rag.context import Citation
 from schemas.decision import DecisionView
@@ -65,6 +70,7 @@ def _decision_result(direction: str, confidence_total: int) -> DecisionResult:
     breakdown, target_price, payoff, compat = score_candidate_for_view(
         candidate,
         direction=DecisionDirection(direction),
+        volatility_view=DecisionVolatilityView.NEUTRAL_VOL,
         implied_move_pct=Decimal("0.05"),
         historical_move_pcts=[],
         has_bid_ask=True,

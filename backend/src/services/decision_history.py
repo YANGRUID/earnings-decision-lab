@@ -17,9 +17,14 @@ from sqlalchemy.orm import Session
 
 from models.ai_decision_version import AIDecisionVersion
 from models.company import Company
-from models.enums import DecisionSource
+from models.enums import DecisionSource, DecisionStatus
 from rag.context import Citation
-from services.decision_engine import DecisionResult, analysis_to_dict, leg_to_dict
+from services.decision_engine import (
+    DecisionResult,
+    analysis_to_dict,
+    budget_fit_to_dict,
+    leg_to_dict,
+)
 
 DEFAULT_HISTORY_LIMIT = 20
 MAX_HISTORY_LIMIT = 100
@@ -56,6 +61,7 @@ def _strategy_json(scored) -> dict | None:  # noqa: ANN001 -- services.decision_
         "payoff_at_target": (
             str(ranked.payoff_at_target) if ranked.payoff_at_target is not None else None
         ),
+        "budget_fit": budget_fit_to_dict(scored.budget_fit),
     }
 
 
@@ -113,6 +119,20 @@ def persist_decision(
         model=result.model,
         earnings_estimate_snapshot_id=result.estimate_snapshot_id,
         volatility_snapshot_id=result.volatility_snapshot_id,
+        trade_budget=result.trade_budget,
+        risk_cap=result.risk_cap,
+        risk_cap_is_percent=result.risk_cap_is_percent if result.trade_budget is not None else None,
+        recommended_quantity=(
+            recommended.budget_fit.max_feasible_quantity
+            if recommended is not None and recommended.budget_fit is not None
+            else None
+        ),
+        recommended_capital_at_risk=(
+            recommended.budget_fit.total_max_loss
+            if recommended is not None and recommended.budget_fit is not None
+            else None
+        ),
+        budget_infeasible_minimum=result.budget_infeasible_minimum,
     )
     db.add(row)
     db.commit()
@@ -169,6 +189,7 @@ def mark_final(db: Session, decision_id: int) -> AIDecisionVersion | None:
 class DecisionListFilters:
     ticker: str | None = None
     is_final_only: bool = False
+    status: DecisionStatus | None = None
 
 
 def list_all_decisions(
@@ -186,6 +207,8 @@ def list_all_decisions(
         query = query.filter(Company.ticker == filters.ticker)
     if filters.is_final_only:
         query = query.filter(AIDecisionVersion.is_final.is_(True))
+    if filters.status is not None:
+        query = query.filter(AIDecisionVersion.status == filters.status)
     return (
         query.order_by(AIDecisionVersion.created_at.desc(), AIDecisionVersion.id.desc())
         .offset(offset)

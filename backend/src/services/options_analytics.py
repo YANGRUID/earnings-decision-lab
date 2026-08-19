@@ -22,6 +22,7 @@ none) is configured.
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
+from typing import Literal
 
 from sqlalchemy.orm import Session
 
@@ -44,7 +45,13 @@ from analytics.options.sentiment import (
 )
 from models.company import Company
 from models.earnings_event import EarningsEvent
-from models.enums import DataState, MarketDataQuality, OptionsSnapshotAnchor, OptionType
+from models.enums import (
+    DataState,
+    MarketDataQuality,
+    OptionsSnapshotAnchor,
+    OptionsSnapshotPurpose,
+    OptionType,
+)
 from models.options_snapshot import OptionsSnapshot
 from models.price_bar import PriceBar
 from models.price_reaction import PriceReaction
@@ -61,6 +68,102 @@ def _latest_snapshot_timestamp(db: Session, company_id: int) -> datetime | None:
         .first()
     )
     return row[0] if row else None
+
+
+def _is_priceable(quotes: list[OptionQuote]) -> bool:
+    return any(q.bid is not None or q.ask is not None or q.last_price is not None for q in quotes)
+
+
+def _rows_at_timestamp(db: Session, company_id: int, ts: datetime) -> list[OptionsSnapshot]:
+    return (
+        db.query(OptionsSnapshot)
+        .filter(OptionsSnapshot.company_id == company_id, OptionsSnapshot.snapshot_timestamp == ts)
+        .order_by(OptionsSnapshot.expiration_date, OptionsSnapshot.strike)
+        .all()
+    )
+
+
+SnapshotTier = Literal["current_priceable", "previous_priceable", "contracts_only", "none"]
+
+
+@dataclass(frozen=True)
+class PricingSnapshotSelection:
+    """The result of the canonical snapshot-selection policy (Phase 14.10
+    Part D) -- what strategy pricing and implied-move calculation should
+    actually use, and honest provenance about why. Never fabricates a
+    price: ``contracts_only`` still carries real contracts/Greeks, just no
+    usable bid/ask/last on any of them.
+    """
+
+    quotes: list[OptionQuote]
+    tier: SnapshotTier
+    is_fallback: bool
+    purpose: str | None
+    snapshot_timestamp: datetime | None
+
+
+def select_pricing_snapshot(db: Session, company: Company) -> PricingSnapshotSelection:
+    """Canonical snapshot-selection policy: (1) the current (most recently
+    collected) snapshot, if at least one contract has a real bid/ask/last;
+    else (2) the most recent *previously* stored snapshot that is
+    priceable -- explicitly labeled as a fallback, never silently
+    presented as current, and never relabeled "previous close" unless it
+    was actually captured with that purpose (see
+    models.enums.OptionsSnapshotPurpose); else (3) the current snapshot's
+    real contracts/Greeks with no pricing, rather than inventing one; else
+    (4) nothing, when no snapshot has ever been collected.
+    """
+    latest_ts = _latest_snapshot_timestamp(db, company.id)
+    if latest_ts is None:
+        return PricingSnapshotSelection(
+            quotes=[], tier="none", is_fallback=False, purpose=None, snapshot_timestamp=None
+        )
+
+    latest_rows = _rows_at_timestamp(db, company.id, latest_ts)
+    latest_quotes = [_to_option_quote(r, company.ticker) for r in latest_rows]
+    latest_purpose = (
+        latest_rows[0].purpose.value if latest_rows and latest_rows[0].purpose else None
+    )
+
+    if _is_priceable(latest_quotes):
+        return PricingSnapshotSelection(
+            quotes=latest_quotes,
+            tier="current_priceable",
+            is_fallback=False,
+            purpose=latest_purpose,
+            snapshot_timestamp=latest_ts,
+        )
+
+    past_timestamps = (
+        db.query(OptionsSnapshot.snapshot_timestamp)
+        .filter(
+            OptionsSnapshot.company_id == company.id,
+            OptionsSnapshot.snapshot_timestamp < latest_ts,
+        )
+        .distinct()
+        .order_by(OptionsSnapshot.snapshot_timestamp.desc())
+        .all()
+    )
+    for (ts,) in past_timestamps:
+        rows = _rows_at_timestamp(db, company.id, ts)
+        quotes = [_to_option_quote(r, company.ticker) for r in rows]
+        if _is_priceable(quotes):
+            purpose = rows[0].purpose.value if rows and rows[0].purpose else None
+            return PricingSnapshotSelection(
+                quotes=quotes,
+                tier="previous_priceable",
+                is_fallback=True,
+                purpose=purpose,
+                snapshot_timestamp=ts,
+            )
+
+    return PricingSnapshotSelection(
+        quotes=latest_quotes,
+        tier="contracts_only",
+        is_fallback=False,
+        purpose=latest_purpose,
+        snapshot_timestamp=latest_ts,
+    )
 
 
 def _latest_close_price_on_or_before(db: Session, ticker: str, as_of: date) -> Decimal | None:
@@ -109,28 +212,25 @@ def compute_and_persist_volatility_snapshot(
     select_target_expiration_and_anchor). Persists and returns a new
     VolatilitySnapshot row, labeled with which of the two this was.
 
+    Uses the canonical snapshot-selection policy (select_pricing_snapshot,
+    Phase 14.10 Part D): when the current snapshot has no priceable
+    contract, falls back to the most recent stored snapshot that IS
+    priceable rather than giving up -- this is what lets implied move stay
+    computable through a frozen/closed-market current chain, as long as
+    some real prior snapshot for this company has usable pricing.
+
     Returns None -- never a fabricated result -- when: no options quotes
-    have been ingested for this company yet, no matching expiration is
-    present in the chain, no ATM call+put pair exists at the chosen
-    expiration, or no price data exists to determine the underlying price
-    as of the options snapshot.
+    have been ingested for this company yet (in any snapshot), no matching
+    expiration is present in the selected chain, no ATM call+put pair
+    exists at the chosen expiration, or no price data exists to determine
+    the underlying price as of the selected snapshot.
     """
-    snapshot_timestamp = _latest_snapshot_timestamp(db, company.id)
-    if snapshot_timestamp is None:
+    selection = select_pricing_snapshot(db, company)
+    if not selection.quotes or selection.snapshot_timestamp is None:
         return None
 
-    rows = (
-        db.query(OptionsSnapshot)
-        .filter(
-            OptionsSnapshot.company_id == company.id,
-            OptionsSnapshot.snapshot_timestamp == snapshot_timestamp,
-        )
-        .all()
-    )
-    if not rows:
-        return None
-
-    quotes = [_to_option_quote(r, company.ticker) for r in rows]
+    snapshot_timestamp = selection.snapshot_timestamp
+    quotes = selection.quotes
     available_expirations = {q.expiration_date for q in quotes}
     expiration, anchor = select_target_expiration_and_anchor(
         available_expirations, earnings_date, snapshot_timestamp.date()
@@ -227,6 +327,7 @@ def _fetch_and_persist_options_snapshot(
     company: Company,
     earnings_date: date | None,
     as_of: datetime,
+    purpose: OptionsSnapshotPurpose = OptionsSnapshotPurpose.INTRADAY,
 ) -> list[OptionsSnapshot]:
     # reference_date lets a bounded provider (e.g. IBKR, which can't return
     # a full chain -- see providers/ibkr_options.py) pick a sensible
@@ -273,6 +374,7 @@ def _fetch_and_persist_options_snapshot(
             source_provider=quote.source_provider,
             retrieved_at=quote.retrieved_at,
             anchor=anchor,
+            purpose=purpose,
         )
         for quote in quotes
     ]
@@ -347,6 +449,35 @@ def collect_options_snapshot_now(
     return _fetch_and_persist_options_snapshot(db, provider, company, earnings_date, as_of)
 
 
+def capture_close_snapshot(
+    db: Session,
+    provider: OptionsDataProvider,
+    company: Company,
+    earnings_date: date | None,
+    as_of: datetime,
+) -> list[OptionsSnapshot] | None:
+    """Deliberately captures a snapshot tagged ``OptionsSnapshotPurpose.CLOSE``
+    (Phase 14.10 Part D4) -- the ONLY code path that ever sets this purpose,
+    which is what lets the snapshot-selection fallback (select_pricing_snapshot)
+    honestly say "Previous close" instead of the more conservative
+    "Previous-session snapshot" for a fallback result. Meant to be run
+    manually or via a user-owned cron/launchd job near a real market close,
+    while the IBKR Gateway happens to be authenticated -- this project makes
+    no always-on guarantee here (the Gateway requires local auth and the
+    machine may be offline/asleep at close), so a missed close is simply a
+    missed close, never silently invented later.
+
+    Same same-day dedup as ``collect_options_snapshot_now`` -- running this
+    twice near the same close doesn't create two competing "close" rows.
+    """
+    today = as_of.date()
+    if _already_collected_today(db, company.id, today):
+        return None
+    return _fetch_and_persist_options_snapshot(
+        db, provider, company, earnings_date, as_of, purpose=OptionsSnapshotPurpose.CLOSE
+    )
+
+
 def has_any_options_data(db: Session) -> bool:
     """Whether any options-chain quote has ever been ingested for any
     company -- the single fact that explains why implied_vs_realized stays
@@ -417,22 +548,37 @@ class OptionsMarketState:
     market_data_quality: str | None
     data_state: DataState
     reason: str
+    # Snapshot-selection provenance (Phase 14.10 Part D) -- which tier of
+    # the fallback policy actually produced ``raw_chain``. snapshot_tier
+    # defaults to "current_priceable"/"none" for callers that don't pass a
+    # PricingSnapshotSelection (kept backward compatible).
+    snapshot_tier: SnapshotTier
+    is_fallback_snapshot: bool
+    snapshot_purpose: str | None
 
 
 def compute_options_market_state(
     raw_chain: list[OptionQuote],
     as_of: datetime,
     volatility: VolatilitySnapshot | None,
+    selection: "PricingSnapshotSelection | None" = None,
 ) -> OptionsMarketState:
-    """Pure function over an already-fetched ``get_latest_options_chain()``
-    result -- callers that already hold the chain (e.g. to also render its
-    quotes) pass it in rather than triggering a second query. ``volatility``
-    is whatever ``get_latest_volatility_snapshot`` (or a fresh compute)
-    returned -- the real, authoritative signal for whether an implied move
-    could actually be calculated, since that depends on more than just "some
-    contract has a bid/ask" (a matching ATM call/put pair and a real
-    underlying price are also required; see
-    compute_and_persist_volatility_snapshot).
+    """Pure function over an already-fetched chain -- callers that already
+    hold the chain (e.g. to also render its quotes) pass it in rather than
+    triggering a second query. ``volatility`` is whatever
+    ``get_latest_volatility_snapshot`` (or a fresh compute) returned -- the
+    real, authoritative signal for whether an implied move could actually
+    be calculated, since that depends on more than just "some contract has
+    a bid/ask" (a matching ATM call/put pair and a real underlying price
+    are also required; see compute_and_persist_volatility_snapshot).
+
+    ``selection`` is the result of ``select_pricing_snapshot`` when the
+    caller used the fallback-aware policy (Strategy Lab, Upcoming
+    Earnings, AI Decision) -- omitted by callers still using the plain
+    "always current" chain (e.g. the raw Option Chain viewer), which keeps
+    this function's snapshot-selection provenance honestly reported as
+    "current_priceable"/"none" rather than claiming a fallback happened
+    when it didn't.
     """
     if not raw_chain:
         return OptionsMarketState(
@@ -452,6 +598,9 @@ def compute_options_market_state(
             market_data_quality=None,
             data_state=DataState.NOT_COLLECTED,
             reason="No real options-chain snapshot has been collected yet.",
+            snapshot_tier="none",
+            is_fallback_snapshot=False,
+            snapshot_purpose=None,
         )
 
     snapshot_timestamp = raw_chain[0].snapshot_timestamp
@@ -466,6 +615,11 @@ def compute_options_market_state(
     has_iv = any(q.implied_volatility is not None for q in raw_chain)
     has_greeks = any(q.delta is not None for q in raw_chain)
     implied_move_available = volatility is not None
+    snapshot_tier: SnapshotTier = (
+        selection.tier if selection else ("current_priceable" if has_bid_ask else "contracts_only")
+    )
+    is_fallback_snapshot = selection.is_fallback if selection else False
+    snapshot_purpose = selection.purpose if selection else None
     expiration = (
         volatility.near_term_expiration
         if volatility is not None
@@ -475,7 +629,23 @@ def compute_options_market_state(
     data_state = compute_options_data_state(snapshot_timestamp, quality, as_of)
     age = compute_snapshot_age(snapshot_timestamp, as_of)
 
-    if data_state in (DataState.PREVIOUS_SESSION, DataState.STALE):
+    if is_fallback_snapshot:
+        # A deliberate fallback to an older, priceable snapshot (Phase
+        # 14.10 Part D) -- forced into PREVIOUS_SESSION labeling regardless
+        # of what compute_options_data_state's own calendar-day check says,
+        # since a snapshot this project chose to fall back to is never
+        # "current" by definition. Only ever called "previous close" when
+        # it was actually captured with that purpose (see
+        # OptionsSnapshotPurpose) -- otherwise labeled by its real
+        # timestamp, never guessed.
+        data_state = DataState.PREVIOUS_SESSION
+        label = "Previous close" if snapshot_purpose == "close" else "Previous-session snapshot"
+        reason = (
+            f"{label} ({age.label} ago) used because the current chain has no priceable "
+            f"quotes -- {contract_count} contracts, real pricing carried forward from this "
+            "earlier, still-priceable snapshot rather than treated as unavailable."
+        )
+    elif data_state in (DataState.PREVIOUS_SESSION, DataState.STALE):
         reason = (
             f"Real options-chain snapshot with {contract_count} contracts, but it's from a "
             f"previous session ({age.label} ago) -- treat any pricing as indicative only, not "
@@ -524,6 +694,9 @@ def compute_options_market_state(
         market_data_quality=quality,
         data_state=data_state,
         reason=reason,
+        snapshot_tier=snapshot_tier,
+        is_fallback_snapshot=is_fallback_snapshot,
+        snapshot_purpose=snapshot_purpose,
     )
 
 

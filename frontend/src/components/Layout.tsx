@@ -18,6 +18,7 @@ const SETTINGS_NAV_ITEMS = [
   { to: "/settings/providers", label: "Data Providers" },
   { to: "/settings/ai-provider", label: "AI Provider" },
   { to: "/settings/ibkr", label: "IBKR" },
+  { to: "/settings/usage", label: "API Usage" },
   { to: "/system-status", label: "System Status" },
 ];
 

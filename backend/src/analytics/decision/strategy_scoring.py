@@ -43,15 +43,30 @@ def filter_candidates_by_risk_preference(
         return [c for c in candidates if c.category not in _SINGLE_LEG_LONG_CATEGORIES]
     return list(candidates)
 
-WEIGHT_DIRECTION_FIT = 25
-WEIGHT_BREAKEVEN_FIT = 20
-WEIGHT_HISTORICAL_FIT = 20
-WEIGHT_RISK_REWARD = 20
+# Rebalanced in Phase 14.10 Part E3 to add volatility_fit as a real,
+# scored component -- previously volatility_view only ever broke ties
+# between candidates with an identical total score (see the now-secondary
+# volatility_alignment tiebreaker in rank_candidates_for_view below),
+# which is why a Neutral+Long-Vol view could still rank a short-vol credit
+# structure first purely on direction_fit. direction_fit and
+# volatility_fit together are the two "view fit" components (35 total);
+# breakeven_fit/historical_fit/risk_reward are the three "structural
+# quality" components (45 total); liquidity/data_quality are the two
+# "data confidence" components (20 total, data_quality's weight doubled
+# since a fallback/stale snapshot, see services/options_analytics.py's
+# snapshot-selection policy, should now meaningfully discount a candidate
+# built from it).
+WEIGHT_DIRECTION_FIT = 20
+WEIGHT_VOLATILITY_FIT = 15
+WEIGHT_BREAKEVEN_FIT = 15
+WEIGHT_HISTORICAL_FIT = 15
+WEIGHT_RISK_REWARD = 15
 WEIGHT_LIQUIDITY = 10
-WEIGHT_DATA_QUALITY = 5
+WEIGHT_DATA_QUALITY = 10
 
 assert (
     WEIGHT_DIRECTION_FIT
+    + WEIGHT_VOLATILITY_FIT
     + WEIGHT_BREAKEVEN_FIT
     + WEIGHT_HISTORICAL_FIT
     + WEIGHT_RISK_REWARD
@@ -77,6 +92,7 @@ _DIRECTION_TARGET_FRACTION: dict[DecisionDirection, Decimal] = {
 @dataclass(frozen=True)
 class StrategyScoreBreakdown:
     direction_fit: int
+    volatility_fit: int
     breakeven_fit: int
     historical_fit: int
     risk_reward: int
@@ -87,6 +103,7 @@ class StrategyScoreBreakdown:
     def total(self) -> int:
         return (
             self.direction_fit
+            + self.volatility_fit
             + self.breakeven_fit
             + self.historical_fit
             + self.risk_reward
@@ -97,6 +114,7 @@ class StrategyScoreBreakdown:
     def as_dict(self) -> dict[str, int]:
         return {
             "direction_fit": self.direction_fit,
+            "volatility_fit": self.volatility_fit,
             "breakeven_fit": self.breakeven_fit,
             "historical_fit": self.historical_fit,
             "risk_reward": self.risk_reward,
@@ -139,6 +157,32 @@ def _direction_fit(
         return round(WEIGHT_DIRECTION_FIT * Decimal("0.8"))
     fraction = min(payoff_at_target / max_profit, Decimal(1))
     return round(fraction * WEIGHT_DIRECTION_FIT)
+
+
+def _volatility_fit(
+    candidate: StrategyCandidate, volatility_view: DecisionVolatilityView
+) -> int:
+    """Real signal: net_premium's sign is a structural fact about whether
+    the candidate is a net-debit (long options premium, profits from a
+    large realized move regardless of direction -- long call/put,
+    straddle, strangle, long call butterfly's debit) or net-credit
+    (short options premium, profits from the underlying staying inside a
+    range -- credit spreads, iron condor, iron butterfly) position. This
+    is the same real fact rank_candidates_for_view's own tiebreaker
+    already used -- promoted here to a real, weighted score component
+    (rather than only breaking ties on an already-identical total) so a
+    Neutral+Long-Vol view can no longer rank a short-vol credit structure
+    first purely on direction_fit; see Part E3.
+
+    NEUTRAL_VOL carries no opinion on premium sign either way, so it gets
+    a fixed mid-weight regardless of the candidate's own structure.
+    """
+    if volatility_view == DecisionVolatilityView.NEUTRAL_VOL:
+        return round(WEIGHT_VOLATILITY_FIT * Decimal("0.5"))
+    net_premium = candidate.analysis.net_premium
+    if volatility_view == DecisionVolatilityView.LONG_VOL:
+        return WEIGHT_VOLATILITY_FIT if net_premium > 0 else 0
+    return WEIGHT_VOLATILITY_FIT if net_premium < 0 else 0
 
 
 def _breakeven_fit(candidate: StrategyCandidate, implied_move_pct: Decimal | None) -> int:
@@ -191,6 +235,7 @@ def score_candidate_for_view(
     candidate: StrategyCandidate,
     *,
     direction: DecisionDirection,
+    volatility_view: DecisionVolatilityView,
     implied_move_pct: Decimal | None,
     historical_move_pcts: list[Decimal],
     has_bid_ask: bool,
@@ -207,6 +252,7 @@ def score_candidate_for_view(
 
     breakdown = StrategyScoreBreakdown(
         direction_fit=_direction_fit(candidate, payoff_at_target),
+        volatility_fit=_volatility_fit(candidate, volatility_view),
         breakeven_fit=_breakeven_fit(candidate, implied_move_pct),
         historical_fit=_historical_fit(compatibility),
         risk_reward=_risk_reward(candidate),
@@ -226,11 +272,13 @@ def rank_candidates_for_view(
     has_bid_ask: bool,
     market_data_quality: str | None,
 ) -> list[ViewRankedStrategy]:
-    """Ranks every candidate best-first for the stated direction. Ties are
-    broken by preferring the candidate whose net_premium sign matches the
-    stated volatility_view (long_vol -> net debit paid, short_vol -> net
-    credit received) -- a real structural fact about the candidate, not a
-    fabricated volatility-fit score."""
+    """Ranks every candidate best-first for the stated direction AND
+    volatility view -- volatility_fit (see _volatility_fit) is a real,
+    weighted component of each candidate's total score, not just a
+    tiebreaker, so a Neutral+Long-Vol view no longer ranks a short-vol
+    credit structure first purely on direction_fit (Part E3). The
+    remaining net_premium-sign check below only breaks ties between
+    candidates whose *total* score is still identical after that."""
 
     def volatility_alignment(candidate: StrategyCandidate) -> int:
         if volatility_view == DecisionVolatilityView.LONG_VOL:
@@ -244,6 +292,7 @@ def rank_candidates_for_view(
         breakdown, target_price, payoff_at_target, compatibility = score_candidate_for_view(
             candidate,
             direction=direction,
+            volatility_view=volatility_view,
             implied_move_pct=implied_move_pct,
             historical_move_pcts=historical_move_pcts,
             has_bid_ask=has_bid_ask,

@@ -85,6 +85,45 @@ def test_iron_condor_uses_four_real_strikes_symmetric_around_atm():
     assert strikes == [Decimal("90"), Decimal("95"), Decimal("105"), Decimal("110")]
 
 
+def test_long_call_butterfly_uses_atm_and_one_strike_each_side():
+    candidates = generate_candidates(_wide_chain(), UNDERLYING, EXP)
+    fly = next(c for c in candidates if c.category == StrategyCategory.LONG_CALL_BUTTERFLY)
+    # Three distinct leg objects -- the middle (short) leg is one leg with
+    # quantity=2, not two separate leg objects.
+    strikes = sorted(leg.strike for leg in fly.legs)
+    assert strikes == [Decimal("95"), Decimal("100"), Decimal("105")]
+    middle_leg = next(leg for leg in fly.legs if leg.strike == Decimal("100"))
+    assert middle_leg.quantity == 2
+
+
+def test_iron_butterfly_sells_atm_straddle_buys_one_strike_wings():
+    candidates = generate_candidates(_wide_chain(), UNDERLYING, EXP)
+    fly = next(c for c in candidates if c.category == StrategyCategory.IRON_BUTTERFLY)
+    strikes = sorted(leg.strike for leg in fly.legs)
+    assert strikes == [Decimal("95"), Decimal("100"), Decimal("100"), Decimal("105")]
+    # Net premium should come out as a credit (negative) -- selling the ATM
+    # straddle collects more than the OTM wings cost.
+    assert fly.analysis.net_premium < 0
+
+
+def test_iron_butterfly_requires_same_center_strike_on_both_sides():
+    # Calls have no 100 strike (nearest-ATM call resolves to 95); puts do
+    # have one (nearest-ATM put resolves to 100 exactly) -- an iron
+    # butterfly needs one real shared center strike, same rule the long
+    # straddle already uses, so it must be omitted rather than mixing a
+    # 95-strike short call with a 100-strike short put.
+    call_strikes = [Decimal(s) for s in (85, 90, 95, 105, 110, 115)]  # no 100
+    put_strikes = [Decimal(s) for s in (85, 90, 100, 105, 110, 115)]  # has 100
+    quotes = []
+    for s in call_strikes:
+        quotes.append(_quote(s, "call", Decimal("1.90"), Decimal("2.10")))
+    for s in put_strikes:
+        quotes.append(_quote(s, "put", Decimal("1.90"), Decimal("2.10")))
+    candidates = generate_candidates(quotes, UNDERLYING, EXP)
+    categories = {c.category for c in candidates}
+    assert StrategyCategory.IRON_BUTTERFLY not in categories
+
+
 def test_long_straddle_requires_same_strike_on_both_sides():
     candidates = generate_candidates(_wide_chain(), UNDERLYING, EXP)
     straddle = next(c for c in candidates if c.category == StrategyCategory.LONG_STRADDLE)
@@ -110,6 +149,11 @@ def test_narrow_chain_omits_categories_needing_wider_wings():
     assert StrategyCategory.BEAR_PUT_SPREAD in categories
     assert StrategyCategory.LONG_STRADDLE in categories
     assert StrategyCategory.LONG_STRANGLE in categories
+    # The butterflies only need +/-1 strike of width (same as the strangle),
+    # so a 3-strike chain is enough for them, unlike the credit spreads and
+    # iron condor below (which need +/-2).
+    assert StrategyCategory.LONG_CALL_BUTTERFLY in categories
+    assert StrategyCategory.IRON_BUTTERFLY in categories
     # Not enough width for these -- never fabricated with a made-up strike.
     assert StrategyCategory.PUT_CREDIT_SPREAD not in categories
     assert StrategyCategory.CALL_CREDIT_SPREAD not in categories

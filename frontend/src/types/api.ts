@@ -366,6 +366,32 @@ export interface ProviderSettingsUpdate {
   strategy_risk_preference?: string | null;
 }
 
+export interface ProviderUsageSummary {
+  provider: string;
+  domain: string;
+  request_count: number;
+  success_count: number;
+  error_count: number;
+  rate_limited_count: number;
+  avg_latency_ms: number | null;
+  input_tokens: number | null;
+  output_tokens: number | null;
+  total_tokens: number | null;
+  estimated_cost: string | null;
+  last_event_at: string | null;
+}
+
+export interface UsageSummary {
+  window: string;
+  since: string | null;
+  total_requests: number;
+  total_errors: number;
+  total_rate_limited: number;
+  total_llm_tokens: number | null;
+  total_estimated_cost: string | null;
+  providers: ProviderUsageSummary[];
+}
+
 export interface TestConnectionResult {
   provider: string;
   domain: string;
@@ -429,6 +455,9 @@ export interface OptionsMarketState {
   market_data_quality: string | null;
   data_state: string;
   reason: string;
+  snapshot_tier: "current_priceable" | "previous_priceable" | "contracts_only" | "none";
+  is_fallback_snapshot: boolean;
+  snapshot_purpose: string | null;
 }
 
 // The single, company-level, always-current read for "what's on record
@@ -509,6 +538,7 @@ export interface RankedStrategy {
   explanation: string;
   scenario: ScenarioPnl | null;
   move_compatibility: MoveCompatibility | null;
+  budget_fit: BudgetFit | null;
 }
 
 export interface StrategyLab {
@@ -581,6 +611,21 @@ export type DecisionDirection =
   | "strong_bearish";
 export type DecisionVolatilityView = "long_vol" | "neutral_vol" | "short_vol";
 
+export interface BudgetFit {
+  trade_budget: string;
+  risk_cap: string | null;
+  usable_risk_budget: string;
+  capital_at_risk_per_contract: string | null;
+  max_feasible_quantity: number;
+  total_max_loss: string | null;
+  total_max_profit: string | null;
+  total_net_premium: string | null;
+  budget_utilization_pct: string | null;
+  remaining_budget: string | null;
+  feasible: boolean;
+  minimum_required: string | null;
+}
+
 export interface ScoredStrategy {
   category: string;
   legs: OptionLeg[];
@@ -591,6 +636,7 @@ export interface ScoredStrategy {
   risks: string[];
   target_price: string | null;
   payoff_at_target: string | null;
+  budget_fit: BudgetFit | null;
 }
 
 export interface AIDecisionVersion {
@@ -624,6 +670,12 @@ export interface AIDecisionVersion {
   model: string;
   earnings_estimate_snapshot_id: number | null;
   volatility_snapshot_id: number | null;
+  trade_budget: string | null;
+  risk_cap: string | null;
+  risk_cap_is_percent: boolean | null;
+  recommended_quantity: number | null;
+  recommended_capital_at_risk: string | null;
+  budget_infeasible_minimum: string | null;
   status: "open" | "settled" | "void";
   is_final: boolean;
   earnings_event_id: number | null;
@@ -636,6 +688,34 @@ export interface AIDecisionVersion {
   strategy_pnl_available: boolean;
   settled_at: string | null;
   created_at: string;
+  settlement_eligible: boolean;
+  settlement_state:
+    | "not_final"
+    | "earnings_date_unknown"
+    | "waiting_for_event"
+    | "waiting_for_post_event_price"
+    | "ready"
+    | "settled";
+  settlement_reason: string;
+  settlement_earliest_date: string | null;
+}
+
+export interface SettlementAttemptResult {
+  decision: AIDecisionVersion;
+  settled: boolean;
+  message: string;
+}
+
+export interface PendingDecision {
+  ticker: string;
+  decision: AIDecisionVersion;
+}
+
+export interface PendingDecisions {
+  pending: PendingDecision[];
+  final_count: number;
+  pending_count: number;
+  settled_count: number;
 }
 
 export interface Rate {

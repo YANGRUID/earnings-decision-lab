@@ -12,6 +12,7 @@ from services.llm.base import LLMProvider
 from services.llm.errors import LLMError, MissingAPIKeyError, UnknownProviderError
 from services.llm.factory import get_llm_provider
 from services.provider_settings import get_app_provider_settings
+from services.usage_instrumentation import InstrumentedLLMProvider
 
 
 def get_db() -> Generator[Session, None, None]:
@@ -34,11 +35,13 @@ def get_llm(db: DbSession) -> LLMProvider:
     """
     overrides = get_app_provider_settings(db)
     try:
-        return get_llm_provider(
+        provider = get_llm_provider(
             get_settings(),
             override_provider=overrides.llm_provider,
             override_model=overrides.llm_model,
+            db=db,
         )
+        return InstrumentedLLMProvider(provider, db, provider.name)
     except (MissingAPIKeyError, UnknownProviderError) as exc:
         raise LLMError(
             f"No LLM provider is configured or reachable ({exc}) — see "

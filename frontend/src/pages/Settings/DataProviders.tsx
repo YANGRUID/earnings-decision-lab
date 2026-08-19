@@ -2,7 +2,8 @@ import { useState } from "react";
 import { useAsync } from "../../hooks/useAsync";
 import { api, ApiError } from "../../api/client";
 import { LoadingState, ErrorState } from "../../components/StatusStates";
-import { DOMAIN_LABELS, providerLabel, formatRelativeTime } from "../../lib/format";
+import { ProviderCredentialForm } from "../../components/settings/ProviderCredentialForm";
+import { CREDENTIAL_PROVIDERS, DOMAIN_LABELS, providerLabel, formatRelativeTime } from "../../lib/format";
 import type { DomainStatus, ProviderStatus } from "../../types/api";
 
 const DATA_DOMAINS = ["price_history", "earnings_estimates", "filings", "options"] as const;
@@ -46,7 +47,12 @@ function ProviderRow({
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
         <div>
           <strong>{providerLabel(status.provider)}</strong>{" "}
-          <span className="mono text-muted text-sm">{status.masked_key ?? "no key required"}</span>
+          <span className="mono text-muted text-sm">
+            {status.masked_key ??
+              (status.provider === "sec_edgar" || status.provider === "ibkr"
+                ? "no key required"
+                : "no API key configured")}
+          </span>
         </div>
         <StatusPill status={status} />
       </div>
@@ -77,6 +83,15 @@ function ProviderRow({
           </button>
         </div>
       </div>
+      {CREDENTIAL_PROVIDERS.includes(status.provider as (typeof CREDENTIAL_PROVIDERS)[number]) && (
+        <div style={{ marginTop: 10 }}>
+          <ProviderCredentialForm
+            provider={status.provider}
+            configured={status.configured}
+            onChanged={onTested}
+          />
+        </div>
+      )}
       {status.entitlement_note && (
         <p className="text-sm text-muted" style={{ marginTop: 10, marginBottom: 0 }}>
           {status.entitlement_note}
@@ -258,9 +273,10 @@ export function DataProviders() {
         <h1>Data Providers</h1>
         <p>
           Which real provider serves each kind of data, whether it's actually connected right now,
-          and how it falls back — never a silent substitution. Provider selection is an owner
-          setting: it changes which paid APIs get called (see docs/ibkr_integration.md and
-          docs/data_sources.md).
+          and how it falls back — never a silent substitution. Provider selection and credentials
+          are owner settings: changing either changes which paid APIs get called (see
+          docs/ibkr_integration.md and docs/data_sources.md). A key entered below is encrypted
+          before storage and is never shown back — only a masked suffix.
         </p>
       </div>
       {domains.map((d) => (

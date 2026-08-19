@@ -2,7 +2,8 @@ import { useState } from "react";
 import { useAsync } from "../../hooks/useAsync";
 import { api, ApiError } from "../../api/client";
 import { LoadingState, ErrorState } from "../../components/StatusStates";
-import { providerLabel, formatRelativeTime } from "../../lib/format";
+import { ProviderCredentialForm } from "../../components/settings/ProviderCredentialForm";
+import { CREDENTIAL_PROVIDERS, providerLabel, formatRelativeTime } from "../../lib/format";
 import type { ProviderStatus } from "../../types/api";
 
 function StatusPill({ status }: { status: ProviderStatus }) {
@@ -75,9 +76,19 @@ function ProviderRow({
           </button>
         </div>
       </div>
+      {CREDENTIAL_PROVIDERS.includes(status.provider as (typeof CREDENTIAL_PROVIDERS)[number]) && (
+        <div style={{ marginTop: 10 }}>
+          <ProviderCredentialForm
+            provider={status.provider}
+            configured={status.configured}
+            needsBaseUrl={status.provider === "openai_compatible"}
+            onChanged={onTested}
+          />
+        </div>
+      )}
       {!status.configured && (
         <p className="text-sm text-muted" style={{ marginTop: 10, marginBottom: 0 }}>
-          No API key set in the backend's environment for this provider — add one to switch to it.
+          No API key configured for this provider — add one above to switch to it.
         </p>
       )}
       {status.last_error_detail && (
@@ -139,9 +150,9 @@ export function AiProvider() {
         <h1>AI Provider</h1>
         <p>
           Which LLM answers research questions and generates the AI Earnings Thesis. Only providers
-          with a real adapter in this codebase are shown; switching providers only works once that
-          provider's API key is set in the backend's environment — this page never edits or displays
-          the key itself, only which configured provider is active.
+          with a real adapter in this codebase are shown. Add or replace a provider's API key
+          directly below — it's encrypted before it's stored, and this page never shows the real
+          key back, only a masked suffix once it's saved.
         </p>
       </div>
       {error && <div className="notice">{error}</div>}

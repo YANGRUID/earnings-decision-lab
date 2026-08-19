@@ -6,7 +6,13 @@ from sqlalchemy import Date, DateTime, Enum, ForeignKey, Integer, Numeric, Strin
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from db.base import Base
-from models.enums import GreeksSource, MarketDataQuality, OptionsSnapshotAnchor, OptionType
+from models.enums import (
+    GreeksSource,
+    MarketDataQuality,
+    OptionsSnapshotAnchor,
+    OptionsSnapshotPurpose,
+    OptionType,
+)
 from models.mixins import TimestampMixin
 
 if TYPE_CHECKING:
@@ -84,6 +90,17 @@ class OptionsSnapshot(TimestampMixin, Base):
     anchor: Mapped[OptionsSnapshotAnchor] = mapped_column(
         Enum(OptionsSnapshotAnchor, name="options_snapshot_anchor"),
         default=OptionsSnapshotAnchor.EARNINGS_ANCHORED,
+    )
+
+    # Why this snapshot was captured -- see OptionsSnapshotPurpose. Default
+    # covers every snapshot this project ever took before the fallback
+    # policy (Phase 14.10 Part D) needed to distinguish "deliberately
+    # captured at a real close" from everything else; only
+    # ingestion/capture_close_snapshot.py ever sets CLOSE.
+    purpose: Mapped[OptionsSnapshotPurpose] = mapped_column(
+        Enum(OptionsSnapshotPurpose, name="options_snapshot_purpose"),
+        default=OptionsSnapshotPurpose.INTRADAY,
+        server_default=OptionsSnapshotPurpose.INTRADAY.name,
     )
 
     company: Mapped["Company"] = relationship()  # noqa: F821

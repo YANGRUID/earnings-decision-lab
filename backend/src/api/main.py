@@ -23,6 +23,7 @@ from api.routers import (
     replay,
     research,
     system_status,
+    usage,
 )
 from core.config import get_settings
 from observability.logging import configure_logging
@@ -98,6 +99,7 @@ def create_app() -> FastAPI:
     app.include_router(system_status.router, prefix="/api/v1")
     app.include_router(portfolio.router, prefix="/api/v1")
     app.include_router(provider_settings.router, prefix="/api/v1")
+    app.include_router(usage.router, prefix="/api/v1")
 
     return app
 

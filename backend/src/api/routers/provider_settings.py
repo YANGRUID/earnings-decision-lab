@@ -19,9 +19,16 @@ from api.exceptions import InvalidRequestError, NotFoundError
 from core.config import get_settings
 from schemas.api import (
     DomainStatusResponse,
+    ProviderCredentialUpdateRequest,
     ProviderDashboardResponse,
     ProviderSettingsUpdateRequest,
     TestConnectionResponse,
+)
+from services.provider_credentials import (
+    InvalidCredentialError,
+    UnknownCredentialProviderError,
+    delete_provider_credential,
+    set_provider_credential,
 )
 from services.provider_settings import (
     ProviderSettingsUpdate,
@@ -31,17 +38,22 @@ from services.provider_settings import (
 from services.provider_settings import update_app_provider_settings as _update_settings
 from services.provider_status import DOMAIN_PROVIDERS, get_provider_dashboard, record_health_event
 from services.provider_test_connection import UnknownTestConnectionTargetError, test_connection
+from services.secret_store.encryption import MasterKeyNotConfiguredError
 
 router = APIRouter(prefix="/settings/providers", tags=["provider-settings"])
 
 
-@router.get("", response_model=ProviderDashboardResponse)
-def get_dashboard(db: DbSession) -> ProviderDashboardResponse:
+def _dashboard(db: DbSession) -> ProviderDashboardResponse:
     domains = get_provider_dashboard(db, get_settings())
     return ProviderDashboardResponse(
         domains=[DomainStatusResponse.model_validate(d) for d in domains],
         strategy_risk_preference=get_strategy_risk_preference(db).value,
     )
+
+
+@router.get("", response_model=ProviderDashboardResponse)
+def get_dashboard(db: DbSession) -> ProviderDashboardResponse:
+    return _dashboard(db)
 
 
 @router.put("", response_model=ProviderDashboardResponse)
@@ -64,11 +76,39 @@ def update_settings(
     except UnknownProviderSelectionError as exc:
         raise InvalidRequestError(str(exc)) from exc
 
-    domains = get_provider_dashboard(db, get_settings())
-    return ProviderDashboardResponse(
-        domains=[DomainStatusResponse.model_validate(d) for d in domains],
-        strategy_risk_preference=get_strategy_risk_preference(db).value,
-    )
+    return _dashboard(db)
+
+
+@router.put("/{provider}/credential", response_model=ProviderDashboardResponse)
+def set_credential(
+    provider: str, request: ProviderCredentialUpdateRequest, db: DbSession
+) -> ProviderDashboardResponse:
+    """Add or replace a stored API key -- the actual key is never returned
+    in this or any other response, only the resulting configured/masked
+    status (see ProviderDashboardResponse). See services/secret_store/ for
+    the encrypted-storage design."""
+    try:
+        set_provider_credential(
+            db, get_settings(), provider, request.api_key, request.base_url, request.model
+        )
+    except UnknownCredentialProviderError as exc:
+        raise NotFoundError(str(exc)) from exc
+    except InvalidCredentialError as exc:
+        raise InvalidRequestError(str(exc)) from exc
+    except MasterKeyNotConfiguredError as exc:
+        raise InvalidRequestError(str(exc)) from exc
+
+    return _dashboard(db)
+
+
+@router.delete("/{provider}/credential", response_model=ProviderDashboardResponse)
+def remove_credential(provider: str, db: DbSession) -> ProviderDashboardResponse:
+    try:
+        delete_provider_credential(db, get_settings(), provider)
+    except UnknownCredentialProviderError as exc:
+        raise NotFoundError(str(exc)) from exc
+
+    return _dashboard(db)
 
 
 @router.post("/{domain}/{provider}/test", response_model=TestConnectionResponse)
@@ -77,7 +117,7 @@ def test_provider_connection(domain: str, provider: str, db: DbSession) -> TestC
         raise NotFoundError(f"{provider!r} is not a real provider for domain {domain!r}")
 
     try:
-        status, detail = test_connection(get_settings(), provider, domain)
+        status, detail = test_connection(get_settings(), provider, domain, db)
     except UnknownTestConnectionTargetError as exc:
         raise NotFoundError(str(exc)) from exc
 

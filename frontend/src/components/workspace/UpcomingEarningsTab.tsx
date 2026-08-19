@@ -46,6 +46,16 @@ function OptionsMarketStateCard({ market }: { market: OptionsMarketState }) {
         {market.chain_exists && (
           <>
             <div className="stat">
+              <span className="stat-label">Pricing snapshot</span>
+              <span className="stat-value small">
+                {market.is_fallback_snapshot
+                  ? market.snapshot_purpose === "close"
+                    ? "Previous close"
+                    : "Previous session"
+                  : "Current"}
+              </span>
+            </div>
+            <div className="stat">
               <span className="stat-label">Data quality</span>
               <span className="stat-value small mono">{market.market_data_quality ?? "unknown"}</span>
             </div>

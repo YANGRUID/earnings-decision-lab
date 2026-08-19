@@ -3,7 +3,13 @@ from decimal import ROUND_HALF_UP, Decimal
 
 from models.company import Company
 from models.earnings_event import EarningsEvent
-from models.enums import DataState, OptionsSnapshotAnchor, OptionType
+from models.enums import (
+    DataState,
+    MarketDataQuality,
+    OptionsSnapshotAnchor,
+    OptionsSnapshotPurpose,
+    OptionType,
+)
 from models.options_snapshot import OptionsSnapshot
 from models.price_bar import PriceBar
 from models.price_reaction import PriceReaction
@@ -19,6 +25,7 @@ from services.options_analytics import (
     get_latest_close_price,
     get_latest_options_chain,
     get_latest_volatility_snapshot,
+    select_pricing_snapshot,
 )
 
 SNAPSHOT_TS = datetime(2025, 9, 15, 15, 0, tzinfo=UTC)
@@ -882,3 +889,275 @@ class TestGetLatestClosePrice:
         db_session.commit()
 
         assert get_latest_close_price(db_session, "ZZPRICE1") == Decimal("11.75")
+
+
+def _seed_contract(
+    db_session,
+    company: Company,
+    *,
+    snapshot_timestamp: datetime,
+    bid: Decimal | None = None,
+    ask: Decimal | None = None,
+    last_price: Decimal | None = None,
+    expiration: date = NEAR_EXP,
+    strike: Decimal = Decimal("115"),
+    option_type: OptionType = OptionType.CALL,
+    quality: MarketDataQuality = MarketDataQuality.FROZEN,
+    purpose: OptionsSnapshotPurpose = OptionsSnapshotPurpose.INTRADAY,
+) -> None:
+    db_session.add(
+        OptionsSnapshot(
+            company_id=company.id,
+            snapshot_timestamp=snapshot_timestamp,
+            expiration_date=expiration,
+            strike=strike,
+            option_type=option_type,
+            bid=bid,
+            ask=ask,
+            last_price=last_price,
+            market_data_quality=quality,
+            purpose=purpose,
+            source_provider="test",
+            retrieved_at=snapshot_timestamp,
+        )
+    )
+    db_session.flush()
+
+
+class TestSelectPricingSnapshot:
+    def test_no_snapshot_ever_collected_returns_none_tier(self, db_session):
+        company = _seed_company(db_session, ticker="ZZSEL01")
+        selection = select_pricing_snapshot(db_session, company)
+        assert selection.tier == "none"
+        assert selection.quotes == []
+        assert selection.is_fallback is False
+
+    def test_priceable_current_snapshot_is_used_directly(self, db_session):
+        company = _seed_company(db_session, ticker="ZZSEL02")
+        _seed_contract(
+            db_session,
+            company,
+            snapshot_timestamp=SNAPSHOT_TS,
+            bid=Decimal("4.00"),
+            ask=Decimal("4.20"),
+        )
+        selection = select_pricing_snapshot(db_session, company)
+        assert selection.tier == "current_priceable"
+        assert selection.is_fallback is False
+        assert len(selection.quotes) == 1
+
+    def test_falls_back_to_most_recent_priceable_past_snapshot(self, db_session):
+        company = _seed_company(db_session, ticker="ZZSEL03")
+        older_priceable = SNAPSHOT_TS.replace(day=13)
+        newer_unpriceable = SNAPSHOT_TS
+        # Current (latest) snapshot: frozen, no priceable contract.
+        _seed_contract(db_session, company, snapshot_timestamp=newer_unpriceable)
+        # An older snapshot that IS priceable.
+        _seed_contract(
+            db_session,
+            company,
+            snapshot_timestamp=older_priceable,
+            bid=Decimal("3.80"),
+            ask=Decimal("4.00"),
+        )
+        selection = select_pricing_snapshot(db_session, company)
+        assert selection.tier == "previous_priceable"
+        assert selection.is_fallback is True
+        assert selection.snapshot_timestamp == older_priceable
+
+    def test_prefers_the_most_recent_priceable_snapshot_among_several_past_ones(self, db_session):
+        company = _seed_company(db_session, ticker="ZZSEL04")
+        newest = SNAPSHOT_TS
+        middle = SNAPSHOT_TS.replace(day=14)
+        oldest = SNAPSHOT_TS.replace(day=12)
+        _seed_contract(db_session, company, snapshot_timestamp=newest)  # unpriceable
+        _seed_contract(
+            db_session,
+            company,
+            snapshot_timestamp=middle,
+            bid=Decimal("3.90"),
+            ask=Decimal("4.10"),
+        )
+        _seed_contract(
+            db_session,
+            company,
+            snapshot_timestamp=oldest,
+            bid=Decimal("3.50"),
+            ask=Decimal("3.70"),
+        )
+        selection = select_pricing_snapshot(db_session, company)
+        assert selection.tier == "previous_priceable"
+        assert selection.snapshot_timestamp == middle
+
+    def test_contracts_only_when_nothing_anywhere_is_priceable(self, db_session):
+        company = _seed_company(db_session, ticker="ZZSEL05")
+        older = SNAPSHOT_TS.replace(day=13)
+        _seed_contract(db_session, company, snapshot_timestamp=older)
+        _seed_contract(db_session, company, snapshot_timestamp=SNAPSHOT_TS)
+        selection = select_pricing_snapshot(db_session, company)
+        assert selection.tier == "contracts_only"
+        assert selection.is_fallback is False
+        assert selection.snapshot_timestamp == SNAPSHOT_TS
+        assert len(selection.quotes) == 1
+
+    def test_purpose_is_carried_through_from_the_selected_snapshot(self, db_session):
+        company = _seed_company(db_session, ticker="ZZSEL06")
+        older_close = SNAPSHOT_TS.replace(day=13)
+        _seed_contract(db_session, company, snapshot_timestamp=SNAPSHOT_TS)  # unpriceable
+        _seed_contract(
+            db_session,
+            company,
+            snapshot_timestamp=older_close,
+            bid=Decimal("3.80"),
+            ask=Decimal("4.00"),
+            purpose=OptionsSnapshotPurpose.CLOSE,
+        )
+        selection = select_pricing_snapshot(db_session, company)
+        assert selection.purpose == "close"
+
+    def test_priceable_via_last_price_alone_counts(self, db_session):
+        """bid/ask are both None but last_price is real -- matches the
+        existing has_bid_ask definition (any of bid/ask/last_price)."""
+        company = _seed_company(db_session, ticker="ZZSEL07")
+        _seed_contract(
+            db_session, company, snapshot_timestamp=SNAPSHOT_TS, last_price=Decimal("4.10")
+        )
+        selection = select_pricing_snapshot(db_session, company)
+        assert selection.tier == "current_priceable"
+
+
+class TestComputeOptionsMarketStateFallbackLabeling:
+    def test_fallback_snapshot_is_labeled_previous_session_not_previous_close_by_default(
+        self, db_session
+    ):
+        company = _seed_company(db_session, ticker="ZZSEL08")
+        older = SNAPSHOT_TS.replace(day=13)
+        _seed_contract(db_session, company, snapshot_timestamp=SNAPSHOT_TS)
+        _seed_contract(
+            db_session,
+            company,
+            snapshot_timestamp=older,
+            bid=Decimal("3.80"),
+            ask=Decimal("4.00"),
+        )
+        selection = select_pricing_snapshot(db_session, company)
+        state = compute_options_market_state(
+            selection.quotes, datetime.now(UTC), None, selection
+        )
+        assert state.is_fallback_snapshot is True
+        assert state.snapshot_tier == "previous_priceable"
+        assert state.data_state == DataState.PREVIOUS_SESSION
+        assert "Previous-session snapshot" in state.reason
+        assert "Previous close" not in state.reason
+
+    def test_fallback_snapshot_captured_as_close_is_labeled_previous_close(self, db_session):
+        company = _seed_company(db_session, ticker="ZZSEL09")
+        older = SNAPSHOT_TS.replace(day=13)
+        _seed_contract(db_session, company, snapshot_timestamp=SNAPSHOT_TS)
+        _seed_contract(
+            db_session,
+            company,
+            snapshot_timestamp=older,
+            bid=Decimal("3.80"),
+            ask=Decimal("4.00"),
+            purpose=OptionsSnapshotPurpose.CLOSE,
+        )
+        selection = select_pricing_snapshot(db_session, company)
+        state = compute_options_market_state(
+            selection.quotes, datetime.now(UTC), None, selection
+        )
+        assert "Previous close" in state.reason
+
+    def test_no_selection_argument_never_claims_a_fallback(self, db_session):
+        """Callers still using the plain current-only chain (no
+        PricingSnapshotSelection) must never have is_fallback_snapshot
+        reported True -- that would be a fabricated provenance claim."""
+        company = _seed_company(db_session, ticker="ZZSEL10")
+        _seed_contract(
+            db_session,
+            company,
+            snapshot_timestamp=SNAPSHOT_TS,
+            bid=Decimal("4.00"),
+            ask=Decimal("4.20"),
+        )
+        raw_chain = get_latest_options_chain(db_session, company)
+        state = compute_options_market_state(raw_chain, datetime.now(UTC), None)
+        assert state.is_fallback_snapshot is False
+        assert state.snapshot_tier == "current_priceable"
+
+
+class TestComputeAndPersistVolatilitySnapshotFallback:
+    def test_computes_implied_move_from_fallback_snapshot_when_current_chain_unpriceable(
+        self, db_session
+    ):
+        """The real AAPL-shaped bug this policy fixes: the current chain
+        is frozen with zero priceable contracts, but an older snapshot for
+        the same company has a real, priceable ATM call/put pair -- the
+        implied move must be computed from that older snapshot rather than
+        giving up."""
+        company = _seed_company(db_session, ticker="ZZSEL11")
+        _seed_price_bar(db_session, company.ticker, date(2025, 9, 12), Decimal("115.00"))
+
+        # Current snapshot: frozen, no bid/ask/last on either leg.
+        _seed_option_quote(
+            db_session,
+            company,
+            expiration=NEAR_EXP,
+            strike=Decimal("115"),
+            option_type=OptionType.CALL,
+            bid=None,
+            ask=None,
+            snapshot_timestamp=SNAPSHOT_TS,
+        )
+        _seed_option_quote(
+            db_session,
+            company,
+            expiration=NEAR_EXP,
+            strike=Decimal("115"),
+            option_type=OptionType.PUT,
+            bid=None,
+            ask=None,
+            snapshot_timestamp=SNAPSHOT_TS,
+        )
+        # An older snapshot with real, priceable quotes at the same ATM strike.
+        older = SNAPSHOT_TS.replace(day=12)
+        _seed_option_quote(
+            db_session,
+            company,
+            expiration=NEAR_EXP,
+            strike=Decimal("115"),
+            option_type=OptionType.CALL,
+            bid=Decimal("4.20"),
+            ask=Decimal("4.40"),
+            snapshot_timestamp=older,
+        )
+        _seed_option_quote(
+            db_session,
+            company,
+            expiration=NEAR_EXP,
+            strike=Decimal("115"),
+            option_type=OptionType.PUT,
+            bid=Decimal("4.00"),
+            ask=Decimal("4.20"),
+            snapshot_timestamp=older,
+        )
+
+        result = compute_and_persist_volatility_snapshot(db_session, company, EARNINGS_DATE)
+        assert result is not None
+        assert result.snapshot_timestamp == older
+        assert result.implied_move_pct is not None
+
+    def test_returns_none_when_no_snapshot_anywhere_is_priceable(self, db_session):
+        company = _seed_company(db_session, ticker="ZZSEL12")
+        _seed_price_bar(db_session, company.ticker, date(2025, 9, 12), Decimal("115.00"))
+        _seed_option_quote(
+            db_session,
+            company,
+            expiration=NEAR_EXP,
+            strike=Decimal("115"),
+            option_type=OptionType.CALL,
+            bid=None,
+            ask=None,
+            snapshot_timestamp=SNAPSHOT_TS,
+        )
+        assert compute_and_persist_volatility_snapshot(db_session, company, EARNINGS_DATE) is None

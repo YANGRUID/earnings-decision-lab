@@ -89,6 +89,20 @@ class AIDecisionVersion(TimestampMixin, Base):
     underlying_price: Mapped[Decimal | None] = mapped_column(NUM)
     implied_move_pct: Mapped[Decimal | None] = mapped_column(NUM)
 
+    # Budget-aware sizing (Phase 14.10 Part G) -- what the owner actually
+    # asked for and what the deterministic engine actually recommended at
+    # that budget, snapshotted here so the Decision Journal reflects what
+    # was really recommended at generation time even if the live chain
+    # later changes. All null when no budget was supplied for this
+    # generation (Strategy Lab / decisions generated before this feature
+    # existed) -- never backfilled with a guess.
+    trade_budget: Mapped[Decimal | None] = mapped_column(NUM)
+    risk_cap: Mapped[Decimal | None] = mapped_column(NUM)
+    risk_cap_is_percent: Mapped[bool | None] = mapped_column(Boolean)
+    recommended_quantity: Mapped[int | None] = mapped_column(Integer)
+    recommended_capital_at_risk: Mapped[Decimal | None] = mapped_column(NUM)
+    budget_infeasible_minimum: Mapped[Decimal | None] = mapped_column(NUM)
+
     provider: Mapped[str] = mapped_column(String(32))
     model: Mapped[str] = mapped_column(String(128))
 

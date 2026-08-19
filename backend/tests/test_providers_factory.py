@@ -14,8 +14,11 @@ def test_returns_alpha_vantage_provider_when_configured():
     settings = Settings(
         options_provider="alpha_vantage", alpha_vantage_api_key="test-key", _env_file=None
     )
+    # get_options_provider wraps every real adapter in a usage-tracking
+    # proxy (see services/usage_instrumentation.py) -- unwrap to check the
+    # real underlying adapter type.
     provider = get_options_provider(settings)
-    assert isinstance(provider, AlphaVantageOptionsProvider)
+    assert isinstance(provider._inner, AlphaVantageOptionsProvider)  # noqa: SLF001
 
 
 def test_raises_when_alpha_vantage_configured_without_api_key():
@@ -31,7 +34,7 @@ def test_returns_ibkr_provider_when_configured():
         options_provider="ibkr", ibkr_base_url="https://localhost:5001/v1/api", _env_file=None
     )
     provider = get_options_provider(settings)
-    assert isinstance(provider, IBKROptionsProvider)
+    assert isinstance(provider._inner, IBKROptionsProvider)  # noqa: SLF001
 
 
 def test_raises_for_unknown_provider():

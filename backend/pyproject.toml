@@ -17,6 +17,7 @@ dependencies = [
     "pgvector>=0.3.6",
     "beautifulsoup4>=4.15.0",
     "fastembed>=0.8.0",
+    "cryptography>=43.0",
 ]
 
 [dependency-groups]

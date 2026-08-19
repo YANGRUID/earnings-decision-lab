@@ -13,6 +13,7 @@ import type {
   FilingSearchResponse,
   ImpliedMoveRequest,
   ImpliedMoveResponse,
+  PendingDecisions,
   PortfolioSnapshotResponse,
   ProviderDashboard,
   ProviderSettingsUpdate,
@@ -21,12 +22,14 @@ import type {
   ResearchJobQueued,
   ResearchOverview,
   ResearchQueryResponse,
+  SettlementAttemptResult,
   StrategyLab,
   StrategyPayoffRequest,
   StrategyPayoffResponse,
   SystemStatus,
   TestConnectionResult,
   TrackRecord,
+  UsageSummary,
 } from "../types/api";
 
 const BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000/api/v1";
@@ -130,7 +133,19 @@ export const api = {
   getResearchStatus: (ticker: string) => request<ResearchJob>(`/research/${ticker}/status`),
   getResearchOverview: (ticker: string) =>
     request<ResearchOverview>(`/research/${ticker}/overview`),
-  getStrategyLab: (ticker: string) => request<StrategyLab>(`/research/${ticker}/strategies`),
+  getStrategyLab: (
+    ticker: string,
+    params: { budget?: string; risk_cap?: string; risk_cap_is_percent?: boolean } = {}
+  ) => {
+    const qs = new URLSearchParams();
+    if (params.budget) qs.set("budget", params.budget);
+    if (params.risk_cap) qs.set("risk_cap", params.risk_cap);
+    if (params.risk_cap_is_percent !== undefined) {
+      qs.set("risk_cap_is_percent", String(params.risk_cap_is_percent));
+    }
+    const suffix = qs.toString() ? `?${qs.toString()}` : "";
+    return request<StrategyLab>(`/research/${ticker}/strategies${suffix}`);
+  },
   getEarningsThesis: (ticker: string) =>
     request<EarningsThesis>(`/research/${ticker}/thesis`, { method: "POST" }),
   setEarningsDateOverride: (
@@ -158,6 +173,20 @@ export const api = {
     request<TestConnectionResult>(`/settings/providers/${domain}/${provider}/test`, {
       method: "POST",
     }),
+  setProviderCredential: (
+    provider: string,
+    body: { api_key: string; base_url?: string | null; model?: string | null }
+  ) =>
+    request<ProviderDashboard>(`/settings/providers/${provider}/credential`, {
+      method: "PUT",
+      body: JSON.stringify(body),
+    }),
+  deleteProviderCredential: (provider: string) =>
+    request<ProviderDashboard>(`/settings/providers/${provider}/credential`, {
+      method: "DELETE",
+    }),
+  getUsageSummary: (window: string) =>
+    request<UsageSummary>(`/settings/usage?window=${encodeURIComponent(window)}`),
 
   getPortfolioPositions: (params: { ticker?: string } = {}) => {
     const qs = new URLSearchParams();
@@ -168,11 +197,17 @@ export const api = {
 
   generateDecision: (
     ticker: string,
-    override?: { direction: DecisionDirection; volatility_view: DecisionVolatilityView }
+    options?: {
+      direction?: DecisionDirection;
+      volatility_view?: DecisionVolatilityView;
+      trade_budget?: string;
+      risk_cap?: string;
+      risk_cap_is_percent?: boolean;
+    }
   ) =>
     request<AIDecisionVersion>(`/research/${ticker}/decision`, {
       method: "POST",
-      body: override ? JSON.stringify(override) : undefined,
+      body: options ? JSON.stringify(options) : undefined,
     }),
   getDecisionHistory: (ticker: string, params: { limit?: number; offset?: number } = {}) => {
     const qs = new URLSearchParams();
@@ -188,7 +223,10 @@ export const api = {
   markDecisionFinal: (ticker: string, id: number) =>
     request<AIDecisionVersion>(`/research/${ticker}/decisions/${id}/final`, { method: "POST" }),
   settleDecision: (ticker: string, id: number) =>
-    request<AIDecisionVersion>(`/research/${ticker}/decisions/${id}/settle`, { method: "POST" }),
+    request<SettlementAttemptResult>(`/research/${ticker}/decisions/${id}/settle`, {
+      method: "POST",
+    }),
+  getPendingDecisions: () => request<PendingDecisions>("/research/decisions/pending"),
 
   getTrackRecord: (params: { ticker?: string; window?: "all_time" | "last_10" } = {}) => {
     const qs = new URLSearchParams();

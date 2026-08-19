@@ -19,12 +19,15 @@ Strictly honest about what this project can and cannot know:
   computation here without first building that real data pipeline.
 """
 
-from datetime import UTC, datetime
+from dataclasses import dataclass, field
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
+from typing import Literal
 
 from sqlalchemy.orm import Session
 
 from models.ai_decision_version import AIDecisionVersion
+from models.earnings_estimate_snapshot import EarningsEstimateSnapshot
 from models.earnings_event import EarningsEvent
 from models.enums import DecisionDirection, DecisionStatus
 from models.price_reaction import PriceReaction
@@ -56,6 +59,91 @@ def find_settlement_event(db: Session, decision: AIDecisionVersion) -> EarningsE
         .order_by(EarningsEvent.earnings_date.asc())
         .first()
     )
+
+
+SettlementState = Literal[
+    "not_final",
+    "earnings_date_unknown",
+    "waiting_for_event",
+    "waiting_for_post_event_price",
+    "ready",
+    "settled",
+]
+
+
+@dataclass(frozen=True)
+class SettlementEligibility:
+    """The real, deterministic reason "Attempt Settlement" either works or
+    doesn't right now (Phase 14.10 Part I1) -- computed fresh on every
+    read, never persisted, so it's always in sync with real data as it
+    arrives. Replaces the prior behavior where every failure mode
+    (unknown earnings date, event hasn't happened, no post-event price
+    yet) silently collapsed into settle_decision() returning None and the
+    API endpoint discarding that -- see git history for the real root
+    cause this was built to fix.
+    """
+
+    eligible: bool
+    state: SettlementState
+    reason: str
+    earliest_settlement_date: date | None = None
+    missing_requirements: list[str] = field(default_factory=list)
+
+
+def compute_settlement_eligibility(
+    db: Session, decision: AIDecisionVersion
+) -> SettlementEligibility:
+    if decision.status == DecisionStatus.SETTLED:
+        return SettlementEligibility(
+            eligible=False, state="settled", reason="This decision has already been settled."
+        )
+
+    if not decision.is_final:
+        return SettlementEligibility(
+            eligible=False,
+            state="not_final",
+            reason="Only the Final Decision can be settled -- mark this version as final first.",
+            missing_requirements=["is_final"],
+        )
+
+    target_date: date | None = None
+    if decision.earnings_estimate_snapshot_id is not None:
+        snapshot = db.get(EarningsEstimateSnapshot, decision.earnings_estimate_snapshot_id)
+        if snapshot is not None:
+            target_date = snapshot.estimated_report_date
+
+    if target_date is None:
+        return SettlementEligibility(
+            eligible=False,
+            state="earnings_date_unknown",
+            reason="No upcoming earnings date was known when this decision was generated -- "
+            "settlement needs a real reported earnings date to find the right price reaction.",
+            missing_requirements=["earnings_date"],
+        )
+
+    today = datetime.now(UTC).date()
+    if target_date > today:
+        return SettlementEligibility(
+            eligible=False,
+            state="waiting_for_event",
+            reason=f"Expected earnings around {target_date.isoformat()}. This decision can be "
+            "evaluated after the event and post-earnings price data is available.",
+            earliest_settlement_date=target_date + timedelta(days=1),
+            missing_requirements=["earnings_event"],
+        )
+
+    event = find_settlement_event(db, decision)
+    reaction = event.price_reaction if event is not None else None
+    if reaction is None or reaction.next_day_move_pct is None:
+        return SettlementEligibility(
+            eligible=False,
+            state="waiting_for_post_event_price",
+            reason="The earnings date has passed, but real post-earnings price data hasn't been "
+            "ingested yet -- refresh this company's research once it's available.",
+            missing_requirements=["post_event_price"],
+        )
+
+    return SettlementEligibility(eligible=True, state="ready", reason="Ready to settle.")
 
 
 def _direction_correct(direction: DecisionDirection, actual_move_pct: Decimal) -> bool | None:

@@ -26,12 +26,13 @@ const VOLATILITY_LABELS: Record<DecisionVolatilityView, string> = {
 };
 
 const SCORE_COMPONENT_LABELS: Record<string, { label: string; max: number }> = {
-  direction_fit: { label: "Direction Fit", max: 25 },
-  breakeven_fit: { label: "Breakeven Fit", max: 20 },
-  historical_fit: { label: "Historical Fit", max: 20 },
-  risk_reward: { label: "Risk/Reward", max: 20 },
+  direction_fit: { label: "Direction Fit", max: 20 },
+  volatility_fit: { label: "Volatility Fit", max: 15 },
+  breakeven_fit: { label: "Breakeven Fit", max: 15 },
+  historical_fit: { label: "Historical Fit", max: 15 },
+  risk_reward: { label: "Risk/Reward", max: 15 },
   liquidity: { label: "Liquidity", max: 10 },
-  data_quality: { label: "Data Quality", max: 5 },
+  data_quality: { label: "Data Quality", max: 10 },
 };
 
 const CONFIDENCE_COMPONENT_LABELS: Record<string, string> = {
@@ -53,6 +54,111 @@ function formatVersionLabel(iso: string): string {
     hour: "numeric",
     minute: "2-digit",
   });
+}
+
+/** Reconstructs a display-shaped budget fit for the *recommended* strategy
+ * from AIDecisionVersion's flattened top-level columns (trade_budget,
+ * recommended_quantity, recommended_capital_at_risk) -- the persisted row
+ * doesn't duplicate the full BudgetFit blob for the recommended candidate
+ * the way alternative_strategies does per-item, so this derives the same
+ * shape from real, already-persisted numbers, never estimating anything
+ * the row doesn't actually have. */
+function recommendedBudgetFit(decision: AIDecisionVersion): ScoredStrategy["budget_fit"] {
+  if (decision.trade_budget === null) return undefined as unknown as ScoredStrategy["budget_fit"];
+  if (decision.recommended_quantity === null || decision.recommended_capital_at_risk === null) {
+    return null;
+  }
+  const budget = Number(decision.trade_budget);
+  const capitalAtRisk = Number(decision.recommended_capital_at_risk);
+  const analysis = decision.recommended_strategy_analysis;
+  const qty = decision.recommended_quantity;
+  const perContractPremium = analysis ? Number(analysis.net_premium) : null;
+  const perContractMaxProfit = analysis?.max_profit !== null && analysis?.max_profit !== undefined
+    ? Number(analysis.max_profit)
+    : null;
+  return {
+    trade_budget: decision.trade_budget,
+    risk_cap: decision.risk_cap,
+    usable_risk_budget: decision.risk_cap ?? decision.trade_budget,
+    capital_at_risk_per_contract: qty > 0 ? String(capitalAtRisk / qty) : null,
+    max_feasible_quantity: qty,
+    total_max_loss: decision.recommended_capital_at_risk,
+    total_max_profit:
+      perContractMaxProfit !== null ? String(perContractMaxProfit * 100 * qty) : null,
+    total_net_premium: perContractPremium !== null ? String(perContractPremium * 100 * qty) : null,
+    budget_utilization_pct: budget > 0 ? String((capitalAtRisk / budget) * 100) : null,
+    remaining_budget: String(budget - capitalAtRisk),
+    feasible: true,
+    minimum_required: null,
+  };
+}
+
+function BudgetFitCard({ fit }: { fit: ScoredStrategy["budget_fit"] }) {
+  if (fit === null) return null;
+  if (!fit.feasible) {
+    return (
+      <div className="notice" style={{ marginTop: 12, marginBottom: 0 }}>
+        <strong>Not feasible for {formatMoney(fit.trade_budget, 0)} budget.</strong>{" "}
+        {fit.minimum_required
+          ? `Minimum defined risk is ${formatMoney(fit.minimum_required, 0)} per contract.`
+          : "This structure has no computable defined risk."}
+      </div>
+    );
+  }
+  return (
+    <div className="grid grid-4" style={{ gap: 10, marginTop: 12 }}>
+      <div className="stat">
+        <span className="stat-label">Trade budget</span>
+        <span className="stat-value small">{formatMoney(fit.trade_budget, 0)}</span>
+      </div>
+      <div className="stat">
+        <span className="stat-label">Contracts</span>
+        <span className="stat-value small">{fit.max_feasible_quantity}</span>
+      </div>
+      <div className="stat">
+        <span className="stat-label">Estimated entry</span>
+        <span className="stat-value small">
+          {fit.total_net_premium !== null
+            ? `${formatMoney(fit.total_net_premium, 0)} ${
+                Number(fit.total_net_premium) < 0 ? "credit" : "debit"
+              }`
+            : "—"}
+        </span>
+      </div>
+      <div className="stat">
+        <span className="stat-label">Max loss (position)</span>
+        <span className="stat-value small">
+          {fit.total_max_loss !== null ? formatMoney(fit.total_max_loss, 0) : "—"}
+        </span>
+      </div>
+      <div className="stat">
+        <span className="stat-label">Max profit (position)</span>
+        <span className="stat-value small">
+          {fit.total_max_profit !== null ? formatMoney(fit.total_max_profit, 0) : "Unbounded"}
+        </span>
+      </div>
+      <div className="stat">
+        <span className="stat-label">Budget utilization</span>
+        <span className="stat-value small">
+          {fit.budget_utilization_pct !== null
+            ? `${Number(fit.budget_utilization_pct).toFixed(1)}%`
+            : "—"}
+        </span>
+      </div>
+      <div className="stat">
+        <span className="stat-label">Remaining budget</span>
+        <span className="stat-value small">
+          {fit.remaining_budget !== null ? formatMoney(fit.remaining_budget, 0) : "—"}
+        </span>
+      </div>
+      {fit.risk_cap !== null && (
+        <div className="stat">
+          <span className="stat-label">Risk cap</span>
+          <span className="stat-value small">{formatMoney(fit.risk_cap, 0)}</span>
+        </div>
+      )}
+    </div>
+  );
 }
 
 function ScoreBreakdown({ components, total }: { components: Record<string, number>; total: number }) {
@@ -94,6 +200,7 @@ function StrategyDecisionCard({
     score_components: Record<string, number>;
     why: string[];
     risks: string[];
+    budget_fit?: ScoredStrategy["budget_fit"];
   };
 }) {
   const a = strategy.analysis;
@@ -149,6 +256,8 @@ function StrategyDecisionCard({
       </div>
 
       <ScoreBreakdown components={strategy.score_components} total={strategy.score} />
+
+      {strategy.budget_fit !== undefined && <BudgetFitCard fit={strategy.budget_fit} />}
 
       <div style={{ marginTop: 12 }}>
         <div style={{ fontWeight: 600 }}>Why this strategy</div>
@@ -287,6 +396,11 @@ export function DecisionTab({ ticker }: { ticker: string }) {
   const [overrideOpen, setOverrideOpen] = useState(false);
   const [overrideDirection, setOverrideDirection] = useState<DecisionDirection>("neutral");
   const [overrideVol, setOverrideVol] = useState<DecisionVolatilityView>("neutral_vol");
+  const [tradeBudget, setTradeBudget] = useState("");
+  const [riskCap, setRiskCap] = useState("");
+  const [riskCapIsPercent, setRiskCapIsPercent] = useState(true);
+  const [settling, setSettling] = useState(false);
+  const [settlementMessage, setSettlementMessage] = useState<string | null>(null);
 
   useEffect(() => {
     if (history.data && history.data.length > 0 && activeId === null) {
@@ -295,16 +409,23 @@ export function DecisionTab({ ticker }: { ticker: string }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [history.data]);
 
+  useEffect(() => {
+    setSettlementMessage(null);
+  }, [activeId]);
+
   const active = history.data?.find((d) => d.id === activeId) ?? null;
 
   const generate = async (useOverride: boolean) => {
     setGenerating(true);
     setError(null);
     try {
-      await api.generateDecision(
-        ticker,
-        useOverride ? { direction: overrideDirection, volatility_view: overrideVol } : undefined
-      );
+      await api.generateDecision(ticker, {
+        ...(useOverride ? { direction: overrideDirection, volatility_view: overrideVol } : {}),
+        ...(tradeBudget.trim() ? { trade_budget: tradeBudget.trim() } : {}),
+        ...(tradeBudget.trim() && riskCap.trim()
+          ? { risk_cap: riskCap.trim(), risk_cap_is_percent: riskCapIsPercent }
+          : {}),
+      });
       history.reload();
       setActiveId(null);
       setOverrideOpen(false);
@@ -325,11 +446,16 @@ export function DecisionTab({ ticker }: { ticker: string }) {
   };
 
   const trySettle = async (id: number) => {
+    setSettling(true);
+    setSettlementMessage(null);
     try {
-      await api.settleDecision(ticker, id);
+      const result = await api.settleDecision(ticker, id);
+      setSettlementMessage(result.message);
       history.reload();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Could not attempt settlement.");
+    } finally {
+      setSettling(false);
     }
   };
 
@@ -347,6 +473,47 @@ export function DecisionTab({ ticker }: { ticker: string }) {
           a probability of a correct outcome. Every generation is saved as a new version — nothing
           is overwritten.
         </p>
+        <div className="grid grid-3" style={{ gap: 12, marginBottom: 12, maxWidth: 560 }}>
+          <div className="field">
+            <label>Trade budget (optional)</label>
+            <input
+              type="number"
+              min="0"
+              placeholder="e.g. 500"
+              value={tradeBudget}
+              onChange={(e) => setTradeBudget(e.target.value)}
+              disabled={generating}
+            />
+          </div>
+          <div className="field">
+            <label>Max risk (optional)</label>
+            <input
+              type="number"
+              min="0"
+              placeholder={riskCapIsPercent ? "e.g. 25" : "e.g. 200"}
+              value={riskCap}
+              onChange={(e) => setRiskCap(e.target.value)}
+              disabled={generating || !tradeBudget.trim()}
+            />
+          </div>
+          <div className="field">
+            <label>Max risk unit</label>
+            <select
+              value={riskCapIsPercent ? "percent" : "dollar"}
+              onChange={(e) => setRiskCapIsPercent(e.target.value === "percent")}
+              disabled={generating || !tradeBudget.trim()}
+            >
+              <option value="percent">% of budget</option>
+              <option value="dollar">$ amount</option>
+            </select>
+          </div>
+        </div>
+        {tradeBudget.trim() && (
+          <p className="text-sm text-muted" style={{ marginTop: -6, marginBottom: 12 }}>
+            Restricts recommended strategies to ones this budget can actually afford, and sizes
+            contract quantity by real capital at risk — never just a cosmetic quantity label.
+          </p>
+        )}
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
           <button className="btn" onClick={() => generate(false)} disabled={generating}>
             {generating ? "Generating…" : "Generate New Decision"}
@@ -426,22 +593,40 @@ export function DecisionTab({ ticker }: { ticker: string }) {
 
       {active && (
         <>
-          <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
-            <button
-              className="btn-secondary"
-              onClick={() => markFinal(active.id)}
-              disabled={active.is_final}
-            >
-              {active.is_final ? "Final Decision" : "Mark as Final Decision"}
-            </button>
-            {active.status === "open" && (
-              <button className="btn-secondary" onClick={() => trySettle(active.id)}>
-                Attempt Settlement
+          <div style={{ marginBottom: 16 }}>
+            <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+              <button
+                className="btn-secondary"
+                onClick={() => markFinal(active.id)}
+                disabled={active.is_final}
+              >
+                {active.is_final ? "Final Decision" : "Mark as Final Decision"}
               </button>
+              {active.settlement_state !== "settled" && (
+                <button
+                  className="btn-secondary"
+                  onClick={() => trySettle(active.id)}
+                  disabled={settling}
+                >
+                  {settling ? "Attempting Settlement…" : "Attempt Settlement"}
+                </button>
+              )}
+              {active.settlement_state !== "settled" && !settlementMessage && (
+                <span className="text-sm text-muted">{active.settlement_reason}</span>
+              )}
+            </div>
+            {settlementMessage && (
+              <div className="notice" style={{ marginTop: 8, marginBottom: 0 }}>
+                {settlementMessage}
+              </div>
             )}
           </div>
 
           <CurrentViewCard decision={active} />
+
+          {(active.recommended_strategy_category || (active.alternative_strategies?.length ?? 0) > 0) && (
+            <h2 style={{ marginTop: 20 }}>Recommended Strategies</h2>
+          )}
 
           {active.recommended_strategy_category &&
             active.recommended_strategy_legs &&
@@ -460,6 +645,7 @@ export function DecisionTab({ ticker }: { ticker: string }) {
                   score_components: active.recommended_strategy_score_components,
                   why: active.recommended_strategy_why,
                   risks: active.recommended_strategy_risks,
+                  budget_fit: recommendedBudgetFit(active),
                 }}
               />
             )}
@@ -468,7 +654,22 @@ export function DecisionTab({ ticker }: { ticker: string }) {
             <StrategyDecisionCard key={i} label={`#${i + 2} Alternative`} strategy={alt} />
           ))}
 
-          {!active.recommended_strategy_category && (
+          {!active.recommended_strategy_category && active.trade_budget && (
+            <div className="card">
+              <h2>Strategy Candidates</h2>
+              <div className="notice" style={{ marginBottom: 0 }}>
+                <strong>Not feasible for {formatMoney(active.trade_budget, 0)} budget.</strong>{" "}
+                {active.budget_infeasible_minimum
+                  ? `Minimum defined risk among this chain's real candidates is ${formatMoney(
+                      active.budget_infeasible_minimum,
+                      0
+                    )} per contract.`
+                  : "No real strategy candidate on this chain has a computable defined risk."}
+              </div>
+            </div>
+          )}
+
+          {!active.recommended_strategy_category && !active.trade_budget && (
             <div className="card">
               <h2>Strategy Candidates</h2>
               <p className="text-sm text-muted" style={{ marginBottom: 0 }}>

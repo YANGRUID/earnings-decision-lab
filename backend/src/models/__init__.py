@@ -14,7 +14,9 @@ from models.options_snapshot import OptionsSnapshot
 from models.portfolio_position_snapshot import PortfolioPositionSnapshot
 from models.price_bar import PriceBar
 from models.price_reaction import PriceReaction
+from models.provider_credential import ProviderCredential
 from models.provider_health_event import ProviderHealthEvent
+from models.provider_usage_event import ProviderUsageEvent
 from models.research_preparation_job import ResearchPreparationJob
 from models.strategy_replay import StrategyReplay
 from models.volatility_snapshot import VolatilitySnapshot
@@ -36,7 +38,9 @@ __all__ = [
     "PortfolioPositionSnapshot",
     "PriceBar",
     "PriceReaction",
+    "ProviderCredential",
     "ProviderHealthEvent",
+    "ProviderUsageEvent",
     "ResearchPreparationJob",
     "StrategyReplay",
     "VolatilitySnapshot",

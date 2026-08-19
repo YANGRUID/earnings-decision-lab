@@ -26,6 +26,7 @@ from models.options_snapshot import OptionsSnapshot
 from models.price_bar import PriceBar
 from models.provider_health_event import ProviderHealthEvent
 from services.provider_settings import get_app_provider_settings
+from services.secret_store import credential_status
 
 PRICE_HISTORY_PROVIDERS = ("tiingo", "alpha_vantage")
 EARNINGS_ESTIMATES_PROVIDERS = ("alpha_vantage",)
@@ -103,33 +104,16 @@ class DomainStatus:
     providers: list[ProviderStatus] = field(default_factory=list)
 
 
-def _mask(key: str | None) -> str | None:
-    if not key:
-        return None
-    if len(key) <= 4:
-        return "•" * len(key)
-    return "••••••••" + key[-4:]
-
-
-def _raw_key(provider: str, settings: Settings) -> str | None:
-    return {
-        "tiingo": settings.tiingo_api_key,
-        "alpha_vantage": settings.alpha_vantage_api_key,
-        "deepseek": settings.deepseek_api_key,
-        "openai": settings.openai_api_key,
-        "anthropic": settings.anthropic_api_key,
-        "openai_compatible": settings.openai_compatible_api_key,
-    }.get(provider)
-
-
-def _is_configured(provider: str, settings: Settings) -> bool:
+def _configured_and_masked(
+    provider: str, settings: Settings, db: Session
+) -> tuple[bool, str | None]:
     if provider in ("sec_edgar", "ibkr"):
         # No API key concept: SEC EDGAR requires only a contact User-Agent
         # (see core.config.Settings.sec_edgar_user_agent, always has a
         # default); IBKR auth happens per-call against the user's own local
         # Gateway, never a key this project holds.
-        return True
-    return bool(_raw_key(provider, settings))
+        return True, None
+    return credential_status(settings, provider, db)
 
 
 def _last_health_event(
@@ -177,11 +161,12 @@ def _provider_status(
     db: Session, settings: Settings, provider: str, domain: str
 ) -> ProviderStatus:
     error_event = _last_health_event(db, provider, domain, exclude_connected=True)
+    configured, masked_key = _configured_and_masked(provider, settings, db)
     return ProviderStatus(
         provider=provider,
         domain=domain,
-        configured=_is_configured(provider, settings),
-        masked_key=_mask(_raw_key(provider, settings)),
+        configured=configured,
+        masked_key=masked_key,
         last_success_at=_last_success_at(db, provider, domain),
         last_error_at=error_event.occurred_at if error_event else None,
         last_error_status=error_event.status.value if error_event else None,

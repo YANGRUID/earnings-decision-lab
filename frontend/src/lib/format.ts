@@ -46,6 +46,19 @@ export function providerLabel(provider: string | null): string {
   return PROVIDER_LABELS[provider] ?? provider;
 }
 
+/** Providers with a real credential form -- mirrors the backend's
+ * services.secret_store.CREDENTIAL_PROVIDERS exactly. SEC EDGAR (no key
+ * concept) and IBKR (local Gateway session, never a stored key)
+ * deliberately have no entry here. */
+export const CREDENTIAL_PROVIDERS = [
+  "tiingo",
+  "alpha_vantage",
+  "deepseek",
+  "openai",
+  "anthropic",
+  "openai_compatible",
+] as const;
+
 export const DOMAIN_LABELS: Record<string, string> = {
   price_history: "Market Price Data",
   earnings_estimates: "Earnings Estimates",

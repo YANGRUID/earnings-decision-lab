@@ -1,9 +1,11 @@
 import logging
 from datetime import UTC, datetime
+from decimal import Decimal
 from typing import TypedDict
 
 from fastapi import APIRouter, BackgroundTasks, Query, Request
 
+from analytics.decision.budget import compute_budget_fit
 from analytics.market_session import get_market_session
 from analytics.options.move_compatibility import assess_move_compatibility
 from analytics.options.strategy_ranking import rank_strategy_candidates
@@ -11,10 +13,11 @@ from api.deps import LLM, DbSession, Embedder, Orchestrator
 from api.exceptions import InvalidRequestError, NotFoundError, RateLimitedError
 from core.config import get_settings
 from db.session import SessionLocal
+from models.ai_decision_version import AIDecisionVersion
 from models.company import Company
 from models.document_chunk import DocumentChunk
 from models.earnings_event import EarningsEvent
-from models.enums import DecisionDirection, DecisionSource, DecisionVolatilityView
+from models.enums import DecisionDirection, DecisionSource, DecisionStatus, DecisionVolatilityView
 from models.filing import Filing
 from models.price_bar import PriceBar
 from providers.sec_edgar import SECEdgarProvider
@@ -40,6 +43,8 @@ from schemas.api import (
     OptionLegResponse,
     OptionQuoteResponse,
     OptionsMarketStateResponse,
+    PendingDecisionResponse,
+    PendingDecisionsResponse,
     RankedStrategyResponse,
     RateResponse,
     ResearchJobQueuedResponse,
@@ -48,21 +53,29 @@ from schemas.api import (
     ResearchQueryRequest,
     ResearchQueryResponse,
     ScenarioPnlResponse,
+    SettlementAttemptResponse,
     StrategyAnalysisResponse,
     StrategyLabResponse,
     ToolCallResponse,
     TrackRecordResponse,
     VolatilitySnapshotResponse,
 )
-from services.decision_engine import DecisionGenerationError, generate_decision
+from services.decision_engine import (
+    DecisionGenerationError,
+    budget_fit_to_dict,
+    generate_decision,
+)
 from services.decision_history import (
+    MAX_HISTORY_LIMIT,
+    DecisionListFilters,
     delete_decision,
     get_decision,
+    list_all_decisions,
     list_decisions,
     mark_final,
     persist_decision,
 )
-from services.decision_settlement import settle_decision
+from services.decision_settlement import compute_settlement_eligibility, settle_decision
 from services.earnings_thesis import ThesisGenerationError, generate_earnings_thesis
 from services.historical_moves import get_historical_move_pcts, get_historical_move_stats
 from services.llm.errors import LLMError
@@ -70,8 +83,8 @@ from services.market_expectations import get_latest_earnings_estimate, set_manua
 from services.options_analytics import (
     compute_options_market_state,
     get_latest_close_price,
-    get_latest_options_chain,
     get_latest_volatility_snapshot,
+    select_pricing_snapshot,
 )
 from services.research_history import (
     ThesisProvenance,
@@ -327,8 +340,10 @@ def research_overview(symbol: str, db: DbSession) -> ResearchOverviewResponse:
     latest_estimate = get_latest_earnings_estimate(db, company.id)
     latest_volatility = get_latest_volatility_snapshot(db, company.id)
     move_stats = get_historical_move_stats(db, company.id)
-    raw_chain = get_latest_options_chain(db, company)
-    options_state = compute_options_market_state(raw_chain, datetime.now(UTC), latest_volatility)
+    selection = select_pricing_snapshot(db, company)
+    options_state = compute_options_market_state(
+        selection.quotes, datetime.now(UTC), latest_volatility, selection
+    )
 
     return ResearchOverviewResponse(
         ticker=ticker,
@@ -410,7 +425,13 @@ def _option_quote_response(quote: OptionQuote) -> OptionQuoteResponse:
 
 
 @router.get("/{symbol}/strategies", response_model=StrategyLabResponse)
-def get_strategy_lab(symbol: str, db: DbSession) -> StrategyLabResponse:
+def get_strategy_lab(
+    symbol: str,
+    db: DbSession,
+    budget: Decimal | None = None,
+    risk_cap: Decimal | None = None,
+    risk_cap_is_percent: bool = False,
+) -> StrategyLabResponse:
     """Real, ranked strategy candidates built from the most recently
     ingested real options-chain snapshot -- see
     services/strategy_generation.py and
@@ -432,11 +453,12 @@ def get_strategy_lab(symbol: str, db: DbSession) -> StrategyLabResponse:
         raise NotFoundError(f"no research on record yet for {ticker!r}")
 
     now = datetime.now(UTC)
-    raw_chain = get_latest_options_chain(db, company)
+    selection = select_pricing_snapshot(db, company)
+    raw_chain = selection.quotes
     chain_response = [_option_quote_response(q) for q in raw_chain]
     volatility = get_latest_volatility_snapshot(db, company.id)
 
-    options_state = compute_options_market_state(raw_chain, now, volatility)
+    options_state = compute_options_market_state(raw_chain, now, volatility, selection)
     market_session = get_market_session(now)
 
     estimate_for_anchor = get_latest_earnings_estimate(db, company.id)
@@ -501,13 +523,25 @@ def get_strategy_lab(symbol: str, db: DbSession) -> StrategyLabResponse:
         )
 
     is_general = volatility.target_earnings_date is None
-    candidates = generate_strategy_candidates(db, company, volatility.target_earnings_date)
+    candidates = generate_strategy_candidates(
+        db, company, volatility.target_earnings_date, selection
+    )
     ranked = rank_strategy_candidates(candidates, ticker, volatility.implied_move_pct)
     historical_moves = get_historical_move_pcts(db, company.id)
 
     strategies = []
     for r in ranked:
         compatibility = assess_move_compatibility(r.candidate, historical_moves)
+        budget_fit = (
+            compute_budget_fit(
+                r.candidate,
+                trade_budget=budget,
+                risk_cap=risk_cap,
+                risk_cap_is_percent=risk_cap_is_percent,
+            )
+            if budget is not None
+            else None
+        )
         strategies.append(
             RankedStrategyResponse(
                 rank=r.rank,
@@ -550,6 +584,7 @@ def get_strategy_lab(symbol: str, db: DbSession) -> StrategyLabResponse:
                 )
                 if compatibility
                 else None,
+                budget_fit=budget_fit_to_dict(budget_fit),
             )
         )
 
@@ -685,6 +720,21 @@ def delete_thesis_version_item(symbol: str, version_id: int, db: DbSession) -> N
     delete_thesis_version(db, version_id)
 
 
+def _decision_response(db: DbSession, decision: AIDecisionVersion) -> AIDecisionVersionResponse:
+    """Every decision response embeds its real, freshly computed
+    settlement eligibility (Phase 14.10 Part I) -- computed live, never
+    persisted, so the frontend can render the right "Attempt Settlement"
+    button state (or none at all) without a second round trip, and so it
+    can never go stale relative to real data that just arrived."""
+    eligibility = compute_settlement_eligibility(db, decision)
+    data = AIDecisionVersionResponse.model_validate(decision).model_dump()
+    data["settlement_eligible"] = eligibility.eligible
+    data["settlement_state"] = eligibility.state
+    data["settlement_reason"] = eligibility.reason
+    data["settlement_earliest_date"] = eligibility.earliest_settlement_date
+    return AIDecisionVersionResponse(**data)
+
+
 @router.post("/{symbol}/decision", response_model=AIDecisionVersionResponse)
 def generate_decision_endpoint(
     symbol: str,
@@ -715,6 +765,10 @@ def generate_decision_endpoint(
             raise InvalidRequestError(f"unrecognized direction or volatility_view: {exc}") from exc
         decision_source = DecisionSource.MANUAL_OVERRIDE
 
+    trade_budget = body.trade_budget if body is not None else None
+    risk_cap = body.risk_cap if body is not None else None
+    risk_cap_is_percent = body.risk_cap_is_percent if body is not None else False
+
     try:
         result = generate_decision(
             db,
@@ -723,12 +777,15 @@ def generate_decision_endpoint(
             company,
             direction_override=direction_override,
             volatility_view_override=volatility_view_override,
+            trade_budget=trade_budget,
+            risk_cap=risk_cap,
+            risk_cap_is_percent=risk_cap_is_percent,
         )
     except DecisionGenerationError as exc:
         raise LLMError(f"decision generation failed: {exc}") from exc
 
     row = persist_decision(db, company=company, result=result, decision_source=decision_source)
-    return AIDecisionVersionResponse.model_validate(row)
+    return _decision_response(db, row)
 
 
 @router.get("/{symbol}/decisions", response_model=list[AIDecisionVersionResponse])
@@ -744,7 +801,7 @@ def get_decision_history(
         raise NotFoundError(f"no research on record yet for {ticker!r}")
 
     decisions = list_decisions(db, company.id, limit=limit, offset=offset)
-    return [AIDecisionVersionResponse.model_validate(d) for d in decisions]
+    return [_decision_response(db, d) for d in decisions]
 
 
 @router.get("/{symbol}/decisions/{decision_id}", response_model=AIDecisionVersionResponse)
@@ -757,7 +814,7 @@ def get_decision_item(symbol: str, decision_id: int, db: DbSession) -> AIDecisio
     decision = get_decision(db, decision_id)
     if decision is None or decision.company_id != company.id:
         raise NotFoundError(f"no decision {decision_id} for {ticker!r}")
-    return AIDecisionVersionResponse.model_validate(decision)
+    return _decision_response(db, decision)
 
 
 @router.delete("/{symbol}/decisions/{decision_id}", status_code=204)
@@ -791,14 +848,16 @@ def mark_decision_final(
         raise NotFoundError(f"no decision {decision_id} for {ticker!r}")
     updated = mark_final(db, decision_id)
     assert updated is not None
-    return AIDecisionVersionResponse.model_validate(updated)
+    return _decision_response(db, updated)
 
 
-@router.post("/{symbol}/decisions/{decision_id}/settle", response_model=AIDecisionVersionResponse)
-def settle_decision_item(symbol: str, decision_id: int, db: DbSession) -> AIDecisionVersionResponse:
+@router.post("/{symbol}/decisions/{decision_id}/settle", response_model=SettlementAttemptResponse)
+def settle_decision_item(symbol: str, decision_id: int, db: DbSession) -> SettlementAttemptResponse:
     """Attempts settlement now rather than waiting for the next scheduled
-    pass (see services/decision_settlement.py) -- a no-op that returns the
-    decision unchanged when no real post-earnings data exists yet."""
+    pass (see services/decision_settlement.py). Every outcome -- already
+    settled, not yet eligible (with the real reason why), a genuine
+    settlement failure despite eligibility, or a genuine success -- is a
+    distinct, real response; never a silent no-op (Phase 14.10 Part I3)."""
     ticker = normalize_ticker(symbol)
     company = db.query(Company).filter(Company.ticker == ticker).one_or_none()
     if company is None:
@@ -807,9 +866,68 @@ def settle_decision_item(symbol: str, decision_id: int, db: DbSession) -> AIDeci
     decision = get_decision(db, decision_id)
     if decision is None or decision.company_id != company.id:
         raise NotFoundError(f"no decision {decision_id} for {ticker!r}")
-    settle_decision(db, decision)
-    db.refresh(decision)
-    return AIDecisionVersionResponse.model_validate(decision)
+
+    eligibility = compute_settlement_eligibility(db, decision)
+    if eligibility.state == "settled":
+        return SettlementAttemptResponse(
+            decision=_decision_response(db, decision),
+            settled=True,
+            message="This decision was already settled.",
+        )
+    if not eligibility.eligible:
+        return SettlementAttemptResponse(
+            decision=_decision_response(db, decision),
+            settled=False,
+            message=eligibility.reason,
+        )
+
+    updated = settle_decision(db, decision)
+    if updated is None:
+        return SettlementAttemptResponse(
+            decision=_decision_response(db, decision),
+            settled=False,
+            message="Settlement failed: real post-earnings data was not available after all.",
+        )
+    return SettlementAttemptResponse(
+        decision=_decision_response(db, updated),
+        settled=True,
+        message="Decision settled successfully.",
+    )
+
+
+@router.get("/decisions/pending", response_model=PendingDecisionsResponse)
+def list_pending_final_decisions(db: DbSession) -> PendingDecisionsResponse:
+    """Every Final Decision across every company, split by real settlement
+    status (Phase 14.10 Part I4) -- lets Track Record surface what's still
+    waiting on a real post-earnings outcome, and settle it directly from
+    there, without navigating into each company's Decision tab one by
+    one. Bounded by MAX_HISTORY_LIMIT for the same reason as every other
+    cross-company list in this project (see services/decision_history.py):
+    a personal research tool with a small real decision count, never an
+    unbounded batch query."""
+    pending_rows = list_all_decisions(
+        db,
+        filters=DecisionListFilters(is_final_only=True, status=DecisionStatus.OPEN),
+        limit=MAX_HISTORY_LIMIT,
+    )
+    final_count = db.query(AIDecisionVersion).filter(AIDecisionVersion.is_final.is_(True)).count()
+    settled_count = (
+        db.query(AIDecisionVersion)
+        .filter(
+            AIDecisionVersion.is_final.is_(True),
+            AIDecisionVersion.status == DecisionStatus.SETTLED,
+        )
+        .count()
+    )
+    return PendingDecisionsResponse(
+        pending=[
+            PendingDecisionResponse(ticker=d.company.ticker, decision=_decision_response(db, d))
+            for d in pending_rows
+        ],
+        final_count=final_count,
+        pending_count=len(pending_rows),
+        settled_count=settled_count,
+    )
 
 
 @router.get("/track-record", response_model=TrackRecordResponse)

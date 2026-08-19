@@ -25,6 +25,7 @@ from agents.tools.earnings_history import EarningsHistoryArgs, EarningsHistoryTo
 from agents.tools.filings_search import FilingsSearchArgs, FilingsSearchTool
 from agents.tools.guidance_comparison import GuidanceComparisonArgs, GuidanceComparisonTool
 from agents.tools.types import ToolOutcome
+from analytics.decision.budget import BudgetFit, filter_and_size_by_budget
 from analytics.decision.confidence import ConfidenceComponents, compute_confidence
 from analytics.decision.reasoning import build_risk_bullets, build_why_bullets
 from analytics.decision.strategy_scoring import (
@@ -54,8 +55,8 @@ from services.llm.types import ChatMessage
 from services.market_expectations import get_latest_earnings_estimate
 from services.options_analytics import (
     compute_options_market_state,
-    get_latest_options_chain,
     get_latest_volatility_snapshot,
+    select_pricing_snapshot,
 )
 from services.provider_settings import get_strategy_risk_preference
 from services.research_history import (
@@ -76,6 +77,7 @@ class ScoredStrategy:
     ranked: ViewRankedStrategy
     why: list[str]
     risks: list[str]
+    budget_fit: BudgetFit | None = None
 
 
 @dataclass(frozen=True)
@@ -95,6 +97,10 @@ class DecisionResult:
     risk_preference: StrategyRiskPreference
     recommended: ScoredStrategy | None
     alternatives: list[ScoredStrategy]
+    trade_budget: Decimal | None = None
+    risk_cap: Decimal | None = None
+    risk_cap_is_percent: bool = False
+    budget_infeasible_minimum: Decimal | None = None
 
 
 def leg_to_dict(leg: OptionLeg) -> dict:
@@ -115,6 +121,39 @@ def analysis_to_dict(analysis: StrategyAnalysis) -> dict:
         "breakevens": [str(b) for b in analysis.breakevens],
         "return_on_risk": (
             str(analysis.return_on_risk) if analysis.return_on_risk is not None else None
+        ),
+    }
+
+
+def budget_fit_to_dict(fit: BudgetFit | None) -> dict | None:
+    if fit is None:
+        return None
+    return {
+        "trade_budget": str(fit.trade_budget),
+        "risk_cap": str(fit.risk_cap) if fit.risk_cap is not None else None,
+        "usable_risk_budget": str(fit.usable_risk_budget),
+        "capital_at_risk_per_contract": (
+            str(fit.capital_at_risk_per_contract)
+            if fit.capital_at_risk_per_contract is not None
+            else None
+        ),
+        "max_feasible_quantity": fit.max_feasible_quantity,
+        "total_max_loss": str(fit.total_max_loss) if fit.total_max_loss is not None else None,
+        "total_max_profit": (
+            str(fit.total_max_profit) if fit.total_max_profit is not None else None
+        ),
+        "total_net_premium": (
+            str(fit.total_net_premium) if fit.total_net_premium is not None else None
+        ),
+        "budget_utilization_pct": (
+            str(fit.budget_utilization_pct) if fit.budget_utilization_pct is not None else None
+        ),
+        "remaining_budget": (
+            str(fit.remaining_budget) if fit.remaining_budget is not None else None
+        ),
+        "feasible": fit.feasible,
+        "minimum_required": (
+            str(fit.minimum_required) if fit.minimum_required is not None else None
         ),
     }
 
@@ -271,6 +310,9 @@ def generate_decision(
     *,
     direction_override: DecisionDirection | None = None,
     volatility_view_override: DecisionVolatilityView | None = None,
+    trade_budget: Decimal | None = None,
+    risk_cap: Decimal | None = None,
+    risk_cap_is_percent: bool = False,
 ) -> DecisionResult:
     """Runs the full pipeline for ``company`` and returns a real,
     generated-but-not-yet-persisted decision -- callers persist it (see
@@ -284,6 +326,16 @@ def generate_decision(
     owner-chosen view instead -- everything downstream of the view is
     identical either way. The final DecisionSource is decided by the
     caller (the router), not here.
+
+    ``trade_budget`` (Phase 14.10 Part G), when given, restricts the
+    recommended/alternative candidates to ones that are actually
+    affordable at that budget (see analytics/decision/budget.py) --
+    this is the real mechanism by which a $500 and a $10,000 budget can
+    recommend genuinely different structures, not a cosmetic quantity
+    label. When no real candidate fits, ``recommended`` is None and
+    ``budget_infeasible_minimum`` reports the cheapest real structure
+    this chain actually supports, so the owner knows what budget would
+    be required instead of just seeing nothing.
     """
     ticker = company.ticker
     thesis, thesis_version_id = _get_or_generate_thesis(db, llm, embedder, company)
@@ -302,8 +354,10 @@ def generate_decision(
 
     estimate = get_latest_earnings_estimate(db, company.id)
     volatility = get_latest_volatility_snapshot(db, company.id)
-    raw_chain = get_latest_options_chain(db, company)
-    market_state = compute_options_market_state(raw_chain, datetime.now(UTC), volatility)
+    selection = select_pricing_snapshot(db, company)
+    market_state = compute_options_market_state(
+        selection.quotes, datetime.now(UTC), volatility, selection
+    )
 
     if direction_override is not None and volatility_view_override is not None:
         view = DecisionView(
@@ -348,7 +402,7 @@ def generate_decision(
         else None
     )
     candidates: list[StrategyCandidate] = generate_strategy_candidates(
-        db, company, target_earnings_date
+        db, company, target_earnings_date, selection
     )
     candidates = filter_candidates_by_risk_preference(candidates, risk_preference)
 
@@ -363,6 +417,13 @@ def generate_decision(
         market_data_quality=market_state.market_data_quality,
     )
 
+    ranked_all, budget_fits, budget_infeasible_minimum = filter_and_size_by_budget(
+        ranked_all,
+        trade_budget=trade_budget,
+        risk_cap=risk_cap,
+        risk_cap_is_percent=risk_cap_is_percent,
+    )
+
     def _scored(r: ViewRankedStrategy) -> ScoredStrategy:
         why = build_why_bullets(
             r,
@@ -371,7 +432,7 @@ def generate_decision(
             has_bid_ask=market_state.has_bid_ask,
         )
         risks = build_risk_bullets(r)
-        return ScoredStrategy(ranked=r, why=why, risks=risks)
+        return ScoredStrategy(ranked=r, why=why, risks=risks, budget_fit=budget_fits.get(r.rank))
 
     recommended = _scored(ranked_all[0]) if ranked_all else None
     alternatives = [_scored(r) for r in ranked_all[1:3]]
@@ -395,4 +456,8 @@ def generate_decision(
         risk_preference=risk_preference,
         recommended=recommended,
         alternatives=alternatives,
+        trade_budget=trade_budget,
+        risk_cap=risk_cap,
+        risk_cap_is_percent=risk_cap_is_percent,
+        budget_infeasible_minimum=budget_infeasible_minimum,
     )

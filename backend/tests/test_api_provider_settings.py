@@ -127,7 +127,7 @@ class TestTestConnection:
         monkeypatch.setattr(
             provider_settings_router,
             "test_connection",
-            lambda settings, provider, domain: (ProviderHealthStatus.CONNECTED, None),
+            lambda settings, provider, domain, db=None: (ProviderHealthStatus.CONNECTED, None),
         )
         response = client.post("/api/v1/settings/providers/price_history/tiingo/test")
         assert response.status_code == 200
@@ -150,7 +150,7 @@ class TestTestConnection:
         monkeypatch.setattr(
             provider_settings_router,
             "test_connection",
-            lambda settings, provider, domain: (
+            lambda settings, provider, domain, db=None: (
                 ProviderHealthStatus.RATE_LIMITED,
                 "429 too many requests",
             ),

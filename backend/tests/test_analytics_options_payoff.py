@@ -147,6 +147,72 @@ def test_iron_condor_rejects_wrong_strike_order():
         )
 
 
+def test_long_call_butterfly():
+    legs = strategies.long_call_butterfly(
+        lower_strike=D(90),
+        lower_premium=D(12),
+        middle_strike=D(100),
+        middle_premium=D(6),
+        upper_strike=D(110),
+        upper_premium=D(2),
+    )
+    result = analyze(legs)
+
+    assert result.net_premium == D(2)  # debit: 12 - 2*6 + 2
+    assert result.max_profit == D(8)  # wing width (10) - net debit (2)
+    assert result.max_loss == D(2)
+    assert result.breakevens == (D(92), D(108))
+    assert total_payoff(legs, D(100)) == D(8)  # pins exactly at the short middle strike
+    assert total_payoff(legs, D(90)) == D(-2)
+    assert total_payoff(legs, D(110)) == D(-2)
+
+
+def test_long_call_butterfly_rejects_wrong_strike_order():
+    with pytest.raises(ValueError):
+        strategies.long_call_butterfly(
+            lower_strike=D(100),  # should be < middle_strike
+            lower_premium=D(6),
+            middle_strike=D(90),
+            middle_premium=D(12),
+            upper_strike=D(110),
+            upper_premium=D(2),
+        )
+
+
+def test_iron_butterfly():
+    legs = strategies.iron_butterfly(
+        put_long_strike=D(90),
+        put_long_premium=D(1),
+        center_strike=D(100),
+        put_short_premium=D(5),
+        call_short_premium=D(5),
+        call_long_strike=D(110),
+        call_long_premium=D(1),
+    )
+    result = analyze(legs)
+
+    assert result.net_premium == D(-8)  # net credit: -5 -5 +1 +1
+    assert result.max_profit == D(8)  # credit received, at the center strike
+    assert result.max_loss == D(2)  # wing width (10) - credit (8)
+    assert result.breakevens == (D(92), D(108))
+    assert total_payoff(legs, D(100)) == D(8)
+    assert total_payoff(legs, D(90)) == D(-2)
+    assert total_payoff(legs, D(110)) == D(-2)
+
+
+def test_iron_butterfly_rejects_wrong_strike_order():
+    with pytest.raises(ValueError):
+        strategies.iron_butterfly(
+            put_long_strike=D(100),  # should be < center_strike
+            put_long_premium=D(1),
+            center_strike=D(90),
+            put_short_premium=D(5),
+            call_short_premium=D(5),
+            call_long_strike=D(110),
+            call_long_premium=D(1),
+        )
+
+
 def test_analyze_rejects_empty_legs():
     with pytest.raises(ValueError):
         analyze([])
