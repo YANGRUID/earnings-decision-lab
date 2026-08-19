@@ -744,6 +744,21 @@ def test_strategy_lab_unknown_company_returns_404(client):
     assert response.status_code == 404
 
 
+def test_strategy_lab_rejects_percent_risk_cap_above_100(client, db_session):
+    from models.company import Company
+
+    db_session.add(Company(ticker="ZZSLABRISK", name="ZZ Strategy Lab Risk Co", cik="0009999916"))
+    db_session.flush()
+
+    response = client.get(
+        "/api/v1/research/zzslabrisk/strategies",
+        params={"budget": "10000", "risk_cap": "5000", "risk_cap_is_percent": "true"},
+    )
+
+    assert response.status_code == 422
+    assert "risk_cap_is_percent" in response.json()["error"]
+
+
 def test_strategy_lab_no_earnings_estimate_explains_missing_anchor_date(client, db_session):
     """Regression test for a real bug found live-debugging AMD (2026-08-18):
     the endpoint returned an empty ``strategies``/``chain`` shell with no
@@ -1314,6 +1329,24 @@ def test_thesis_becomes_stale_once_newer_consensus_data_exists(client, db_sessio
 def test_decision_unknown_company_returns_404(client):
     response = client.post("/api/v1/research/ZZNODEC/decision")
     assert response.status_code == 404
+
+
+def test_decision_rejects_percent_risk_cap_above_100(client, db_session):
+    # Regression test for the real P0 sizing bug: risk_cap=5000 with
+    # risk_cap_is_percent=true previously sized a $10,000-budget decision
+    # to a $500,000 max loss instead of being rejected outright.
+    from models.company import Company
+
+    db_session.add(Company(ticker="ZZDECRISK", name="ZZ Decision Risk Cap Co", cik="0009999931"))
+    db_session.flush()
+
+    response = client.post(
+        "/api/v1/research/zzdecrisk/decision",
+        json={"trade_budget": "10000", "risk_cap": "5000", "risk_cap_is_percent": True},
+    )
+
+    assert response.status_code == 422
+    assert "risk_cap_is_percent" in response.json()["error"]
 
 
 def test_decision_generates_from_stub_llm(client, db_session):

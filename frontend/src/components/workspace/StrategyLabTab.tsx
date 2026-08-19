@@ -26,8 +26,20 @@ const EARNINGS_ANCHOR_LABELS: Record<string, string> = {
   unknown: "Unknown",
 };
 
+const ACTIONABILITY_LABELS: Record<string, string> = {
+  actionable_current: "ACTIONABLE — CURRENT",
+  actionable_previous_session: "ACTIONABLE — PREVIOUS SESSION",
+  stale_research_only: "STALE — RESEARCH ONLY",
+  contracts_only: "CONTRACTS ONLY — NO PRICING",
+  unavailable: "UNAVAILABLE",
+};
+
+const ACTIONABLE_STATUSES = new Set(["actionable_current", "actionable_previous_session"]);
+
 function StrategyLabStateBar({ lab }: { lab: StrategyLab }) {
   const isStale = STALE_DATA_STATES.has(lab.data_state);
+  const actionability = lab.options_market.actionability;
+  const isActionable = ACTIONABLE_STATUSES.has(actionability);
   return (
     <div className="card" style={{ marginBottom: 16 }}>
       <div className="grid grid-3" style={{ gap: 10 }}>
@@ -59,6 +71,12 @@ function StrategyLabStateBar({ lab }: { lab: StrategyLab }) {
           <span className="stat-label">Earnings anchor</span>
           <span className="stat-value small">
             {EARNINGS_ANCHOR_LABELS[lab.earnings_anchor_status] ?? lab.earnings_anchor_status}
+          </span>
+        </div>
+        <div className="stat">
+          <span className="stat-label">Status</span>
+          <span className={`pill ${isActionable ? "pill-positive" : "pill-negative"}`}>
+            {ACTIONABILITY_LABELS[actionability] ?? actionability}
           </span>
         </div>
       </div>
@@ -107,6 +125,7 @@ function StrategyCard({ strategy, ticker }: { strategy: RankedStrategy; ticker: 
         <thead>
           <tr>
             <th>Action</th>
+            <th>Qty</th>
             <th>Type</th>
             <th>Strike</th>
             <th>Premium</th>
@@ -116,6 +135,7 @@ function StrategyCard({ strategy, ticker }: { strategy: RankedStrategy; ticker: 
           {strategy.legs.map((leg, i) => (
             <tr key={i}>
               <td className="mono">{leg.action}</td>
+              <td className="mono">{leg.quantity}</td>
               <td className="mono">{leg.option_type}</td>
               <td className="mono">{formatMoney(leg.strike)}</td>
               <td className="mono">{formatMoney(leg.premium)}</td>
@@ -169,10 +189,17 @@ function StrategyCard({ strategy, ticker }: { strategy: RankedStrategy; ticker: 
         </div>
       )}
       {strategy.budget_fit && strategy.budget_fit.feasible && (
-        <div className="grid grid-3" style={{ gap: 10, marginTop: 10 }}>
+        <div className="grid grid-4" style={{ gap: 10, marginTop: 10 }}>
           <div className="stat">
-            <span className="stat-label">Contracts ({formatMoney(strategy.budget_fit.trade_budget, 0)} budget)</span>
+            <span className="stat-label">Structures ({formatMoney(strategy.budget_fit.trade_budget, 0)} budget)</span>
             <span className="stat-value small">{strategy.budget_fit.max_feasible_quantity}</span>
+          </div>
+          <div className="stat">
+            <span className="stat-label">Total option contracts</span>
+            <span className="stat-value small">
+              {strategy.budget_fit.max_feasible_quantity *
+                strategy.legs.reduce((sum, leg) => sum + leg.quantity, 0)}
+            </span>
           </div>
           <div className="stat">
             <span className="stat-label">Max loss (position)</span>
@@ -401,6 +428,8 @@ export function StrategyLabTab({ ticker }: { ticker: string }) {
   if (lab.error && !lab.data) return <ErrorState message={lab.error} />;
   if (!lab.data) return null;
 
+  const isStale = lab.data.options_market.actionability === "stale_research_only";
+
   return (
     <div>
       <StrategyLabStateBar lab={lab.data} />
@@ -414,7 +443,13 @@ export function StrategyLabTab({ ticker }: { ticker: string }) {
             placeholder="e.g. 500"
             value={tradeBudget}
             onChange={(e) => setTradeBudget(e.target.value)}
+            disabled={isStale}
           />
+          {isStale && (
+            <span className="text-sm text-faint">
+              Disabled — market data is stale, so no actionable strategy can be sized.
+            </span>
+          )}
         </div>
       </div>
 

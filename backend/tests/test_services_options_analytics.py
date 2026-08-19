@@ -1,6 +1,7 @@
 from datetime import UTC, date, datetime
 from decimal import ROUND_HALF_UP, Decimal
 
+from analytics.market_session import EASTERN
 from models.company import Company
 from models.earnings_event import EarningsEvent
 from models.enums import (
@@ -19,6 +20,7 @@ from providers.types import OptionQuote
 from services.options_analytics import (
     collect_forward_options_snapshot,
     collect_options_snapshot_now,
+    compute_actionability,
     compute_and_persist_volatility_snapshot,
     compute_options_market_state,
     get_implied_vs_realized_moves,
@@ -1026,12 +1028,56 @@ class TestSelectPricingSnapshot:
         assert selection.tier == "current_priceable"
 
 
+class TestComputeActionability:
+    def test_none_tier_is_unavailable(self):
+        assert compute_actionability("none", None, datetime.now(UTC)) == "unavailable"
+
+    def test_contracts_only_tier_stays_contracts_only(self):
+        as_of = datetime.now(UTC)
+        assert compute_actionability("contracts_only", as_of, as_of) == "contracts_only"
+
+    def test_current_priceable_is_always_actionable_current(self):
+        as_of = datetime.now(UTC)
+        assert compute_actionability("current_priceable", as_of, as_of) == "actionable_current"
+
+    def test_previous_priceable_missing_timestamp_is_stale(self):
+        # Defensive-only path -- select_pricing_snapshot never actually
+        # returns previous_priceable with snapshot_timestamp=None.
+        assert (
+            compute_actionability("previous_priceable", None, datetime.now(UTC))
+            == "stale_research_only"
+        )
+
+    def test_previous_priceable_matching_the_prior_session_is_actionable(self):
+        # Wednesday 11:00 ET -- previous session is Tuesday 2026-03-17.
+        as_of = datetime(2026, 3, 18, 11, 0, tzinfo=EASTERN)
+        snapshot_ts = datetime(2026, 3, 17, 15, 58, tzinfo=EASTERN)
+        assert (
+            compute_actionability("previous_priceable", snapshot_ts, as_of)
+            == "actionable_previous_session"
+        )
+
+    def test_previous_priceable_two_sessions_old_is_stale(self):
+        as_of = datetime(2026, 3, 18, 11, 0, tzinfo=EASTERN)
+        snapshot_ts = datetime(2026, 3, 16, 15, 58, tzinfo=EASTERN)  # Monday -- 2 sessions back
+        assert (
+            compute_actionability("previous_priceable", snapshot_ts, as_of)
+            == "stale_research_only"
+        )
+
+
 class TestComputeOptionsMarketStateFallbackLabeling:
     def test_fallback_snapshot_is_labeled_previous_session_not_previous_close_by_default(
         self, db_session
     ):
         company = _seed_company(db_session, ticker="ZZSEL08")
-        older = SNAPSHOT_TS.replace(day=13)
+        # SNAPSHOT_TS is Monday 2025-09-15 11:00 ET (the current,
+        # unpriceable snapshot); `older` is the immediately preceding
+        # real trading session -- Friday 2025-09-12 -- and `as_of` is
+        # later that same Monday but still before its own regular close,
+        # so previous_trading_session_date(as_of) resolves to Friday too.
+        older = SNAPSHOT_TS.replace(day=12)
+        as_of = SNAPSHOT_TS.replace(hour=16)
         _seed_contract(db_session, company, snapshot_timestamp=SNAPSHOT_TS)
         _seed_contract(
             db_session,
@@ -1041,18 +1087,18 @@ class TestComputeOptionsMarketStateFallbackLabeling:
             ask=Decimal("4.00"),
         )
         selection = select_pricing_snapshot(db_session, company)
-        state = compute_options_market_state(
-            selection.quotes, datetime.now(UTC), None, selection
-        )
+        state = compute_options_market_state(selection.quotes, as_of, None, selection)
         assert state.is_fallback_snapshot is True
         assert state.snapshot_tier == "previous_priceable"
+        assert state.actionability == "actionable_previous_session"
         assert state.data_state == DataState.PREVIOUS_SESSION
         assert "Previous-session snapshot" in state.reason
         assert "Previous close" not in state.reason
 
     def test_fallback_snapshot_captured_as_close_is_labeled_previous_close(self, db_session):
         company = _seed_company(db_session, ticker="ZZSEL09")
-        older = SNAPSHOT_TS.replace(day=13)
+        older = SNAPSHOT_TS.replace(day=12)
+        as_of = SNAPSHOT_TS.replace(hour=16)
         _seed_contract(db_session, company, snapshot_timestamp=SNAPSHOT_TS)
         _seed_contract(
             db_session,
@@ -1063,10 +1109,33 @@ class TestComputeOptionsMarketStateFallbackLabeling:
             purpose=OptionsSnapshotPurpose.CLOSE,
         )
         selection = select_pricing_snapshot(db_session, company)
-        state = compute_options_market_state(
-            selection.quotes, datetime.now(UTC), None, selection
-        )
+        state = compute_options_market_state(selection.quotes, as_of, None, selection)
+        assert state.actionability == "actionable_previous_session"
         assert "Previous close" in state.reason
+
+    def test_fallback_snapshot_two_sessions_old_is_stale_research_only(self, db_session):
+        """Phase 14.11 Part 4: a fallback snapshot from two or more real
+        trading sessions ago is a HARD GATE -- STALE, never labeled as an
+        actionable previous-session snapshot no matter how complete its
+        own pricing looked at capture time."""
+        company = _seed_company(db_session, ticker="ZZSEL08STALE")
+        # `older` here is Thursday 2025-09-11 -- two sessions before the
+        # Monday `as_of` used above (Thursday, then Friday, then Monday).
+        older = SNAPSHOT_TS.replace(day=11)
+        as_of = SNAPSHOT_TS.replace(hour=16)
+        _seed_contract(db_session, company, snapshot_timestamp=SNAPSHOT_TS)
+        _seed_contract(
+            db_session,
+            company,
+            snapshot_timestamp=older,
+            bid=Decimal("3.80"),
+            ask=Decimal("4.00"),
+        )
+        selection = select_pricing_snapshot(db_session, company)
+        state = compute_options_market_state(selection.quotes, as_of, None, selection)
+        assert state.actionability == "stale_research_only"
+        assert "STALE" in state.reason
+        assert "RESEARCH ONLY" in state.reason
 
     def test_no_selection_argument_never_claims_a_fallback(self, db_session):
         """Callers still using the plain current-only chain (no

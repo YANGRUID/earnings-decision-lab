@@ -458,6 +458,12 @@ export interface OptionsMarketState {
   snapshot_tier: "current_priceable" | "previous_priceable" | "contracts_only" | "none";
   is_fallback_snapshot: boolean;
   snapshot_purpose: string | null;
+  actionability:
+    | "actionable_current"
+    | "actionable_previous_session"
+    | "stale_research_only"
+    | "contracts_only"
+    | "unavailable";
 }
 
 // The single, company-level, always-current read for "what's on record

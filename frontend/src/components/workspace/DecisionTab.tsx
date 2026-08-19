@@ -93,7 +93,13 @@ function recommendedBudgetFit(decision: AIDecisionVersion): ScoredStrategy["budg
   };
 }
 
-function BudgetFitCard({ fit }: { fit: ScoredStrategy["budget_fit"] }) {
+function BudgetFitCard({
+  fit,
+  legs,
+}: {
+  fit: ScoredStrategy["budget_fit"];
+  legs: ScoredStrategy["legs"];
+}) {
   if (fit === null) return null;
   if (!fit.feasible) {
     return (
@@ -105,6 +111,7 @@ function BudgetFitCard({ fit }: { fit: ScoredStrategy["budget_fit"] }) {
       </div>
     );
   }
+  const contractsPerStructure = legs.reduce((sum, leg) => sum + leg.quantity, 0);
   return (
     <div className="grid grid-4" style={{ gap: 10, marginTop: 12 }}>
       <div className="stat">
@@ -112,8 +119,12 @@ function BudgetFitCard({ fit }: { fit: ScoredStrategy["budget_fit"] }) {
         <span className="stat-value small">{formatMoney(fit.trade_budget, 0)}</span>
       </div>
       <div className="stat">
-        <span className="stat-label">Contracts</span>
+        <span className="stat-label">Structures</span>
         <span className="stat-value small">{fit.max_feasible_quantity}</span>
+      </div>
+      <div className="stat">
+        <span className="stat-label">Total option contracts</span>
+        <span className="stat-value small">{fit.max_feasible_quantity * contractsPerStructure}</span>
       </div>
       <div className="stat">
         <span className="stat-label">Estimated entry</span>
@@ -215,6 +226,7 @@ function StrategyDecisionCard({
         <thead>
           <tr>
             <th>Action</th>
+            <th>Qty</th>
             <th>Type</th>
             <th>Strike</th>
             <th>Premium</th>
@@ -224,6 +236,7 @@ function StrategyDecisionCard({
           {strategy.legs.map((leg, i) => (
             <tr key={i}>
               <td className="mono">{leg.action}</td>
+              <td className="mono">{leg.quantity}</td>
               <td className="mono">{leg.option_type}</td>
               <td className="mono">{formatMoney(leg.strike)}</td>
               <td className="mono">{formatMoney(leg.premium)}</td>
@@ -257,7 +270,9 @@ function StrategyDecisionCard({
 
       <ScoreBreakdown components={strategy.score_components} total={strategy.score} />
 
-      {strategy.budget_fit !== undefined && <BudgetFitCard fit={strategy.budget_fit} />}
+      {strategy.budget_fit !== undefined && (
+        <BudgetFitCard fit={strategy.budget_fit} legs={strategy.legs} />
+      )}
 
       <div style={{ marginTop: 12 }}>
         <div style={{ fontWeight: 600 }}>Why this strategy</div>
@@ -388,6 +403,59 @@ const DIRECTIONS: DecisionDirection[] = [
 ];
 const VOL_VIEWS: DecisionVolatilityView[] = ["long_vol", "neutral_vol", "short_vol"];
 
+const ACTIONABILITY_LABELS: Record<string, string> = {
+  actionable_current: "ACTIONABLE — CURRENT",
+  actionable_previous_session: "ACTIONABLE — PREVIOUS SESSION",
+  stale_research_only: "STALE — RESEARCH ONLY",
+  contracts_only: "CONTRACTS ONLY — NO PRICING",
+  unavailable: "UNAVAILABLE",
+};
+const ACTIONABLE_STATUSES = new Set(["actionable_current", "actionable_previous_session"]);
+
+function MarketDataHeader({ ticker }: { ticker: string }) {
+  // Reuses Strategy Lab's canonical market-state read (Phase 14.11 Part
+  // 30) rather than a second, independently-computed status -- there is
+  // exactly one real answer for "is the current options snapshot
+  // actionable," and both surfaces show it verbatim.
+  const lab = useAsync(() => api.getStrategyLab(ticker), [ticker]);
+  if (!lab.data) return null;
+  const om = lab.data.options_market;
+  const isActionable = ACTIONABLE_STATUSES.has(om.actionability);
+  return (
+    <div className="card" style={{ marginBottom: 16 }}>
+      <div className="grid grid-4" style={{ gap: 10 }}>
+        <div className="stat">
+          <span className="stat-label">Underlying</span>
+          <span className="stat-value small">
+            {lab.data.underlying_price ? formatMoney(lab.data.underlying_price) : "—"}
+          </span>
+        </div>
+        <div className="stat">
+          <span className="stat-label">Options as of</span>
+          <span className="stat-value small">
+            {om.snapshot_age_label ? `${om.snapshot_age_label} ago` : "—"}
+          </span>
+        </div>
+        <div className="stat">
+          <span className="stat-label">Expiration</span>
+          <span className="stat-value small">{lab.data.expiration ?? "—"}</span>
+        </div>
+        <div className="stat">
+          <span className="stat-label">Status</span>
+          <span className={`pill ${isActionable ? "pill-positive" : "pill-negative"}`}>
+            {ACTIONABILITY_LABELS[om.actionability] ?? om.actionability}
+          </span>
+        </div>
+      </div>
+      {!isActionable && (
+        <div className="notice" style={{ marginTop: 12, marginBottom: 0 }}>
+          {om.reason}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function DecisionTab({ ticker }: { ticker: string }) {
   const history = useAsync(() => api.getDecisionHistory(ticker), [ticker]);
   const [activeId, setActiveId] = useState<number | null>(null);
@@ -464,6 +532,8 @@ export function DecisionTab({ ticker }: { ticker: string }) {
 
   return (
     <div>
+      <MarketDataHeader ticker={ticker} />
+
       <div className="card">
         <p className="text-sm text-muted" style={{ marginTop: 0 }}>
           Connects the AI Earnings Thesis to a direction/volatility view and deterministically
@@ -490,11 +560,15 @@ export function DecisionTab({ ticker }: { ticker: string }) {
             <input
               type="number"
               min="0"
+              max={riskCapIsPercent ? 100 : undefined}
               placeholder={riskCapIsPercent ? "e.g. 25" : "e.g. 200"}
               value={riskCap}
               onChange={(e) => setRiskCap(e.target.value)}
               disabled={generating || !tradeBudget.trim()}
             />
+            {riskCapIsPercent && (
+              <span className="text-sm text-faint">Percent of trade budget, 0–100.</span>
+            )}
           </div>
           <div className="field">
             <label>Max risk unit</label>

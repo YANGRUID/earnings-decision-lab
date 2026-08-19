@@ -1,6 +1,11 @@
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 
-from analytics.market_session import EASTERN, MarketSession, get_market_session
+from analytics.market_session import (
+    EASTERN,
+    MarketSession,
+    get_market_session,
+    previous_trading_session_date,
+)
 
 
 def _utc_from_eastern(year, month, day, hour, minute=0) -> datetime:
@@ -54,3 +59,51 @@ class TestGetMarketSession:
     def test_boundary_exactly_at_regular_close_is_after_hours(self):
         status = get_market_session(_utc_from_eastern(2026, 3, 18, 16, 0))
         assert status.session == MarketSession.AFTER_HOURS
+
+
+class TestPreviousTradingSessionDate:
+    """2026-03-16 is a Monday; 2026-03-18 a Wednesday; 2026-03-20 a
+    Friday; 2026-03-21/22 the following weekend; 2026-03-23 the next
+    Monday -- see TestGetMarketSession's own comments for the same week.
+    """
+
+    def test_pre_market_uses_the_prior_trading_day(self):
+        # Wednesday 07:00 ET, before today's own session -- previous
+        # completed session is Tuesday.
+        result = previous_trading_session_date(_utc_from_eastern(2026, 3, 18, 7, 0))
+        assert result == date(2026, 3, 17)
+
+    def test_during_regular_hours_still_uses_the_prior_trading_day(self):
+        # Wednesday 11:00 ET, today's own close hasn't happened yet.
+        result = previous_trading_session_date(_utc_from_eastern(2026, 3, 18, 11, 0))
+        assert result == date(2026, 3, 17)
+
+    def test_after_hours_counts_todays_own_completed_session(self):
+        # Wednesday 17:00 ET -- today's regular session already closed at
+        # 16:00 ET, so today itself is now the most recently completed
+        # session (this is what makes a proactively captured near-close
+        # snapshot from today usable as an actionable fallback later).
+        result = previous_trading_session_date(_utc_from_eastern(2026, 3, 18, 17, 0))
+        assert result == date(2026, 3, 18)
+
+    def test_exactly_at_regular_close_counts_todays_own_session(self):
+        result = previous_trading_session_date(_utc_from_eastern(2026, 3, 18, 16, 0))
+        assert result == date(2026, 3, 18)
+
+    def test_monday_pre_market_skips_the_whole_weekend(self):
+        # Monday 07:00 ET -- previous completed session is the prior
+        # Friday, not Saturday or Sunday.
+        result = previous_trading_session_date(_utc_from_eastern(2026, 3, 23, 7, 0))
+        assert result == date(2026, 3, 20)
+
+    def test_saturday_skips_back_to_friday(self):
+        result = previous_trading_session_date(_utc_from_eastern(2026, 3, 21, 11, 0))
+        assert result == date(2026, 3, 20)
+
+    def test_sunday_skips_back_to_friday(self):
+        result = previous_trading_session_date(_utc_from_eastern(2026, 3, 22, 11, 0))
+        assert result == date(2026, 3, 20)
+
+    def test_defaults_to_real_current_time_when_as_of_omitted(self):
+        result = previous_trading_session_date()
+        assert result.weekday() < 5

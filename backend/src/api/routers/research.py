@@ -5,7 +5,7 @@ from typing import TypedDict
 
 from fastapi import APIRouter, BackgroundTasks, Query, Request
 
-from analytics.decision.budget import compute_budget_fit
+from analytics.decision.budget import compute_budget_fit, validate_risk_cap_inputs
 from analytics.market_session import get_market_session
 from analytics.options.move_compatibility import assess_move_compatibility
 from analytics.options.strategy_ranking import rank_strategy_candidates
@@ -452,6 +452,11 @@ def get_strategy_lab(
     if company is None:
         raise NotFoundError(f"no research on record yet for {ticker!r}")
 
+    try:
+        validate_risk_cap_inputs(risk_cap, risk_cap_is_percent)
+    except ValueError as exc:
+        raise InvalidRequestError(str(exc)) from exc
+
     now = datetime.now(UTC)
     selection = select_pricing_snapshot(db, company)
     raw_chain = selection.quotes
@@ -481,6 +486,22 @@ def get_strategy_lab(
         "earnings_anchor_status": earnings_anchor_status,
         "options_market": OptionsMarketStateResponse.model_validate(options_state),
     }
+
+    if options_state.actionability == "stale_research_only":
+        # Phase 14.11 Part 4: a HARD GATE, not merely a label -- a
+        # snapshot two or more real US trading sessions old must never
+        # back a generated strategy recommendation, no matter how
+        # complete its pricing looked at capture time.
+        return StrategyLabResponse(
+            ticker=ticker,
+            expiration=None,
+            underlying_price=None,
+            implied_move_pct=None,
+            strategies=[],
+            chain=chain_response,
+            reason=options_state.reason,
+            **state_bar,
+        )
 
     if volatility is None:
         if chain_response:
@@ -768,6 +789,11 @@ def generate_decision_endpoint(
     trade_budget = body.trade_budget if body is not None else None
     risk_cap = body.risk_cap if body is not None else None
     risk_cap_is_percent = body.risk_cap_is_percent if body is not None else False
+
+    try:
+        validate_risk_cap_inputs(risk_cap, risk_cap_is_percent)
+    except ValueError as exc:
+        raise InvalidRequestError(str(exc)) from exc
 
     try:
         result = generate_decision(

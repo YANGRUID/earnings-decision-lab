@@ -401,10 +401,19 @@ def generate_decision(
         if estimate is not None and estimate.estimated_report_date is not None
         else None
     )
-    candidates: list[StrategyCandidate] = generate_strategy_candidates(
-        db, company, target_earnings_date, selection
-    )
-    candidates = filter_candidates_by_risk_preference(candidates, risk_preference)
+    if market_state.actionability == "stale_research_only":
+        # Phase 14.11 Part 3/4: a HARD GATE, not merely a label -- a
+        # snapshot two or more real US trading sessions old must never
+        # back a generated strategy recommendation. The AI's own
+        # direction/volatility view above is still evidence-grounded and
+        # kept; only the deterministic strategy pick is withheld, via the
+        # same "no candidates -> no recommendation" path already used
+        # when a chain simply doesn't exist yet (see DecisionResult
+        # below: recommended stays None, never a guess).
+        candidates: list[StrategyCandidate] = []
+    else:
+        candidates = generate_strategy_candidates(db, company, target_earnings_date, selection)
+        candidates = filter_candidates_by_risk_preference(candidates, risk_preference)
 
     implied_move_pct = volatility.implied_move_pct if volatility is not None else None
     ranked_all = rank_candidates_for_view(

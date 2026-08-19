@@ -14,7 +14,7 @@ time via zoneinfo.
 """
 
 from dataclasses import dataclass
-from datetime import UTC, datetime, time, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from enum import StrEnum
 from zoneinfo import ZoneInfo
 
@@ -47,6 +47,32 @@ class MarketSessionStatus:
 
 def _is_weekday(d: datetime) -> bool:
     return d.weekday() < 5  # Mon=0 .. Fri=4
+
+
+def previous_trading_session_date(as_of_utc: datetime | None = None) -> date:
+    """The calendar date (US Eastern) of the most recent *fully completed*
+    regular trading session as of ``as_of`` (Phase 14.11 Part 4) -- the
+    reference point the snapshot-actionability gate compares a stored
+    snapshot's own session date against. Weekday-aware only, same honest
+    limitation as get_market_session: a market holiday reads as a real
+    trading day (documented in this module's docstring), never
+    hard-coded to a non-US timezone.
+
+    Today counts as the "previous" (i.e. most recently completed)
+    session once today's own regular close has passed -- a snapshot
+    proactively captured near today's 16:00 ET close is exactly the kind
+    of real, fresh fallback this gate exists to allow, not something to
+    reject as stale merely because "today" isn't literally in the past.
+    Before today's regular close (pre-market, or still during regular
+    hours), the most recently completed session is the last trading day
+    strictly before today."""
+    now_eastern = (as_of_utc or datetime.now(UTC)).astimezone(EASTERN)
+    candidate = now_eastern.date()
+    if not (_is_weekday(now_eastern) and now_eastern.time() >= _REGULAR_CLOSE):
+        candidate -= timedelta(days=1)
+    while candidate.weekday() >= 5:
+        candidate -= timedelta(days=1)
+    return candidate
 
 
 def _next_regular_open(now_eastern: datetime) -> datetime:

@@ -35,6 +35,29 @@ if TYPE_CHECKING:
 CONTRACT_MULTIPLIER = Decimal(100)
 
 
+def validate_risk_cap_inputs(risk_cap: Decimal | None, risk_cap_is_percent: bool) -> None:
+    """Rejects a nonsensical risk_cap outright rather than silently
+    clamping it in usable_risk_budget(). A percent risk_cap of, say,
+    5000 is never a real "5000% of budget" intent -- it is a mis-unit'd
+    dollar figure typed into a field left on its default "% of budget"
+    toggle (the real root cause of a since-fixed P0 sizing bug, see
+    usable_risk_budget()'s docstring). Silently clamping that to 100%
+    would still be *safe* (usable_risk_budget's own invariant holds
+    either way), but it would silently give the caller a materially
+    different risk cap than what they typed, with no signal that
+    anything was wrong. Raising here instead means the owner sees a
+    real, specific validation error and can fix the actual mistake."""
+    if risk_cap is None:
+        return
+    if risk_cap < 0:
+        raise ValueError(f"risk_cap cannot be negative, got {risk_cap}")
+    if risk_cap_is_percent and risk_cap > 100:
+        raise ValueError(
+            f"risk_cap_is_percent=true requires risk_cap in (0, 100], got {risk_cap} -- "
+            "if you meant a dollar amount, set risk_cap_is_percent=false instead"
+        )
+
+
 @dataclass(frozen=True)
 class BudgetFit:
     trade_budget: Decimal
@@ -58,11 +81,25 @@ def usable_risk_budget(
     owner may set a budget (total capital they'd deploy) and, separately,
     a risk cap (how much of it they're willing to actually lose). When no
     risk cap is set, the whole budget is usable risk capital (a debit
-    strategy's cost basis already caps loss at what you paid)."""
+    strategy's cost basis already caps loss at what you paid).
+
+    HARD INVARIANT: this can never return more than ``trade_budget``,
+    regardless of what ``risk_cap`` is -- a risk cap narrows the budget,
+    it never widens it. A percent risk_cap above 100 (e.g. a user typing
+    a dollar figure into a "% of budget" field left on its default unit)
+    previously multiplied straight through with no ceiling, producing a
+    usable budget many times the real trade budget -- the real root
+    cause of a since-fixed live P0 bug (a $10,000 budget with a
+    mis-unit'd risk_cap sized a position to $500,000 max loss). The
+    ``min(..., trade_budget)`` below is not optional defensive code; it
+    is the actual fix, applied to both branches instead of only the
+    dollar-cap one."""
     if risk_cap is None:
         return trade_budget
+    if risk_cap <= 0:
+        return Decimal(0)
     if risk_cap_is_percent:
-        return trade_budget * (risk_cap / Decimal(100))
+        return min(trade_budget * (risk_cap / Decimal(100)), trade_budget)
     return min(risk_cap, trade_budget)
 
 

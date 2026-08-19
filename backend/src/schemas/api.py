@@ -504,6 +504,7 @@ class OptionsMarketStateResponse(BaseModel):
     snapshot_tier: str
     is_fallback_snapshot: bool
     snapshot_purpose: str | None
+    actionability: str
 
 
 class ResearchOverviewResponse(BaseModel):

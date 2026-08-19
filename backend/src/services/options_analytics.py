@@ -27,6 +27,7 @@ from typing import Literal
 from sqlalchemy.orm import Session
 
 from analytics.data_state import compute_options_data_state, compute_snapshot_age
+from analytics.market_session import EASTERN, previous_trading_session_date
 from analytics.options.collection_schedule import (
     DEFAULT_COLLECTION_OFFSETS,
     should_collect_snapshot,
@@ -84,6 +85,48 @@ def _rows_at_timestamp(db: Session, company_id: int, ts: datetime) -> list[Optio
 
 
 SnapshotTier = Literal["current_priceable", "previous_priceable", "contracts_only", "none"]
+
+# Phase 14.11 Part 3: the hard gate strategy generation must pass through
+# before running at all -- not just a label. ACTIONABLE_CURRENT and
+# ACTIONABLE_PREVIOUS_SESSION are the only two statuses real strategy
+# candidates may be generated from; CONTRACTS_ONLY, STALE_RESEARCH_ONLY,
+# and UNAVAILABLE must never reach strategy generation (see
+# api/routers/research.py and services/decision_engine.py, both of which
+# check this before calling generate_strategy_candidates).
+ActionabilityStatus = Literal[
+    "actionable_current",
+    "actionable_previous_session",
+    "stale_research_only",
+    "contracts_only",
+    "unavailable",
+]
+
+
+def compute_actionability(
+    tier: SnapshotTier, snapshot_timestamp: datetime | None, as_of: datetime
+) -> ActionabilityStatus:
+    """Turns a snapshot-selection tier into the hard actionability gate
+    (Phase 14.11 Part 3/4). The only tier that needs a real decision here
+    is "previous_priceable": that fallback snapshot is only genuinely
+    actionable if its own session date is exactly the most recently
+    completed US trading session as of ``as_of`` -- one session old, not
+    "the latest priceable snapshot we happen to have stored," which is
+    what this project's snapshot-selection fallback used to treat as
+    interchangeably fine. Two or more sessions old is real, stale data
+    and must not back an actionable recommendation."""
+    if tier == "none":
+        return "unavailable"
+    if tier == "contracts_only":
+        return "contracts_only"
+    if tier == "current_priceable":
+        return "actionable_current"
+    # tier == "previous_priceable"
+    if snapshot_timestamp is None:
+        return "stale_research_only"
+    session_date = snapshot_timestamp.astimezone(EASTERN).date()
+    if session_date == previous_trading_session_date(as_of):
+        return "actionable_previous_session"
+    return "stale_research_only"
 
 
 @dataclass(frozen=True)
@@ -555,6 +598,10 @@ class OptionsMarketState:
     snapshot_tier: SnapshotTier
     is_fallback_snapshot: bool
     snapshot_purpose: str | None
+    # Phase 14.11 Part 3: the hard actionability gate. Only
+    # "actionable_current"/"actionable_previous_session" may back real
+    # strategy generation -- see compute_actionability's docstring.
+    actionability: ActionabilityStatus
 
 
 def compute_options_market_state(
@@ -601,6 +648,7 @@ def compute_options_market_state(
             snapshot_tier="none",
             is_fallback_snapshot=False,
             snapshot_purpose=None,
+            actionability="unavailable",
         )
 
     snapshot_timestamp = raw_chain[0].snapshot_timestamp
@@ -620,6 +668,7 @@ def compute_options_market_state(
     )
     is_fallback_snapshot = selection.is_fallback if selection else False
     snapshot_purpose = selection.purpose if selection else None
+    actionability = compute_actionability(snapshot_tier, snapshot_timestamp, as_of)
     expiration = (
         volatility.near_term_expiration
         if volatility is not None
@@ -639,12 +688,27 @@ def compute_options_market_state(
         # OptionsSnapshotPurpose) -- otherwise labeled by its real
         # timestamp, never guessed.
         data_state = DataState.PREVIOUS_SESSION
-        label = "Previous close" if snapshot_purpose == "close" else "Previous-session snapshot"
-        reason = (
-            f"{label} ({age.label} ago) used because the current chain has no priceable "
-            f"quotes -- {contract_count} contracts, real pricing carried forward from this "
-            "earlier, still-priceable snapshot rather than treated as unavailable."
-        )
+        if actionability == "stale_research_only":
+            # Phase 14.11 Part 4: a fallback more than one real trading
+            # session old is a HARD GATE, not merely an older label --
+            # callers (Strategy Lab, AI Decision) must refuse to generate
+            # actionable strategy candidates from it.
+            reason = (
+                "STALE -- RESEARCH ONLY. The current chain has no priceable quotes, and the "
+                f"latest priceable chain on record is from {age.label} ago, more than one real "
+                "US trading session back. A newer priceable option chain is required before "
+                "recommendations can be generated."
+            )
+        else:
+            label = (
+                "Previous close" if snapshot_purpose == "close" else "Previous-session snapshot"
+            )
+            time_et = snapshot_timestamp.astimezone(EASTERN).strftime("%H:%M ET")
+            reason = (
+                f"{label}, {time_et} ({age.label} ago) used because the current chain has no "
+                f"priceable quotes -- {contract_count} contracts, real pricing carried forward "
+                "from this earlier, still-priceable snapshot rather than treated as unavailable."
+            )
     elif data_state in (DataState.PREVIOUS_SESSION, DataState.STALE):
         reason = (
             f"Real options-chain snapshot with {contract_count} contracts, but it's from a "
@@ -697,6 +761,7 @@ def compute_options_market_state(
         snapshot_tier=snapshot_tier,
         is_fallback_snapshot=is_fallback_snapshot,
         snapshot_purpose=snapshot_purpose,
+        actionability=actionability,
     )
 
 
