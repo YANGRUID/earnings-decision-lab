@@ -13,6 +13,7 @@ from models.enums import (
     DecisionStatus,
     DecisionVolatilityView,
     OptionType,
+    RiskProfile,
     StrategyRiskPreference,
 )
 from models.price_reaction import PriceReaction
@@ -143,6 +144,7 @@ def _decision_result(
         underlying_price=underlying,
         implied_move_pct=Decimal("0.05"),
         risk_preference=StrategyRiskPreference.DEFINED_RISK_ONLY,
+        risk_profile=RiskProfile.CONSERVATIVE,
         recommended=scored,
         alternatives=[],
     )

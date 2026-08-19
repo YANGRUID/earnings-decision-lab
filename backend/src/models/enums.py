@@ -200,3 +200,16 @@ class StrategyRiskPreference(enum.StrEnum):
     DEFINED_RISK_ONLY = "defined_risk_only"
     ALLOW_SINGLE_LEG_LONG = "allow_single_leg_long"
     ADVANCED_ALLOW_UNCOVERED_SHORT = "advanced_allow_uncovered_short"
+
+
+class RiskProfile(enum.StrEnum):
+    """Options Decision Engine V3 Part D: selected PER DECISION (see
+    schemas.api.DecisionGenerateRequest.risk_profile), not a single global
+    app setting like StrategyRiskPreference above -- persisted verbatim on
+    every AIDecisionVersion for audit. See analytics/decision/risk_profile.py
+    for what each tier actually changes (eligibility, liquidity gate,
+    default risk-cap utilization); this must never be cosmetic."""
+
+    CONSERVATIVE = "conservative"
+    MODERATE = "moderate"
+    AGGRESSIVE = "aggressive"

@@ -24,6 +24,7 @@ from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from typing import Literal
 
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from analytics.data_state import compute_options_data_state, compute_snapshot_age
@@ -372,7 +373,28 @@ def compute_and_persist_volatility_snapshot(
         computed_at=computed_at,
     )
     db.add(row)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        # Two concurrent requests for the same company can both see "no
+        # VolatilitySnapshot yet for this snapshot_timestamp" and both
+        # attempt to compute+insert one -- a real, observed race (not a
+        # data bug). The loser rolls back and returns the winner's
+        # already-persisted row rather than surfacing a 500 for what is,
+        # from the caller's perspective, a successful compute.
+        db.rollback()
+        existing = (
+            db.query(VolatilitySnapshot)
+            .filter(
+                VolatilitySnapshot.company_id == company.id,
+                VolatilitySnapshot.snapshot_timestamp == snapshot_timestamp,
+                VolatilitySnapshot.method == move.method,
+            )
+            .one_or_none()
+        )
+        if existing is not None:
+            return existing
+        raise
     return row
 
 

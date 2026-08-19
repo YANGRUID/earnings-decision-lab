@@ -616,7 +616,7 @@ class TestCollectForwardOptionsSnapshot:
 
         assert result is None
         assert provider.call_count == 0
-        assert db_session.query(OptionsSnapshot).count() == 0
+        assert db_session.query(OptionsSnapshot).filter_by(company_id=company.id).count() == 0
 
     def test_fetches_and_persists_on_a_scheduled_collection_day(self, db_session):
         company = _seed_company(db_session)

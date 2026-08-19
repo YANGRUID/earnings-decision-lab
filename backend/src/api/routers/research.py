@@ -1,12 +1,19 @@
 import logging
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
+from decimal import Decimal
 from typing import TypedDict
 
 from fastapi import APIRouter, BackgroundTasks, Query, Request
 
 from analytics.decision.budget import validate_risk_cap_inputs
+from analytics.decision.probability import build_estimated_probability
 from analytics.market_session import get_market_session
-from analytics.options.move_compatibility import assess_move_compatibility
+from analytics.options.expiration_selection import ExpirationCandidate, ExpirationSelectionResult
+from analytics.options.move_compatibility import (
+    MoveCompatibility,
+    assess_move_compatibility,
+    assess_move_compatibility_from_values,
+)
 from analytics.options.strategy_ranking import rank_strategy_candidates
 from api.deps import LLM, DbSession, Embedder, Orchestrator
 from api.exceptions import InvalidRequestError, NotFoundError, RateLimitedError
@@ -16,9 +23,20 @@ from models.ai_decision_version import AIDecisionVersion
 from models.company import Company
 from models.document_chunk import DocumentChunk
 from models.earnings_event import EarningsEvent
-from models.enums import DecisionDirection, DecisionSource, DecisionStatus, DecisionVolatilityView
+from models.enums import (
+    DecisionDirection,
+    DecisionSource,
+    DecisionStatus,
+    DecisionVolatilityView,
+    RiskProfile,
+)
 from models.filing import Filing
 from models.price_bar import PriceBar
+from providers.factory import (
+    MissingOptionsProviderConfigError,
+    UnknownOptionsProviderError,
+    get_options_provider,
+)
 from providers.sec_edgar import SECEdgarProvider
 from providers.types import OptionQuote
 from rag.context import assemble_context
@@ -34,7 +52,11 @@ from schemas.api import (
     DecisionGenerateRequest,
     EarningsEstimateResponse,
     EarningsThesisResponse,
+    EstimatedProbabilityResponse,
     ExecutionTraceResponse,
+    ExpirationCandidateResponse,
+    ExpirationScoreResponse,
+    ExpirationSelectionResponse,
     FilingSearchResponse,
     HistoricalMoveStatsResponse,
     ManualEarningsDateRequest,
@@ -75,16 +97,23 @@ from services.decision_history import (
 )
 from services.decision_settlement import compute_settlement_eligibility, settle_decision
 from services.earnings_thesis import ThesisGenerationError, generate_earnings_thesis
+from services.expiration_engine import (
+    DEFAULT_MAX_CANDIDATES,
+    resolve_auto_expiration,
+    resolve_manual_expiration,
+)
 from services.historical_moves import get_historical_move_pcts, get_historical_move_stats
 from services.llm.errors import LLMError
 from services.market_expectations import get_latest_earnings_estimate, set_manual_earnings_date
 from services.options_analytics import (
+    PricingSnapshotSelection,
     compute_and_persist_volatility_snapshot,
     compute_options_market_state,
     get_latest_close_price,
     get_latest_volatility_snapshot,
 )
 from services.options_reconstruction import resolve_best_actionable_option_market
+from services.provider_settings import get_app_provider_settings
 from services.research_history import (
     ThesisProvenance,
     delete_research_query,
@@ -445,10 +474,112 @@ def _option_quote_response(quote: OptionQuote) -> OptionQuoteResponse:
     )
 
 
+def _get_options_provider_for_request(db: DbSession):
+    """Wraps providers.factory.get_options_provider for the real-time,
+    request-triggered call sites (expiration comparison, manual expiration
+    in Strategy Lab/AI Decision) -- turns an unconfigured/unknown options
+    provider into a clean, actionable 422 rather than an opaque 500, since
+    this is a client-fixable configuration state (see Settings > Data
+    Providers), not a server bug."""
+    settings = get_settings()
+    overrides = get_app_provider_settings(db)
+    try:
+        return get_options_provider(settings, overrides.options_primary, db)
+    except (MissingOptionsProviderConfigError, UnknownOptionsProviderError) as exc:
+        raise InvalidRequestError(
+            f"no options data provider is available for this request: {exc}. "
+            "Configure one in Settings > Data Providers."
+        ) from exc
+
+
+def _expiration_candidate_response(candidate: ExpirationCandidate) -> ExpirationCandidateResponse:
+    return ExpirationCandidateResponse(
+        expiration=candidate.expiration,
+        dte=candidate.dte,
+        days_after_earnings=candidate.days_after_earnings,
+        contract_count=candidate.contract_count,
+        priceable_contract_count=candidate.priceable_contract_count,
+        quote_coverage=candidate.quote_coverage,
+        bid_ask_coverage=candidate.bid_ask_coverage,
+        oi_coverage=candidate.oi_coverage,
+        volume_coverage=candidate.volume_coverage,
+        atm_iv=candidate.atm_iv,
+        atm_spread_pct=candidate.atm_spread_pct,
+        quality=candidate.quality,
+        score=ExpirationScoreResponse(**candidate.score.as_dict()),
+        is_earnings_anchored=candidate.is_earnings_anchored,
+        excluded_pre_earnings=candidate.excluded_pre_earnings,
+    )
+
+
+def _expiration_selection_response(
+    result: ExpirationSelectionResult,
+) -> ExpirationSelectionResponse:
+    return ExpirationSelectionResponse(
+        mode=result.mode,
+        selected=(
+            _expiration_candidate_response(result.selected) if result.selected is not None else None
+        ),
+        alternatives=[_expiration_candidate_response(c) for c in result.alternatives],
+        reasons=result.reasons,
+        warning=result.warning,
+    )
+
+
+@router.get("/{symbol}/expirations", response_model=ExpirationSelectionResponse)
+def get_expiration_selection(
+    symbol: str,
+    db: DbSession,
+    mode: str = Query(default="auto", pattern="^(auto|manual)$"),
+    expiration: date | None = Query(  # noqa: B008 -- FastAPI's own dependency-injection idiom
+        default=None, description="Required when mode=manual"
+    ),
+    max_candidates: int = Query(default=DEFAULT_MAX_CANDIDATES, ge=1, le=6),
+) -> ExpirationSelectionResponse:
+    """Options Decision Engine V3 Part C -- real, live comparison of
+    multiple candidate expirations (see services/expiration_engine.py),
+    distinct from the single-expiration pick the market-data resolver
+    (services/options_reconstruction.py) already makes for Strategy Lab's
+    default state bar. ``mode=auto`` discovers and scores real listed
+    expirations after the earnings date (or after now, in general mode).
+    ``mode=manual`` requires ``expiration`` and evaluates only that real,
+    user-chosen date -- flagged (never blocked) if it scores materially
+    worse than Auto's own pick.
+    """
+    ticker = normalize_ticker(symbol)
+    company = db.query(Company).filter(Company.ticker == ticker).one_or_none()
+    if company is None:
+        raise NotFoundError(f"no research on record yet for {ticker!r}")
+    if mode == "manual" and expiration is None:
+        raise InvalidRequestError("mode=manual requires an `expiration` query parameter")
+
+    provider = _get_options_provider_for_request(db)
+
+    now = datetime.now(UTC)
+    estimate = get_latest_earnings_estimate(db, company.id)
+    earnings_date = estimate.estimated_report_date if estimate is not None else None
+
+    if mode == "manual":
+        assert expiration is not None  # guarded above
+        result = resolve_manual_expiration(
+            db, company, provider, now, earnings_date, expiration, max_candidates=max_candidates
+        )
+    else:
+        result = resolve_auto_expiration(
+            db, company, provider, now, earnings_date, max_candidates=max_candidates
+        )
+    return _expiration_selection_response(result)
+
+
 @router.get("/{symbol}/strategies", response_model=StrategyLabResponse)
 def get_strategy_lab(
     symbol: str,
     db: DbSession,
+    expiration: date | None = Query(  # noqa: B008 -- FastAPI's own dependency-injection idiom
+        default=None,
+        description="Manual expiration override (real, from GET .../expirations). "
+        "When set, all contracts/strategies are recomputed from exactly this expiration.",
+    ),
 ) -> StrategyLabResponse:
     """Real, ranked strategy candidates built from the most recently
     ingested real options-chain snapshot -- see
@@ -485,10 +616,22 @@ def get_strategy_lab(
     earnings_date_for_resolution = (
         estimate_for_anchor.estimated_report_date if estimate_for_anchor is not None else None
     )
-    resolution = resolve_best_actionable_option_market(
-        db, company, now, earnings_date_for_resolution
-    )
-    selection = resolution.selection
+    if expiration is not None:
+        provider = _get_options_provider_for_request(db)
+        quotes = provider.get_option_chain(ticker, now, expiration=expiration)
+        priceable = [q for q in quotes if q.bid is not None or q.ask is not None or q.last_price]
+        selection = PricingSnapshotSelection(
+            quotes=quotes,
+            tier="current_priceable" if priceable else ("contracts_only" if quotes else "none"),
+            is_fallback=False,
+            purpose="intraday",
+            snapshot_timestamp=now,
+        )
+    else:
+        resolution = resolve_best_actionable_option_market(
+            db, company, now, earnings_date_for_resolution
+        )
+        selection = resolution.selection
     raw_chain = selection.quotes
     chain_response = [_option_quote_response(q) for q in raw_chain]
     volatility = get_latest_volatility_snapshot(db, company.id)
@@ -767,18 +910,71 @@ def delete_thesis_version_item(symbol: str, version_id: int, db: DbSession) -> N
     delete_thesis_version(db, version_id)
 
 
+def _historical_compatibility_for_decision(
+    db: DbSession, decision: AIDecisionVersion
+) -> MoveCompatibility | None:
+    """Options Decision Engine V3 Part E: reconstructed at READ time from
+    the persisted recommended_strategy_analysis + underlying_price against
+    the CURRENT real historical-move sample -- never persisted itself, so
+    it can only get more accurate (a bigger real sample) as more real
+    earnings events are reported, never stale relative to that."""
+    if decision.recommended_strategy_analysis is None or decision.underlying_price is None:
+        return None
+    analysis = decision.recommended_strategy_analysis
+    breakevens = [Decimal(b) for b in analysis.get("breakevens", [])]
+    net_premium_str = analysis.get("net_premium")
+    if not breakevens or net_premium_str is None:
+        return None
+    historical_moves = get_historical_move_pcts(db, decision.company_id)
+    return assess_move_compatibility_from_values(
+        breakevens=breakevens,
+        net_premium=Decimal(net_premium_str),
+        underlying_price=decision.underlying_price,
+        historical_move_pcts=historical_moves,
+    )
+
+
 def _decision_response(db: DbSession, decision: AIDecisionVersion) -> AIDecisionVersionResponse:
     """Every decision response embeds its real, freshly computed
     settlement eligibility (Phase 14.10 Part I) -- computed live, never
     persisted, so the frontend can render the right "Attempt Settlement"
     button state (or none at all) without a second round trip, and so it
-    can never go stale relative to real data that just arrived."""
+    can never go stale relative to real data that just arrived. Options
+    Decision Engine V3 Part E: historical_compatibility/estimated_probability
+    are computed the same way, for the same reason."""
     eligibility = compute_settlement_eligibility(db, decision)
+    compatibility = _historical_compatibility_for_decision(db, decision)
+    estimated_probability = build_estimated_probability(compatibility)
     data = AIDecisionVersionResponse.model_validate(decision).model_dump()
     data["settlement_eligible"] = eligibility.eligible
     data["settlement_state"] = eligibility.state
     data["settlement_reason"] = eligibility.reason
     data["settlement_earliest_date"] = eligibility.earliest_settlement_date
+    data["historical_compatibility"] = (
+        MoveCompatibilityResponse(
+            method=compatibility.method,
+            sample_size=compatibility.sample_size,
+            requires_move_beyond_threshold=compatibility.requires_move_beyond_threshold,
+            required_move_pct=compatibility.required_move_pct,
+            compatible_count=compatibility.compatible_count,
+            compatible_pct=compatibility.compatible_pct,
+        )
+        if compatibility is not None
+        else None
+    )
+    data["estimated_probability"] = (
+        EstimatedProbabilityResponse(
+            method=estimated_probability.method,
+            sample_size=estimated_probability.sample_size,
+            compatible_count=estimated_probability.compatible_count,
+            probability=estimated_probability.probability,
+            low_sample_confidence=estimated_probability.low_sample_confidence,
+            wilson_lower=estimated_probability.wilson_lower,
+            wilson_upper=estimated_probability.wilson_upper,
+        )
+        if estimated_probability is not None
+        else None
+    )
     return AIDecisionVersionResponse(**data)
 
 
@@ -816,6 +1012,13 @@ def generate_decision_endpoint(
     risk_cap = body.risk_cap if body is not None else None
     risk_cap_is_percent = body.risk_cap_is_percent if body is not None else False
 
+    risk_profile: RiskProfile | None = None
+    if body is not None and body.risk_profile is not None:
+        try:
+            risk_profile = RiskProfile(body.risk_profile)
+        except ValueError as exc:
+            raise InvalidRequestError(f"unrecognized risk_profile: {exc}") from exc
+
     try:
         validate_risk_cap_inputs(risk_cap, risk_cap_is_percent)
     except ValueError as exc:
@@ -832,9 +1035,16 @@ def generate_decision_endpoint(
             trade_budget=trade_budget,
             risk_cap=risk_cap,
             risk_cap_is_percent=risk_cap_is_percent,
+            risk_profile=risk_profile,
+            manual_expiration=body.expiration if body is not None else None,
         )
     except DecisionGenerationError as exc:
         raise LLMError(f"decision generation failed: {exc}") from exc
+    except (MissingOptionsProviderConfigError, UnknownOptionsProviderError) as exc:
+        raise InvalidRequestError(
+            f"manual expiration requires a configured options data provider: {exc}. "
+            "Configure one in Settings > Data Providers."
+        ) from exc
 
     row = persist_decision(db, company=company, result=result, decision_source=decision_source)
     return _decision_response(db, row)

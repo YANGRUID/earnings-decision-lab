@@ -19,6 +19,7 @@ from providers.alpha_vantage import AlphaVantageMarketDataProvider
 from providers.alpha_vantage_options import AlphaVantageOptionsProvider
 from providers.base import MarketDataProvider, OptionsDataProvider
 from providers.fallback import MarketDataProviderChain, OptionsProviderChain
+from providers.fixture_options import FixtureOptionsProvider
 from providers.ibkr_options import IBKROptionsProvider
 from providers.tiingo import TiingoMarketDataProvider
 from services.secret_store import resolve_secret
@@ -55,6 +56,18 @@ def get_options_provider(
         return instrument_data_provider(
             IBKROptionsProvider(base_url=settings.ibkr_base_url), db, "ibkr", "options"
         )
+
+    if provider == "fixture":
+        # Deliberately excluded from KNOWN_OPTIONS_PROVIDERS and from
+        # services/provider_settings.py's own validated list -- reachable
+        # only via the raw OPTIONS_PROVIDER=fixture env var (see
+        # providers/fixture_options.py), never selectable through the
+        # Settings UI's owner-configured override.
+        if db is None:
+            raise MissingOptionsProviderConfigError(
+                "options provider fixture requires a database session"
+            )
+        return FixtureOptionsProvider(db)
 
     raise UnknownOptionsProviderError(
         f"unknown options provider {provider!r} -- expected one of {KNOWN_OPTIONS_PROVIDERS}"

@@ -50,14 +50,35 @@ def assess_move_compatibility(
     profit, so compatibility flips: a historical move is compatible when
     its magnitude is < that distance.
     """
-    if not candidate.analysis.breakevens or not historical_move_pcts:
+    return assess_move_compatibility_from_values(
+        breakevens=list(candidate.analysis.breakevens),
+        net_premium=candidate.analysis.net_premium,
+        underlying_price=candidate.underlying_price,
+        historical_move_pcts=historical_move_pcts,
+    )
+
+
+def assess_move_compatibility_from_values(
+    breakevens: list[Decimal],
+    net_premium: Decimal,
+    underlying_price: Decimal,
+    historical_move_pcts: list[Decimal],
+) -> MoveCompatibility | None:
+    """Same computation as ``assess_move_compatibility``, but over the raw
+    values rather than a live StrategyCandidate -- used to reconstruct a
+    persisted decision's move compatibility from its stored
+    recommended_strategy_analysis (breakevens/net_premium) and
+    underlying_price at READ time, always against the current real
+    historical-move sample (which can only grow as more real earnings
+    events are reported), rather than persisting a value that could go
+    stale. See services/decision_history.py."""
+    if not breakevens or not historical_move_pcts:
         return None
 
-    underlying = candidate.underlying_price
-    distances = [abs(be - underlying) / underlying for be in candidate.analysis.breakevens]
+    distances = [abs(be - underlying_price) / underlying_price for be in breakevens]
     required_move_pct = min(distances)
 
-    requires_move_beyond = candidate.analysis.net_premium >= 0
+    requires_move_beyond = net_premium >= 0
     if requires_move_beyond:
         compatible = [m for m in historical_move_pcts if abs(m) >= required_move_pct]
     else:

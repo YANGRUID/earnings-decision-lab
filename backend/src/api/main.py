@@ -80,7 +80,10 @@ def create_app() -> FastAPI:
 
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["http://localhost:5173", "http://localhost:3000"],
+        # :5180 is the Playwright E2E suite's dedicated frontend port (see
+        # frontend/playwright.config.ts) -- a fixed, harmless local-dev-only
+        # addition alongside Vite's (:5173) and CRA-style (:3000) defaults.
+        allow_origins=["http://localhost:5173", "http://localhost:3000", "http://localhost:5180"],
         allow_methods=["*"],
         allow_headers=["*"],
     )

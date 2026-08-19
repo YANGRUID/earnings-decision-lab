@@ -67,6 +67,13 @@ class AIDecisionVersion(TimestampMixin, Base):
         Enum(DecisionSource, name="decision_source"), default=DecisionSource.AI
     )
     risk_preference: Mapped[str] = mapped_column(String(32))
+    # Options Decision Engine V3 Part D: the per-decision Risk Profile
+    # (conservative/moderate/aggressive) actually applied at generation
+    # time -- see analytics/decision/risk_profile.py. Nullable, not
+    # backfilled with a guessed value: decisions generated before this
+    # column existed genuinely had no per-decision risk profile, only the
+    # global risk_preference above.
+    risk_profile: Mapped[str | None] = mapped_column(String(32))
 
     # The real candidate this recommendation was for -- StrategyCandidate
     # is never persisted elsewhere (computed fresh per-request from the
@@ -80,6 +87,15 @@ class AIDecisionVersion(TimestampMixin, Base):
     recommended_strategy_score_components: Mapped[dict | None] = mapped_column(JSON)
     recommended_strategy_why: Mapped[list | None] = mapped_column(JSON)
     recommended_strategy_risks: Mapped[list | None] = mapped_column(JSON)
+    # Options Decision Engine V3 Part G -- see analytics/decision/reasoning.py.
+    # Fixed at generation time, like recommended_strategy_why/risks above --
+    # never recomputed at read time (unlike historical_compatibility/
+    # estimated_probability, which intentionally use the CURRENT real
+    # historical-move sample).
+    recommended_strategy_why_expiration: Mapped[list | None] = mapped_column(JSON)
+    recommended_strategy_why_strikes: Mapped[list | None] = mapped_column(JSON)
+    recommended_strategy_why_risk_profile: Mapped[list | None] = mapped_column(JSON)
+    recommended_strategy_why_not_alternative: Mapped[list | None] = mapped_column(JSON)
     # Up to two further candidates (alternative, contrarian) -- same shape
     # as the recommended one, kept as a JSON list of dicts rather than a
     # child table since these are read-only, never queried individually.

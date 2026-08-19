@@ -299,3 +299,101 @@ class TestGetOptionChainFullFlow:
 
         assert len(quotes) >= 1
         assert all(q.expiration_date == date(2026, 8, 17) for q in quotes)
+
+
+class TestListAvailableExpirations:
+    """Options Decision Engine V3 Part C -- real multi-expiration discovery
+    for the Expiration Selection Engine, distinct from get_option_chain's
+    single-target selection."""
+
+    def _route_single_month(self, request: httpx.Request) -> httpx.Response:
+        """AUG26 alone lists three real expirations (08-17, 08-19, 08-21)
+        for the probed 225 strike -- enough to test filtering/sorting/
+        capping without a second month."""
+        path = request.url.path
+        params = dict(httpx.QueryParams(request.url.query))
+        if path == "/v1/api/iserver/auth/status":
+            return httpx.Response(200, json=REAL_AUTH_STATUS)
+        if path == "/v1/api/iserver/secdef/search":
+            return httpx.Response(200, json=REAL_SECDEF_SEARCH_NVDA)
+        if path == "/v1/api/iserver/secdef/strikes":
+            return httpx.Response(200, json=REAL_STRIKES_AUG26)
+        if path == "/v1/api/iserver/secdef/info" and params.get("strike") == "225.0":
+            return httpx.Response(200, json=REAL_SECDEF_INFO_225_CALL)
+        if path == "/v1/api/iserver/marketdata/snapshot":
+            return httpx.Response(200, json=REAL_UNDERLYING_SNAPSHOT)
+        raise AssertionError(f"unexpected request in test: {request.url}")
+
+    def test_filters_dedupes_sorts_and_caps(self):
+        provider = _make_provider(transport=httpx.MockTransport(self._route_single_month))
+
+        expirations = provider.list_available_expirations(
+            "NVDA", after=date(2026, 8, 17), max_candidates=5
+        )
+
+        # 08-17 excluded (not strictly after); 08-19/08-21 real and sorted.
+        assert expirations == [date(2026, 8, 19), date(2026, 8, 21)]
+
+    def test_caps_at_max_candidates(self):
+        provider = _make_provider(transport=httpx.MockTransport(self._route_single_month))
+
+        expirations = provider.list_available_expirations(
+            "NVDA", after=date(2026, 8, 17), max_candidates=1
+        )
+
+        assert expirations == [date(2026, 8, 19)]
+
+    def test_walks_a_second_month_when_first_has_too_few(self):
+        """AUG26 alone yields only one real candidate after the reference
+        date; must continue into SEP26 to satisfy max_candidates=3 rather
+        than stopping short."""
+
+        def route(request: httpx.Request) -> httpx.Response:
+            path = request.url.path
+            params = dict(httpx.QueryParams(request.url.query))
+            if path == "/v1/api/iserver/auth/status":
+                return httpx.Response(200, json=REAL_AUTH_STATUS)
+            if path == "/v1/api/iserver/secdef/search":
+                return httpx.Response(200, json=REAL_SECDEF_SEARCH_NVDA)
+            if path == "/v1/api/iserver/secdef/strikes":
+                return httpx.Response(200, json=REAL_STRIKES_AUG26)
+            if path == "/v1/api/iserver/secdef/info" and params.get("month") == "AUG26":
+                return httpx.Response(
+                    200,
+                    json=[
+                        {"conid": 1, "strike": 225.0, "right": "C", "maturityDate": "20260821"}
+                    ],
+                )
+            if path == "/v1/api/iserver/secdef/info" and params.get("month") == "SEP26":
+                return httpx.Response(
+                    200,
+                    json=[
+                        {"conid": 2, "strike": 225.0, "right": "C", "maturityDate": "20260904"},
+                        {"conid": 3, "strike": 225.0, "right": "C", "maturityDate": "20260918"},
+                    ],
+                )
+            if path == "/v1/api/iserver/marketdata/snapshot":
+                return httpx.Response(200, json=REAL_UNDERLYING_SNAPSHOT)
+            raise AssertionError(f"unexpected request in test: {request.url}")
+
+        provider = _make_provider(transport=httpx.MockTransport(route))
+
+        expirations = provider.list_available_expirations(
+            "NVDA", after=date(2026, 8, 17), max_candidates=3
+        )
+
+        assert expirations == [date(2026, 8, 21), date(2026, 9, 4), date(2026, 9, 18)]
+
+    def test_returns_empty_when_no_underlying_price(self):
+        def route(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/v1/api/iserver/auth/status":
+                return httpx.Response(200, json=REAL_AUTH_STATUS)
+            if request.url.path == "/v1/api/iserver/secdef/search":
+                return httpx.Response(200, json=REAL_SECDEF_SEARCH_NVDA)
+            if request.url.path == "/v1/api/iserver/marketdata/snapshot":
+                return httpx.Response(200, json=[{"conid": 4815747}])
+            raise AssertionError(f"unexpected request in test: {request.url}")
+
+        provider = _make_provider(transport=httpx.MockTransport(route))
+
+        assert provider.list_available_expirations("NVDA", after=date(2026, 8, 17)) == []

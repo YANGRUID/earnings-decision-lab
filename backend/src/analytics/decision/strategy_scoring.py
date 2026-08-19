@@ -17,12 +17,18 @@ everywhere it's surfaced -- never presented as a probability of winning.
 """
 
 from dataclasses import dataclass
+from datetime import date
 from decimal import Decimal
 
 from analytics.options.move_compatibility import MoveCompatibility, assess_move_compatibility
 from analytics.options.payoff import total_payoff
 from analytics.options.strategy_candidates import StrategyCandidate, StrategyCategory
-from models.enums import DecisionDirection, DecisionVolatilityView, StrategyRiskPreference
+from models.enums import (
+    DecisionDirection,
+    DecisionVolatilityView,
+    RiskProfile,
+    StrategyRiskPreference,
+)
 
 # Every category this project generates has a defined max loss (net
 # premium paid) by construction (see strategy_candidates.py) -- there is
@@ -43,36 +49,63 @@ def filter_candidates_by_risk_preference(
         return [c for c in candidates if c.category not in _SINGLE_LEG_LONG_CATEGORIES]
     return list(candidates)
 
-# Rebalanced in Phase 14.10 Part E3 to add volatility_fit as a real,
-# scored component -- previously volatility_view only ever broke ties
-# between candidates with an identical total score (see the now-secondary
-# volatility_alignment tiebreaker in rank_candidates_for_view below),
-# which is why a Neutral+Long-Vol view could still rank a short-vol credit
-# structure first purely on direction_fit. direction_fit and
-# volatility_fit together are the two "view fit" components (35 total);
-# breakeven_fit/historical_fit/risk_reward are the three "structural
-# quality" components (45 total); liquidity/data_quality are the two
-# "data confidence" components (20 total, data_quality's weight doubled
-# since a fallback/stale snapshot, see services/options_analytics.py's
-# snapshot-selection policy, should now meaningfully discount a candidate
-# built from it).
-WEIGHT_DIRECTION_FIT = 20
-WEIGHT_VOLATILITY_FIT = 15
-WEIGHT_BREAKEVEN_FIT = 15
-WEIGHT_HISTORICAL_FIT = 15
-WEIGHT_RISK_REWARD = 15
+# Rebalanced again in Options Decision Engine V3 Part F to add
+# expiration_fit and risk_profile_fit as real, scored components (Part
+# 36) -- proportionally scaled down from the Phase 14.10 Part E3 weights
+# below so every existing component keeps the same relative importance to
+# each other, just making room for the two new ones. direction_fit and
+# volatility_fit are the two "view fit" components; breakeven_fit/
+# historical_fit/risk_reward are the three "structural quality"
+# components; expiration_fit and risk_profile_fit are the two new
+# "context fit" components (does this expiration/structure suit the
+# situation, independent of the stated view); liquidity/data_quality are
+# the two "data confidence" components.
+WEIGHT_DIRECTION_FIT = 15
+WEIGHT_VOLATILITY_FIT = 11
+WEIGHT_EXPIRATION_FIT = 10
+WEIGHT_BREAKEVEN_FIT = 12
+WEIGHT_HISTORICAL_FIT = 12
+WEIGHT_RISK_REWARD = 12
+WEIGHT_RISK_PROFILE_FIT = 8
 WEIGHT_LIQUIDITY = 10
 WEIGHT_DATA_QUALITY = 10
 
 assert (
     WEIGHT_DIRECTION_FIT
     + WEIGHT_VOLATILITY_FIT
+    + WEIGHT_EXPIRATION_FIT
     + WEIGHT_BREAKEVEN_FIT
     + WEIGHT_HISTORICAL_FIT
     + WEIGHT_RISK_REWARD
+    + WEIGHT_RISK_PROFILE_FIT
     + WEIGHT_LIQUIDITY
     + WEIGHT_DATA_QUALITY
     == 100
+)
+
+# Same DTE sweet-spot rule as analytics/options/expiration_selection.py's
+# _dte_suitability_score (Part C) -- reused here as a documented constant
+# rather than importing that module's internal, since this component asks
+# a narrower question ("is this ONE candidate's own expiration
+# reasonable") than the Expiration Engine's full multi-candidate
+# discovery/comparison, which decision generation doesn't run today (see
+# Part H/I -- wiring Auto/Manual expiration selection into AI Decision
+# itself is separate, still-pending work).
+_EXPIRATION_DTE_SWEET_SPOT_LOW = 7
+_EXPIRATION_DTE_SWEET_SPOT_HIGH = 21
+_EXPIRATION_DTE_MAX_CONSIDERED = 60
+
+# Options Decision Engine V3 Part 22: Aggressive explicitly favors "more
+# directional structures" (single-leg long calls/puts) over defined-risk
+# spreads -- the only real, defensible differentiation among the
+# categories every profile already allows once eligibility filtering
+# (analytics/decision/risk_profile.py) has run. Conservative/Moderate
+# don't get an equivalent single-category preference: Conservative never
+# even sees single-leg-long candidates (filtered out before scoring
+# reaches them), and Moderate's "long call/put when evidence supports it"
+# is already what direction_fit/volatility_fit exist to judge.
+_AGGRESSIVE_PREFERRED_CATEGORIES = frozenset(
+    {StrategyCategory.LONG_CALL, StrategyCategory.LONG_PUT}
 )
 
 # How far (as a fraction of the real implied move) each direction targets
@@ -93,9 +126,11 @@ _DIRECTION_TARGET_FRACTION: dict[DecisionDirection, Decimal] = {
 class StrategyScoreBreakdown:
     direction_fit: int
     volatility_fit: int
+    expiration_fit: int
     breakeven_fit: int
     historical_fit: int
     risk_reward: int
+    risk_profile_fit: int
     liquidity: int
     data_quality: int
 
@@ -104,9 +139,11 @@ class StrategyScoreBreakdown:
         return (
             self.direction_fit
             + self.volatility_fit
+            + self.expiration_fit
             + self.breakeven_fit
             + self.historical_fit
             + self.risk_reward
+            + self.risk_profile_fit
             + self.liquidity
             + self.data_quality
         )
@@ -115,9 +152,11 @@ class StrategyScoreBreakdown:
         return {
             "direction_fit": self.direction_fit,
             "volatility_fit": self.volatility_fit,
+            "expiration_fit": self.expiration_fit,
             "breakeven_fit": self.breakeven_fit,
             "historical_fit": self.historical_fit,
             "risk_reward": self.risk_reward,
+            "risk_profile_fit": self.risk_profile_fit,
             "liquidity": self.liquidity,
             "data_quality": self.data_quality,
         }
@@ -231,6 +270,54 @@ def _data_quality(market_data_quality: str | None) -> int:
     return round(Decimal(str(fraction)) * WEIGHT_DATA_QUALITY)
 
 
+def _expiration_fit(candidate: StrategyCandidate, earnings_date: date | None) -> int:
+    """Options Decision Engine V3 Part 12/36: does this ONE candidate's
+    own real expiration sit in a reasonable DTE window relative to the
+    real earnings date -- full weight in a 7-21-day-after-earnings sweet
+    spot (enough time for the event to matter without excessive extra
+    time premium), decaying toward the edges. When no earnings date is
+    known (general/current mode -- see analytics/options/implied_move.py),
+    there's no event to judge "days after" against at all, so this scores
+    at a fixed neutral fraction rather than fabricating a reference date,
+    matching this file's existing "no data -- low, not zero" convention
+    (see _breakeven_fit/_historical_fit)."""
+    if earnings_date is None:
+        return round(WEIGHT_EXPIRATION_FIT * Decimal("0.5"))
+
+    days_after_earnings = (candidate.expiration - earnings_date).days
+    if days_after_earnings < 1:
+        return 0  # doesn't even cover the event -- never scored favorably
+    if _EXPIRATION_DTE_SWEET_SPOT_LOW <= days_after_earnings <= _EXPIRATION_DTE_SWEET_SPOT_HIGH:
+        return WEIGHT_EXPIRATION_FIT
+    if days_after_earnings < _EXPIRATION_DTE_SWEET_SPOT_LOW:
+        fraction = Decimal(days_after_earnings) / Decimal(_EXPIRATION_DTE_SWEET_SPOT_LOW)
+        return round(WEIGHT_EXPIRATION_FIT * max(Decimal("0.3"), fraction))
+    excess = min(
+        days_after_earnings - _EXPIRATION_DTE_SWEET_SPOT_HIGH,
+        _EXPIRATION_DTE_MAX_CONSIDERED - _EXPIRATION_DTE_SWEET_SPOT_HIGH,
+    )
+    fraction = 1 - Decimal(excess) / Decimal(
+        _EXPIRATION_DTE_MAX_CONSIDERED - _EXPIRATION_DTE_SWEET_SPOT_HIGH
+    )
+    return round(WEIGHT_EXPIRATION_FIT * max(Decimal("0"), fraction))
+
+
+def _risk_profile_fit(candidate: StrategyCandidate, risk_profile: RiskProfile | None) -> int:
+    """Options Decision Engine V3 Part 20-23/36: full weight for every
+    category every profile already allows (eligibility itself is a hard
+    gate in analytics/decision/risk_profile.py, not this score) -- the
+    one real differentiation defensible without inventing a fake
+    precision is Aggressive's documented preference for single-leg
+    long/high-gamma structures over defined-risk spreads (Part 22). No
+    risk_profile given (e.g. Strategy Lab's direction-agnostic ranking
+    never sets one) scores neutrally at full weight."""
+    if risk_profile is None or risk_profile != RiskProfile.AGGRESSIVE:
+        return WEIGHT_RISK_PROFILE_FIT
+    if candidate.category in _AGGRESSIVE_PREFERRED_CATEGORIES:
+        return WEIGHT_RISK_PROFILE_FIT
+    return round(WEIGHT_RISK_PROFILE_FIT * Decimal("0.6"))
+
+
 def score_candidate_for_view(
     candidate: StrategyCandidate,
     *,
@@ -240,6 +327,8 @@ def score_candidate_for_view(
     historical_move_pcts: list[Decimal],
     has_bid_ask: bool,
     market_data_quality: str | None,
+    earnings_date: date | None = None,
+    risk_profile: RiskProfile | None = None,
 ) -> tuple[StrategyScoreBreakdown, Decimal | None, Decimal | None, MoveCompatibility | None]:
     """Returns (breakdown, target_price, payoff_at_target, move_compatibility)."""
     target_price = target_price_for_direction(
@@ -253,9 +342,11 @@ def score_candidate_for_view(
     breakdown = StrategyScoreBreakdown(
         direction_fit=_direction_fit(candidate, payoff_at_target),
         volatility_fit=_volatility_fit(candidate, volatility_view),
+        expiration_fit=_expiration_fit(candidate, earnings_date),
         breakeven_fit=_breakeven_fit(candidate, implied_move_pct),
         historical_fit=_historical_fit(compatibility),
         risk_reward=_risk_reward(candidate),
+        risk_profile_fit=_risk_profile_fit(candidate, risk_profile),
         liquidity=_liquidity(has_bid_ask),
         data_quality=_data_quality(market_data_quality),
     )
@@ -271,6 +362,8 @@ def rank_candidates_for_view(
     historical_move_pcts: list[Decimal],
     has_bid_ask: bool,
     market_data_quality: str | None,
+    earnings_date: date | None = None,
+    risk_profile: RiskProfile | None = None,
 ) -> list[ViewRankedStrategy]:
     """Ranks every candidate best-first for the stated direction AND
     volatility view -- volatility_fit (see _volatility_fit) is a real,
@@ -297,6 +390,8 @@ def rank_candidates_for_view(
             historical_move_pcts=historical_move_pcts,
             has_bid_ask=has_bid_ask,
             market_data_quality=market_data_quality,
+            earnings_date=earnings_date,
+            risk_profile=risk_profile,
         )
         scored.append((breakdown, target_price, payoff_at_target, compatibility, candidate))
 

@@ -1001,6 +1001,312 @@ def test_strategy_lab_returns_real_ranked_strategies_from_a_real_chain(client, d
     assert "ZZSLAB2" in top["explanation"]
 
 
+def test_strategy_lab_manual_expiration_recomputes_from_exactly_that_date(
+    client, db_session, monkeypatch
+):
+    """Options Decision Engine V3 Part H: a manual expiration override must
+    bypass the resolver entirely and fetch real quotes for exactly that
+    date -- never silently substitute another expiration."""
+    from datetime import UTC, date, datetime
+    from decimal import Decimal
+
+    from models.company import Company
+    from models.price_bar import PriceBar
+    from providers.types import OptionQuote
+
+    company = Company(ticker="ZZSLABMAN", name="ZZ Strategy Lab Manual Co", cik="1009999901")
+    db_session.add(company)
+    db_session.flush()
+
+    now = datetime.now(UTC)
+    db_session.add(
+        PriceBar(
+            ticker="ZZSLABMAN",
+            company_id=company.id,
+            trade_date=date(2026, 8, 1),
+            source_provider="test",
+            open=Decimal("100"),
+            high=Decimal("101"),
+            low=Decimal("99"),
+            close=Decimal("100"),
+            volume=1000,
+            retrieved_at=now,
+        )
+    )
+    db_session.flush()
+
+    manual_expiration = date(2026, 10, 16)
+
+    def _quote(option_type: str, strike: Decimal) -> OptionQuote:
+        return OptionQuote(
+            ticker="ZZSLABMAN",
+            snapshot_timestamp=now,
+            expiration_date=manual_expiration,
+            strike=strike,
+            option_type=option_type,
+            bid=Decimal("1.90"),
+            ask=Decimal("2.10"),
+            source_provider="test",
+            retrieved_at=now,
+        )
+
+    class _FakeProvider:
+        def get_option_chain(self, ticker, as_of, expiration=None, **kwargs):
+            assert expiration == manual_expiration
+            return [
+                _quote(t, s)
+                for s in (Decimal("95"), Decimal("100"), Decimal("105"))
+                for t in ("call", "put")
+            ]
+
+    monkeypatch.setattr(
+        "api.routers.research.get_options_provider", lambda *a, **k: _FakeProvider()
+    )
+
+    response = client.get(
+        "/api/v1/research/zzslabman/strategies",
+        params={"expiration": manual_expiration.isoformat()},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["expiration"] == manual_expiration.isoformat()
+    assert body["chain"] != []
+    assert all(q["expiration_date"] == manual_expiration.isoformat() for q in body["chain"])
+    assert body["strategies"] != []
+
+
+def test_expirations_manual_mode_requires_expiration_param(client, db_session):
+    from models.company import Company
+
+    db_session.add(Company(ticker="ZZEXPRTR1", name="ZZ Exp Router Co 1", cik="1009999902"))
+    db_session.flush()
+
+    response = client.get("/api/v1/research/zzexprtr1/expirations", params={"mode": "manual"})
+    assert response.status_code == 422
+
+
+def test_expirations_unknown_company_returns_404(client):
+    response = client.get("/api/v1/research/ZZNOEXPRTR/expirations")
+    assert response.status_code == 404
+
+
+def test_expirations_auto_mode_returns_real_discovered_candidates(client, db_session, monkeypatch):
+    from datetime import UTC, date, datetime
+    from decimal import Decimal
+
+    from models.company import Company
+    from models.price_bar import PriceBar
+    from providers.types import OptionQuote
+
+    company = Company(ticker="ZZEXPRTR2", name="ZZ Exp Router Co 2", cik="1009999903")
+    db_session.add(company)
+    db_session.flush()
+
+    now = datetime.now(UTC)
+    db_session.add(
+        PriceBar(
+            ticker="ZZEXPRTR2",
+            company_id=company.id,
+            trade_date=date(2026, 8, 1),
+            source_provider="test",
+            open=Decimal("100"),
+            high=Decimal("101"),
+            low=Decimal("99"),
+            close=Decimal("100"),
+            volume=1000,
+            retrieved_at=now,
+        )
+    )
+    db_session.flush()
+
+    weekly = date(2026, 9, 4)
+    monthly = date(2026, 10, 16)
+
+    def _chain(expiration: date) -> list[OptionQuote]:
+        return [
+            OptionQuote(
+                ticker="ZZEXPRTR2",
+                snapshot_timestamp=now,
+                expiration_date=expiration,
+                strike=Decimal("100"),
+                option_type="call",
+                bid=Decimal("1.90"),
+                ask=Decimal("2.10"),
+                implied_volatility=Decimal("0.30"),
+                open_interest=100,
+                volume=50,
+                market_data_quality="delayed",
+                source_provider="test",
+                retrieved_at=now,
+            )
+        ]
+
+    class _FakeProvider:
+        def get_option_chain(self, ticker, as_of, expiration=None, **kwargs):
+            return _chain(expiration) if expiration in (weekly, monthly) else []
+
+        def list_available_expirations(self, ticker, after, max_candidates=5):
+            return [e for e in (weekly, monthly) if e > after][:max_candidates]
+
+    monkeypatch.setattr(
+        "api.routers.research.get_options_provider", lambda *a, **k: _FakeProvider()
+    )
+
+    response = client.get("/api/v1/research/zzexprtr2/expirations")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["mode"] == "auto"
+    assert body["selected"] is not None
+    assert body["selected"]["expiration"] in (weekly.isoformat(), monthly.isoformat())
+    assert len(body["alternatives"]) >= 1
+
+
+def test_expirations_missing_provider_config_returns_422_not_500(client, db_session, monkeypatch):
+    from models.company import Company
+    from providers.factory import MissingOptionsProviderConfigError
+
+    db_session.add(Company(ticker="ZZEXPRTR3", name="ZZ Exp Router Co 3", cik="1009999904"))
+    db_session.flush()
+
+    def _raise(*a, **k):
+        raise MissingOptionsProviderConfigError(
+            "options provider alpha_vantage requires ALPHA_VANTAGE_API_KEY"
+        )
+
+    monkeypatch.setattr("api.routers.research.get_options_provider", _raise)
+
+    response = client.get("/api/v1/research/zzexprtr3/expirations")
+
+    assert response.status_code == 422
+    assert "options data provider" in response.json()["error"]
+
+
+def test_decision_manual_expiration_uses_exact_real_chain(client, db_session, monkeypatch):
+    from datetime import UTC, date, datetime
+    from decimal import Decimal
+
+    from models.company import Company
+    from models.price_bar import PriceBar
+    from providers.types import OptionQuote
+
+    company = Company(ticker="ZZDECMAN", name="ZZ Decision Manual Exp Co", cik="1009999905")
+    db_session.add(company)
+    db_session.flush()
+
+    now = datetime.now(UTC)
+    db_session.add(
+        PriceBar(
+            ticker="ZZDECMAN",
+            company_id=company.id,
+            trade_date=date(2026, 8, 1),
+            source_provider="test",
+            open=Decimal("100"),
+            high=Decimal("101"),
+            low=Decimal("99"),
+            close=Decimal("100"),
+            volume=1000,
+            retrieved_at=now,
+        )
+    )
+    db_session.flush()
+
+    manual_expiration = date(2026, 10, 16)
+
+    def _leg(option_type: str, strike: Decimal) -> OptionQuote:
+        return OptionQuote(
+            ticker="ZZDECMAN",
+            snapshot_timestamp=now,
+            expiration_date=manual_expiration,
+            strike=strike,
+            option_type=option_type,
+            bid=Decimal("1.90"),
+            ask=Decimal("2.10"),
+            source_provider="test",
+            retrieved_at=now,
+        )
+
+    class _FakeProvider:
+        def get_option_chain(self, ticker, as_of, expiration=None, **kwargs):
+            assert expiration == manual_expiration
+            return [
+                _leg(t, s)
+                for s in (Decimal("95"), Decimal("100"), Decimal("105"))
+                for t in ("call", "put")
+            ]
+
+    monkeypatch.setattr(
+        "services.decision_engine.get_options_provider", lambda *a, **k: _FakeProvider()
+    )
+
+    response = client.post(
+        "/api/v1/research/zzdecman/decision",
+        json={"expiration": manual_expiration.isoformat()},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["expiration"] == manual_expiration.isoformat()
+
+
+def test_decision_manual_expiration_without_provider_returns_422_not_500(
+    client, db_session, monkeypatch
+):
+    from models.company import Company
+    from providers.factory import MissingOptionsProviderConfigError
+
+    db_session.add(
+        Company(ticker="ZZDECMAN2", name="ZZ Decision Manual Exp Co 2", cik="1009999906")
+    )
+    db_session.flush()
+
+    def _raise(*a, **k):
+        raise MissingOptionsProviderConfigError(
+            "options provider alpha_vantage requires ALPHA_VANTAGE_API_KEY"
+        )
+
+    monkeypatch.setattr("services.decision_engine.get_options_provider", _raise)
+
+    response = client.post(
+        "/api/v1/research/zzdecman2/decision",
+        json={"expiration": "2026-10-16"},
+    )
+
+    assert response.status_code == 422
+
+
+def test_decision_persists_and_returns_real_risk_profile(client, db_session):
+    from models.company import Company
+
+    db_session.add(Company(ticker="ZZDECRP", name="ZZ Decision Risk Profile Co", cik="1009999907"))
+    db_session.flush()
+
+    response = client.post(
+        "/api/v1/research/zzdecrp/decision",
+        json={"risk_profile": "aggressive"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["risk_profile"] == "aggressive"
+
+
+def test_decision_rejects_unrecognized_risk_profile(client, db_session):
+    from models.company import Company
+
+    db_session.add(
+        Company(ticker="ZZDECRPBAD", name="ZZ Decision Bad Risk Profile Co", cik="1009999908")
+    )
+    db_session.flush()
+
+    response = client.post(
+        "/api/v1/research/zzdecrpbad/decision",
+        json={"risk_profile": "yolo"},
+    )
+
+    assert response.status_code == 422
+
+
 def test_strategy_lab_general_current_still_returns_real_strategies(client, db_session):
     """Regression test for the real bug found live-debugging AMD
     (2026-08-18): Strategy Lab must not be an all-or-nothing gate on a

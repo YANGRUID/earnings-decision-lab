@@ -57,6 +57,12 @@ STRIKES_AROUND_ATM = 5
 # every month IBKR lists.
 _MAX_MONTHS_TO_TRY = 3
 
+# Wider bound for list_available_expirations (the Expiration Engine's
+# discovery entrypoint): needs more months than a single-target search
+# since it must keep going until it has enough distinct real candidates
+# (or exhausts listed months), not stop at the first hit.
+_MAX_MONTHS_TO_TRY_FOR_LIST = 4
+
 # Real, empirically necessary: IBKR's snapshot endpoint needs to actually
 # start streaming a conid's market data server-side before a second call
 # can return real values -- a "priming" call immediately followed by
@@ -247,6 +253,39 @@ class IBKROptionsProvider(OptionsDataProvider):
             earnings_anchored=earnings_date is not None,
         )
         return target
+
+    def list_available_expirations(
+        self, ticker: str, after: date, max_candidates: int = 5
+    ) -> list[date]:
+        """Real listed expirations strictly after ``after``, walking up to
+        ``_MAX_MONTHS_TO_TRY_FOR_LIST`` consecutive listed months starting
+        at ``after``'s own month and taking the union of every expiration
+        found via one ATM-strike probe per month (same secdef/info flow as
+        _resolve_target_expiration, just not stopping at the first hit) --
+        this naturally surfaces both near-term weeklies (dense within a
+        single month) and a further-out monthly, without a separate code
+        path for either. Bounded and real: never invents a date, and never
+        walks every month IBKR lists.
+        """
+        self._client.ensure_authenticated()
+        conid, available_months = self._resolve_underlying(ticker)
+        underlying_price, _quality = self._underlying_quote(conid)
+        if underlying_price is None:
+            return []
+
+        found: set[date] = set()
+        candidate_month = _month_code(after)
+        for _ in range(_MAX_MONTHS_TO_TRY_FOR_LIST):
+            if candidate_month in available_months:
+                strikes = self._strikes_near_atm(conid, candidate_month, underlying_price)
+                if strikes:
+                    probe_strike = min(strikes, key=lambda k: abs(k - underlying_price))
+                    found |= self._expirations_for_strike(conid, candidate_month, probe_strike)
+            if len({d for d in found if d > after}) >= max_candidates:
+                break
+            candidate_month = _next_month_code(candidate_month)
+
+        return sorted(d for d in found if d > after)[:max_candidates]
 
     def discover_contracts_for_expiration(
         self, ticker: str, target_expiration: date

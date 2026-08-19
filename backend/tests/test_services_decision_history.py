@@ -12,6 +12,7 @@ from models.enums import (
     DecisionStatus,
     DecisionVolatilityView,
     OptionType,
+    RiskProfile,
     StrategyRiskPreference,
 )
 from rag.context import Citation
@@ -115,6 +116,7 @@ def _decision_result(**overrides) -> DecisionResult:
         underlying_price=UNDERLYING,
         implied_move_pct=Decimal("0.10"),
         risk_preference=StrategyRiskPreference.DEFINED_RISK_ONLY,
+        risk_profile=RiskProfile.CONSERVATIVE,
         recommended=_scored_strategy(),
         alternatives=[],
     )

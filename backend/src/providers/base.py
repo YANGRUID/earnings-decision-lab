@@ -9,7 +9,7 @@ why.
 """
 
 from abc import ABC, abstractmethod
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 
 from providers.types import (
     ConsensusEstimate,
@@ -66,6 +66,27 @@ class OptionsDataProvider(ABC):
         analytics/options/implied_move.py's two selection functions.
         Providers that ignore ``reference_date`` also ignore this.
         """
+
+    def list_available_expirations(
+        self, ticker: str, after: date, max_candidates: int = 5
+    ) -> list[date]:
+        """Real listed expirations for ``ticker`` strictly after ``after``,
+        up to ``max_candidates``, ascending. Used by the Expiration
+        Selection Engine (analytics/options/expiration_selection.py) to
+        compare multiple real candidates rather than accepting a single
+        pre-picked one -- never invented dates.
+
+        Default implementation for a provider that already returns a full
+        chain in one call (e.g. Alpha Vantage): fetch once with no target
+        expiration and derive the set from whatever expirations came back.
+        A provider that must bound contract discovery to one expiration per
+        call (e.g. IBKR) cannot use this default -- it overrides this
+        method with real, bounded multi-expiration discovery instead. See
+        providers/ibkr_options.py.
+        """
+        quotes = self.get_option_chain(ticker, datetime.now(UTC), reference_date=after)
+        expirations = sorted({q.expiration_date for q in quotes if q.expiration_date > after})
+        return expirations[:max_candidates]
 
 
 class EarningsDataProvider(ABC):

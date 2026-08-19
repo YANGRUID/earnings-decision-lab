@@ -15,8 +15,8 @@ score. See services/decision_history.py for persistence.
 """
 
 import json
-from dataclasses import dataclass
-from datetime import UTC, datetime
+from dataclasses import dataclass, field
+from datetime import UTC, date, datetime
 from decimal import Decimal
 
 from sqlalchemy.orm import Session
@@ -27,17 +27,34 @@ from agents.tools.guidance_comparison import GuidanceComparisonArgs, GuidanceCom
 from agents.tools.types import ToolOutcome
 from analytics.decision.budget import BudgetFit, filter_and_size_by_budget
 from analytics.decision.confidence import ConfidenceComponents, compute_confidence
-from analytics.decision.reasoning import build_risk_bullets, build_why_bullets
-from analytics.decision.strategy_scoring import (
-    ViewRankedStrategy,
-    filter_candidates_by_risk_preference,
-    rank_candidates_for_view,
+from analytics.decision.reasoning import (
+    build_expiration_bullets,
+    build_risk_bullets,
+    build_risk_profile_fit_bullets,
+    build_strike_bullets,
+    build_why_bullets,
+    build_why_not_alternative_bullets,
 )
+from analytics.decision.risk_profile import (
+    MIN_BID_ASK_COVERAGE,
+    default_max_risk_utilization_pct,
+    default_risk_profile_from_preference,
+    filter_candidates_by_risk_profile,
+    meets_liquidity_gate,
+)
+from analytics.decision.strategy_scoring import ViewRankedStrategy, rank_candidates_for_view
 from analytics.options.payoff import OptionLeg, StrategyAnalysis
 from analytics.options.strategy_candidates import StrategyCandidate
+from core.config import get_settings
 from models.company import Company
-from models.enums import DecisionDirection, DecisionVolatilityView, StrategyRiskPreference
+from models.enums import (
+    DecisionDirection,
+    DecisionVolatilityView,
+    RiskProfile,
+    StrategyRiskPreference,
+)
 from prompts.decision_view import SYSTEM_PROMPT, build_user_prompt
+from providers.factory import get_options_provider
 from rag.context import Citation
 from rag.embeddings import EmbeddingProvider
 from schemas.decision import DecisionView
@@ -54,12 +71,13 @@ from services.llm.errors import LLMError
 from services.llm.types import ChatMessage
 from services.market_expectations import get_latest_earnings_estimate
 from services.options_analytics import (
+    PricingSnapshotSelection,
     compute_and_persist_volatility_snapshot,
     compute_options_market_state,
     get_latest_volatility_snapshot,
 )
 from services.options_reconstruction import resolve_best_actionable_option_market
-from services.provider_settings import get_strategy_risk_preference
+from services.provider_settings import get_app_provider_settings, get_strategy_risk_preference
 from services.research_history import (
     ThesisProvenance,
     is_thesis_stale,
@@ -79,6 +97,13 @@ class ScoredStrategy:
     why: list[str]
     risks: list[str]
     budget_fit: BudgetFit | None = None
+    # Options Decision Engine V3 Part G -- see analytics/decision/reasoning.py.
+    why_expiration: list[str] = field(default_factory=list)
+    why_strikes: list[str] = field(default_factory=list)
+    why_risk_profile: list[str] = field(default_factory=list)
+    # Only ever populated on the #1 recommendation, comparing it against
+    # alternative #2 -- never on the alternatives themselves.
+    why_not_alternative: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -96,6 +121,7 @@ class DecisionResult:
     underlying_price: Decimal | None
     implied_move_pct: Decimal | None
     risk_preference: StrategyRiskPreference
+    risk_profile: RiskProfile
     recommended: ScoredStrategy | None
     alternatives: list[ScoredStrategy]
     trade_budget: Decimal | None = None
@@ -321,6 +347,8 @@ def generate_decision(
     trade_budget: Decimal | None = None,
     risk_cap: Decimal | None = None,
     risk_cap_is_percent: bool = False,
+    risk_profile: RiskProfile | None = None,
+    manual_expiration: date | None = None,
 ) -> DecisionResult:
     """Runs the full pipeline for ``company`` and returns a real,
     generated-but-not-yet-persisted decision -- callers persist it (see
@@ -335,6 +363,18 @@ def generate_decision(
     identical either way. The final DecisionSource is decided by the
     caller (the router), not here.
 
+    ``risk_profile`` (Options Decision Engine V3 Part D) is selected PER
+    DECISION, not a single global setting -- when omitted, defaults from
+    the global StrategyRiskPreference app setting (see
+    analytics/decision/risk_profile.py::default_risk_profile_from_preference)
+    so existing callers that never pass it see unchanged behavior. Affects
+    candidate eligibility (Conservative excludes single-leg long calls/
+    puts), a liquidity gate (Conservative/Moderate require real minimum
+    bid/ask coverage; a chain that fails it produces zero candidates, same
+    as "no market data" -- never a silently degraded recommendation), and
+    the default risk_cap utilization applied when ``trade_budget`` is
+    given but ``risk_cap`` isn't.
+
     ``trade_budget`` (Phase 14.10 Part G), when given, restricts the
     recommended/alternative candidates to ones that are actually
     affordable at that budget (see analytics/decision/budget.py) --
@@ -344,6 +384,18 @@ def generate_decision(
     ``budget_infeasible_minimum`` reports the cheapest real structure
     this chain actually supports, so the owner knows what budget would
     be required instead of just seeing nothing.
+
+    ``manual_expiration`` (Options Decision Engine V3 Part H/I), when
+    given, fetches the real chain for EXACTLY that expiration live from
+    the configured provider -- every contract, strike, and downstream
+    strategy comes only from it, never silently substituted (Part 15).
+    When omitted (Auto, the default), the existing market-data resolver
+    (services/options_reconstruction.py::resolve_best_actionable_option_market)
+    picks the current/previous-session snapshot exactly as before -- this
+    is a real, stated scope boundary: Auto mode here is the resolver's
+    own session-aware pick, not the separate multi-candidate Expiration
+    Engine's scored comparison (see services/expiration_engine.py and the
+    dedicated GET .../expirations endpoint for that comparison).
     """
     ticker = company.ticker
     thesis, thesis_version_id = _get_or_generate_thesis(db, llm, embedder, company)
@@ -364,10 +416,24 @@ def generate_decision(
     volatility = get_latest_volatility_snapshot(db, company.id)
     now = datetime.now(UTC)
     earnings_date_for_resolution = estimate.estimated_report_date if estimate is not None else None
-    resolution = resolve_best_actionable_option_market(
-        db, company, now, earnings_date_for_resolution
-    )
-    selection = resolution.selection
+    if manual_expiration is not None:
+        settings = get_settings()
+        overrides = get_app_provider_settings(db)
+        provider = get_options_provider(settings, overrides.options_primary, db)
+        quotes = provider.get_option_chain(ticker, now, expiration=manual_expiration)
+        priceable = [q for q in quotes if q.bid is not None or q.ask is not None or q.last_price]
+        selection = PricingSnapshotSelection(
+            quotes=quotes,
+            tier="current_priceable" if priceable else ("contracts_only" if quotes else "none"),
+            is_fallback=False,
+            purpose="intraday",
+            snapshot_timestamp=now,
+        )
+    else:
+        resolution = resolve_best_actionable_option_market(
+            db, company, now, earnings_date_for_resolution
+        )
+        selection = resolution.selection
     if selection.quotes and (
         volatility is None or volatility.snapshot_timestamp != selection.snapshot_timestamp
     ):
@@ -415,12 +481,16 @@ def generate_decision(
     )
 
     risk_preference = get_strategy_risk_preference(db)
+    effective_risk_profile = risk_profile or default_risk_profile_from_preference(risk_preference)
     target_earnings_date = (
         estimate.estimated_report_date
         if estimate is not None and estimate.estimated_report_date is not None
         else None
     )
-    if market_state.actionability == "stale_research_only":
+    liquidity_gate_failed = not meets_liquidity_gate(
+        effective_risk_profile, market_state.bid_ask_contract_count, market_state.contract_count
+    )
+    if market_state.actionability == "stale_research_only" or liquidity_gate_failed:
         # Phase 14.11 Part 3/4: a HARD GATE, not merely a label -- a
         # snapshot two or more real US trading sessions old must never
         # back a generated strategy recommendation. The AI's own
@@ -428,11 +498,16 @@ def generate_decision(
         # kept; only the deterministic strategy pick is withheld, via the
         # same "no candidates -> no recommendation" path already used
         # when a chain simply doesn't exist yet (see DecisionResult
-        # below: recommended stays None, never a guess).
+        # below: recommended stays None, never a guess). Options Decision
+        # Engine V3 Part D: the effective Risk Profile's own liquidity
+        # floor (analytics/decision/risk_profile.py) is a second, equally
+        # real gate -- Conservative/Moderate must never rank candidates
+        # built from a chain whose overall bid/ask coverage they'd
+        # themselves call too thin.
         candidates: list[StrategyCandidate] = []
     else:
         candidates = generate_strategy_candidates(db, company, target_earnings_date, selection)
-        candidates = filter_candidates_by_risk_preference(candidates, risk_preference)
+        candidates = filter_candidates_by_risk_profile(candidates, effective_risk_profile)
 
     implied_move_pct = volatility.implied_move_pct if volatility is not None else None
     # market_state.has_bid_ask means "at least one contract has a bid, an
@@ -452,6 +527,8 @@ def generate_decision(
         historical_move_pcts=historical_moves,
         has_bid_ask=has_real_bid_ask,
         market_data_quality=market_state.market_data_quality,
+        earnings_date=target_earnings_date,
+        risk_profile=effective_risk_profile,
     )
 
     # Phase 14.12: captured *before* budget filtering runs -- zero real
@@ -461,13 +538,35 @@ def generate_decision(
     # but didn't fit the budget." Budget must never determine whether market
     # data exists (see api/routers/research.py's equivalent hard gate) --
     # this is what lets the UI show the right one of those two messages.
-    no_market_data_reason = market_state.reason if not ranked_all else None
+    if ranked_all:
+        no_market_data_reason = None
+    elif liquidity_gate_failed:
+        threshold_pct = int(MIN_BID_ASK_COVERAGE[effective_risk_profile] * 100)  # type: ignore[operator]
+        no_market_data_reason = (
+            f"The real chain's bid/ask coverage doesn't meet the "
+            f"{effective_risk_profile.value.title()} risk profile's minimum "
+            f"({threshold_pct}% of contracts must carry a real two-sided quote)."
+        )
+    else:
+        no_market_data_reason = market_state.reason
+
+    # Options Decision Engine V3 Part D: when a trade_budget is given but
+    # no explicit risk_cap, the effective Risk Profile's own default
+    # utilization applies (Part 24) -- never silently unlimited (risk_cap
+    # absent otherwise means "use the whole budget", see
+    # analytics/decision/budget.py::usable_risk_budget). An explicit
+    # risk_cap from the caller always wins.
+    effective_risk_cap = risk_cap
+    effective_risk_cap_is_percent = risk_cap_is_percent
+    if trade_budget is not None and risk_cap is None:
+        effective_risk_cap = default_max_risk_utilization_pct(effective_risk_profile)
+        effective_risk_cap_is_percent = True
 
     ranked_all, budget_fits, budget_infeasible_minimum = filter_and_size_by_budget(
         ranked_all,
         trade_budget=trade_budget,
-        risk_cap=risk_cap,
-        risk_cap_is_percent=risk_cap_is_percent,
+        risk_cap=effective_risk_cap,
+        risk_cap_is_percent=effective_risk_cap_is_percent,
     )
 
     def _scored(r: ViewRankedStrategy) -> ScoredStrategy:
@@ -478,10 +577,30 @@ def generate_decision(
             has_bid_ask=has_real_bid_ask,
         )
         risks = build_risk_bullets(r)
-        return ScoredStrategy(ranked=r, why=why, risks=risks, budget_fit=budget_fits.get(r.rank))
+        return ScoredStrategy(
+            ranked=r,
+            why=why,
+            risks=risks,
+            budget_fit=budget_fits.get(r.rank),
+            why_expiration=build_expiration_bullets(r, target_earnings_date),
+            why_strikes=build_strike_bullets(r),
+            why_risk_profile=build_risk_profile_fit_bullets(r, effective_risk_profile),
+        )
 
     recommended = _scored(ranked_all[0]) if ranked_all else None
     alternatives = [_scored(r) for r in ranked_all[1:3]]
+    if recommended is not None and ranked_all[1:2]:
+        why_not = build_why_not_alternative_bullets(ranked_all[0], ranked_all[1])
+        recommended = ScoredStrategy(
+            ranked=recommended.ranked,
+            why=recommended.why,
+            risks=recommended.risks,
+            budget_fit=recommended.budget_fit,
+            why_expiration=recommended.why_expiration,
+            why_strikes=recommended.why_strikes,
+            why_risk_profile=recommended.why_risk_profile,
+            why_not_alternative=why_not,
+        )
 
     underlying_price = candidates[0].underlying_price if candidates else None
     expiration = candidates[0].expiration if candidates else None
@@ -500,11 +619,12 @@ def generate_decision(
         underlying_price=underlying_price,
         implied_move_pct=implied_move_pct,
         risk_preference=risk_preference,
+        risk_profile=effective_risk_profile,
         recommended=recommended,
         alternatives=alternatives,
         trade_budget=trade_budget,
-        risk_cap=risk_cap,
-        risk_cap_is_percent=risk_cap_is_percent,
+        risk_cap=effective_risk_cap,
+        risk_cap_is_percent=effective_risk_cap_is_percent,
         budget_infeasible_minimum=budget_infeasible_minimum,
         no_market_data_reason=no_market_data_reason,
     )

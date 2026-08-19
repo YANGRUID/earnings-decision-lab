@@ -90,6 +90,7 @@ def persist_decision(
         citations=_citations_to_json(result.citations),
         decision_source=decision_source,
         risk_preference=result.risk_preference.value,
+        risk_profile=result.risk_profile.value,
         recommended_strategy_category=(
             recommended.ranked.candidate.category.value if recommended is not None else None
         ),
@@ -111,6 +112,18 @@ def persist_decision(
         ),
         recommended_strategy_why=recommended.why if recommended is not None else None,
         recommended_strategy_risks=recommended.risks if recommended is not None else None,
+        recommended_strategy_why_expiration=(
+            recommended.why_expiration if recommended is not None else None
+        ),
+        recommended_strategy_why_strikes=(
+            recommended.why_strikes if recommended is not None else None
+        ),
+        recommended_strategy_why_risk_profile=(
+            recommended.why_risk_profile if recommended is not None else None
+        ),
+        recommended_strategy_why_not_alternative=(
+            recommended.why_not_alternative if recommended is not None else None
+        ),
         alternative_strategies=[_strategy_json(s) for s in result.alternatives],
         expiration=result.expiration,
         underlying_price=result.underlying_price,

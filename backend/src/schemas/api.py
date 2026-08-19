@@ -578,6 +578,69 @@ class MoveCompatibilityResponse(BaseModel):
     compatible_pct: Decimal
 
 
+class EstimatedProbabilityResponse(BaseModel):
+    """Options Decision Engine V3 Part E -- the SAME percentage as
+    MoveCompatibilityResponse.compatible_pct, wrapped with a Wilson
+    confidence interval and a small-sample flag. Never a second,
+    independently computed number -- see
+    analytics/decision/probability.py."""
+
+    method: str
+    sample_size: int
+    compatible_count: int
+    probability: Decimal
+    low_sample_confidence: bool
+    wilson_lower: Decimal | None
+    wilson_upper: Decimal | None
+
+
+class ExpirationScoreResponse(BaseModel):
+    event_fit: int
+    liquidity: int
+    quote_coverage: int
+    bid_ask_quality: int
+    dte_suitability: int
+    data_quality: int
+    total: int
+
+
+class ExpirationCandidateResponse(BaseModel):
+    """One real, live-fetched candidate expiration and its deterministic
+    score -- see analytics/options/expiration_selection.py. Never a
+    fabricated date; every candidate here came from a real provider
+    response."""
+
+    expiration: date
+    dte: int
+    days_after_earnings: int | None
+    contract_count: int
+    priceable_contract_count: int
+    quote_coverage: Decimal
+    bid_ask_coverage: Decimal
+    oi_coverage: Decimal
+    volume_coverage: Decimal
+    atm_iv: Decimal | None
+    atm_spread_pct: Decimal | None
+    quality: str
+    score: ExpirationScoreResponse
+    is_earnings_anchored: bool
+    excluded_pre_earnings: bool
+
+
+class ExpirationSelectionResponse(BaseModel):
+    """Options Decision Engine V3 Part C -- the Expiration Selection
+    Engine's result: what was selected (Auto's own pick, or exactly the
+    Manual choice), the real alternatives it was compared against, and a
+    deterministic explanation. ``selected=None`` only when no real
+    expiration was usable at all -- never a fabricated fallback."""
+
+    mode: str  # "auto" | "manual"
+    selected: ExpirationCandidateResponse | None
+    alternatives: list[ExpirationCandidateResponse]
+    reasons: list[str]
+    warning: str | None
+
+
 class ScenarioPnlResponse(BaseModel):
     down_price: Decimal
     down_pnl: Decimal
@@ -709,6 +772,17 @@ class DecisionGenerateRequest(BaseModel):
     restricts usable risk capital below the budget itself, either as a
     dollar amount (``risk_cap_is_percent=False``) or a percentage of
     ``trade_budget`` (``risk_cap_is_percent=True``).
+
+    ``risk_profile`` (Options Decision Engine V3 Part D) -- "conservative"
+    | "moderate" | "aggressive" -- is selected PER DECISION, not a single
+    global setting; omitted defaults from the global StrategyRiskPreference
+    app setting. See analytics/decision/risk_profile.py.
+
+    ``expiration`` (Options Decision Engine V3 Part H/I), when given,
+    fetches the real chain for exactly that expiration (Manual mode) --
+    see services/decision_engine.py::generate_decision's
+    ``manual_expiration`` parameter. Omitted means Auto (the existing
+    resolver-driven pick, unchanged).
     """
 
     direction: str | None = None
@@ -716,6 +790,8 @@ class DecisionGenerateRequest(BaseModel):
     trade_budget: Decimal | None = None
     risk_cap: Decimal | None = None
     risk_cap_is_percent: bool = False
+    risk_profile: str | None = None
+    expiration: date | None = None
 
 
 class AIDecisionVersionResponse(BaseModel):
@@ -743,6 +819,7 @@ class AIDecisionVersionResponse(BaseModel):
     citations: list[dict]
     decision_source: str
     risk_preference: str
+    risk_profile: str | None = None
     recommended_strategy_category: str | None
     recommended_strategy_legs: list[dict] | None
     recommended_strategy_analysis: dict | None
@@ -750,6 +827,20 @@ class AIDecisionVersionResponse(BaseModel):
     recommended_strategy_score_components: dict[str, int] | None
     recommended_strategy_why: list[str] | None
     recommended_strategy_risks: list[str] | None
+    # Options Decision Engine V3 Part E -- computed live at read time from
+    # the persisted recommended_strategy_analysis (breakevens/net_premium)
+    # against the CURRENT real historical-move sample, never persisted
+    # itself (the sample can only grow as more real earnings events are
+    # reported -- see analytics/options/move_compatibility.py). None when
+    # there's no recommended strategy, no real breakeven, or no historical
+    # moves on record yet -- never fabricated.
+    historical_compatibility: MoveCompatibilityResponse | None = None
+    estimated_probability: EstimatedProbabilityResponse | None = None
+    # Options Decision Engine V3 Part G -- see analytics/decision/reasoning.py.
+    recommended_strategy_why_expiration: list[str] | None = None
+    recommended_strategy_why_strikes: list[str] | None = None
+    recommended_strategy_why_risk_profile: list[str] | None = None
+    recommended_strategy_why_not_alternative: list[str] | None = None
     alternative_strategies: list[dict] | None
     expiration: date | None
     underlying_price: Decimal | None

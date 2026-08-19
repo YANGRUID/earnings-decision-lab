@@ -2,6 +2,9 @@ from datetime import date
 from decimal import Decimal
 
 from analytics.decision.strategy_scoring import (
+    WEIGHT_EXPIRATION_FIT,
+    WEIGHT_RISK_PROFILE_FIT,
+    WEIGHT_VOLATILITY_FIT,
     filter_candidates_by_risk_preference,
     rank_candidates_for_view,
     score_candidate_for_view,
@@ -13,6 +16,7 @@ from models.enums import (
     DecisionDirection,
     DecisionVolatilityView,
     OptionType,
+    RiskProfile,
     StrategyRiskPreference,
 )
 
@@ -187,7 +191,7 @@ class TestScoreCandidateForView:
             has_bid_ask=True,
             market_data_quality="live",
         )
-        assert breakdown.volatility_fit == 15
+        assert breakdown.volatility_fit == WEIGHT_VOLATILITY_FIT
 
     def test_long_call_scores_zero_volatility_fit_for_short_vol_view(self):
         breakdown, *_ = score_candidate_for_view(
@@ -222,7 +226,7 @@ class TestScoreCandidateForView:
             has_bid_ask=True,
             market_data_quality="live",
         )
-        assert short_breakdown.volatility_fit == 15
+        assert short_breakdown.volatility_fit == WEIGHT_VOLATILITY_FIT
         assert long_breakdown.volatility_fit == 0
 
     def test_neutral_vol_view_gives_a_fixed_midpoint_regardless_of_structure(self):
@@ -244,7 +248,12 @@ class TestScoreCandidateForView:
             has_bid_ask=True,
             market_data_quality="live",
         )
-        assert long_call_breakdown.volatility_fit == credit_spread_breakdown.volatility_fit == 8
+        expected_neutral = round(WEIGHT_VOLATILITY_FIT * Decimal("0.5"))
+        assert (
+            long_call_breakdown.volatility_fit
+            == credit_spread_breakdown.volatility_fit
+            == expected_neutral
+        )
 
 
 class TestRankCandidatesForView:
@@ -357,3 +366,121 @@ class TestFilterCandidatesByRiskPreference:
             candidates, StrategyRiskPreference.ADVANCED_ALLOW_UNCOVERED_SHORT
         )
         assert len(filtered) == 2
+
+
+class TestExpirationFit:
+    def test_sweet_spot_scores_full_weight(self):
+        # EXP is 2026-09-18; 10 days after 2026-09-08 falls in the 7-21 sweet spot.
+        breakdown, *_ = score_candidate_for_view(
+            _long_call(),
+            direction=DecisionDirection.BULLISH,
+            volatility_view=DecisionVolatilityView.LONG_VOL,
+            implied_move_pct=Decimal("0.10"),
+            historical_move_pcts=[],
+            has_bid_ask=True,
+            market_data_quality="live",
+            earnings_date=date(2026, 9, 8),
+        )
+        assert breakdown.expiration_fit == WEIGHT_EXPIRATION_FIT
+
+    def test_pre_earnings_expiration_scores_zero(self):
+        breakdown, *_ = score_candidate_for_view(
+            _long_call(),
+            direction=DecisionDirection.BULLISH,
+            volatility_view=DecisionVolatilityView.LONG_VOL,
+            implied_move_pct=Decimal("0.10"),
+            historical_move_pcts=[],
+            has_bid_ask=True,
+            market_data_quality="live",
+            earnings_date=date(2026, 9, 20),  # after EXP
+        )
+        assert breakdown.expiration_fit == 0
+
+    def test_very_short_dte_scores_less_than_sweet_spot(self):
+        sweet_spot, *_ = score_candidate_for_view(
+            _long_call(),
+            direction=DecisionDirection.BULLISH,
+            volatility_view=DecisionVolatilityView.LONG_VOL,
+            implied_move_pct=Decimal("0.10"),
+            historical_move_pcts=[],
+            has_bid_ask=True,
+            market_data_quality="live",
+            earnings_date=date(2026, 9, 8),
+        )
+        very_short, *_ = score_candidate_for_view(
+            _long_call(),
+            direction=DecisionDirection.BULLISH,
+            volatility_view=DecisionVolatilityView.LONG_VOL,
+            implied_move_pct=Decimal("0.10"),
+            historical_move_pcts=[],
+            has_bid_ask=True,
+            market_data_quality="live",
+            earnings_date=date(2026, 9, 17),  # 1 day after -- very short DTE
+        )
+        assert very_short.expiration_fit < sweet_spot.expiration_fit
+        assert very_short.expiration_fit > 0
+
+    def test_no_earnings_date_scores_neutral_fixed_fraction(self):
+        breakdown, *_ = score_candidate_for_view(
+            _long_call(),
+            direction=DecisionDirection.BULLISH,
+            volatility_view=DecisionVolatilityView.LONG_VOL,
+            implied_move_pct=Decimal("0.10"),
+            historical_move_pcts=[],
+            has_bid_ask=True,
+            market_data_quality="live",
+            earnings_date=None,
+        )
+        assert breakdown.expiration_fit == round(WEIGHT_EXPIRATION_FIT * Decimal("0.5"))
+
+
+class TestRiskProfileFit:
+    def test_none_scores_full_weight(self):
+        breakdown, *_ = score_candidate_for_view(
+            _long_call(),
+            direction=DecisionDirection.BULLISH,
+            volatility_view=DecisionVolatilityView.LONG_VOL,
+            implied_move_pct=Decimal("0.10"),
+            historical_move_pcts=[],
+            has_bid_ask=True,
+            market_data_quality="live",
+            risk_profile=None,
+        )
+        assert breakdown.risk_profile_fit == WEIGHT_RISK_PROFILE_FIT
+
+    def test_conservative_scores_full_weight_for_spread(self):
+        breakdown, *_ = score_candidate_for_view(
+            _put_credit_spread(),
+            direction=DecisionDirection.NEUTRAL,
+            volatility_view=DecisionVolatilityView.SHORT_VOL,
+            implied_move_pct=Decimal("0.10"),
+            historical_move_pcts=[],
+            has_bid_ask=True,
+            market_data_quality="live",
+            risk_profile=RiskProfile.CONSERVATIVE,
+        )
+        assert breakdown.risk_profile_fit == WEIGHT_RISK_PROFILE_FIT
+
+    def test_aggressive_favors_single_leg_long_over_spread(self):
+        long_call_breakdown, *_ = score_candidate_for_view(
+            _long_call(),
+            direction=DecisionDirection.BULLISH,
+            volatility_view=DecisionVolatilityView.LONG_VOL,
+            implied_move_pct=Decimal("0.10"),
+            historical_move_pcts=[],
+            has_bid_ask=True,
+            market_data_quality="live",
+            risk_profile=RiskProfile.AGGRESSIVE,
+        )
+        spread_breakdown, *_ = score_candidate_for_view(
+            _put_credit_spread(),
+            direction=DecisionDirection.NEUTRAL,
+            volatility_view=DecisionVolatilityView.SHORT_VOL,
+            implied_move_pct=Decimal("0.10"),
+            historical_move_pcts=[],
+            has_bid_ask=True,
+            market_data_quality="live",
+            risk_profile=RiskProfile.AGGRESSIVE,
+        )
+        assert long_call_breakdown.risk_profile_fit == WEIGHT_RISK_PROFILE_FIT
+        assert spread_breakdown.risk_profile_fit < WEIGHT_RISK_PROFILE_FIT
