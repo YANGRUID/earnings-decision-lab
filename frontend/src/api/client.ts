@@ -10,6 +10,7 @@ import type {
   EarningsEventSummary,
   EarningsThesis,
   EvaluationStatusResponse,
+  ExpirationSelectionResult,
   FilingSearchResponse,
   ImpliedMoveRequest,
   ImpliedMoveResponse,
@@ -22,6 +23,7 @@ import type {
   ResearchJobQueued,
   ResearchOverview,
   ResearchQueryResponse,
+  RiskProfile,
   SettlementAttemptResult,
   StrategyLab,
   StrategyPayoffRequest,
@@ -133,7 +135,10 @@ export const api = {
   getResearchStatus: (ticker: string) => request<ResearchJob>(`/research/${ticker}/status`),
   getResearchOverview: (ticker: string) =>
     request<ResearchOverview>(`/research/${ticker}/overview`),
-  getStrategyLab: (ticker: string) => request<StrategyLab>(`/research/${ticker}/strategies`),
+  getStrategyLab: (ticker: string, expiration?: string) =>
+    request<StrategyLab>(
+      `/research/${ticker}/strategies${expiration ? `?expiration=${encodeURIComponent(expiration)}` : ""}`
+    ),
   getEarningsThesis: (ticker: string) =>
     request<EarningsThesis>(`/research/${ticker}/thesis`, { method: "POST" }),
   setEarningsDateOverride: (
@@ -191,12 +196,25 @@ export const api = {
       trade_budget?: string;
       risk_cap?: string;
       risk_cap_is_percent?: boolean;
+      risk_profile?: RiskProfile;
+      expiration?: string;
     }
   ) =>
     request<AIDecisionVersion>(`/research/${ticker}/decision`, {
       method: "POST",
       body: options ? JSON.stringify(options) : undefined,
     }),
+  getExpirationSelection: (
+    ticker: string,
+    params: { mode?: "auto" | "manual"; expiration?: string; max_candidates?: number } = {}
+  ) => {
+    const qs = new URLSearchParams();
+    if (params.mode) qs.set("mode", params.mode);
+    if (params.expiration) qs.set("expiration", params.expiration);
+    if (params.max_candidates) qs.set("max_candidates", String(params.max_candidates));
+    const suffix = qs.toString() ? `?${qs.toString()}` : "";
+    return request<ExpirationSelectionResult>(`/research/${ticker}/expirations${suffix}`);
+  },
   getDecisionHistory: (ticker: string, params: { limit?: number; offset?: number } = {}) => {
     const qs = new URLSearchParams();
     if (params.limit) qs.set("limit", String(params.limit));

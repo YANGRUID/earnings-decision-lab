@@ -8,6 +8,10 @@ import type {
   AIDecisionVersion,
   DecisionDirection,
   DecisionVolatilityView,
+  EstimatedProbability,
+  ExpirationCandidate,
+  MoveCompatibility,
+  RiskProfile,
   ScoredStrategy,
 } from "../../types/api";
 
@@ -25,12 +29,30 @@ const VOLATILITY_LABELS: Record<DecisionVolatilityView, string> = {
   short_vol: "Short Volatility",
 };
 
+const RISK_PROFILE_LABELS: Record<RiskProfile, string> = {
+  conservative: "Conservative",
+  moderate: "Moderate",
+  aggressive: "Aggressive",
+};
+
+const RISK_PROFILE_DESCRIPTIONS: Record<RiskProfile, string> = {
+  conservative:
+    "Defined-risk structures only, high quote quality required, lower risk-budget utilization.",
+  moderate: "Defined-risk spreads and condors/butterflies, balanced liquidity threshold.",
+  aggressive:
+    "May allow single-leg long calls/puts and higher risk utilization — never uncovered shorts by default.",
+};
+
+// Strategy Ranking V2 (Options Decision Engine V3 Part F) — 9 components
+// summing to 100, see analytics/decision/strategy_scoring.py.
 const SCORE_COMPONENT_LABELS: Record<string, { label: string; max: number }> = {
-  direction_fit: { label: "Direction Fit", max: 20 },
-  volatility_fit: { label: "Volatility Fit", max: 15 },
-  breakeven_fit: { label: "Breakeven Fit", max: 15 },
-  historical_fit: { label: "Historical Fit", max: 15 },
-  risk_reward: { label: "Risk/Reward", max: 15 },
+  direction_fit: { label: "Direction Fit", max: 15 },
+  volatility_fit: { label: "Volatility Fit", max: 11 },
+  expiration_fit: { label: "Expiration Fit", max: 10 },
+  breakeven_fit: { label: "Breakeven Fit", max: 12 },
+  historical_fit: { label: "Historical Fit", max: 12 },
+  risk_reward: { label: "Risk/Reward", max: 12 },
+  risk_profile_fit: { label: "Risk Profile Fit", max: 8 },
   liquidity: { label: "Liquidity", max: 10 },
   data_quality: { label: "Data Quality", max: 10 },
 };
@@ -198,9 +220,74 @@ function ScoreBreakdown({ components, total }: { components: Record<string, numb
   );
 }
 
+/** Options Decision Engine V3 Part E — three deliberately distinct
+ * reliability metrics, never collapsed into one number:
+ * - Historical Compatibility: how often past real earnings moves would
+ *   have satisfied this exact breakeven condition.
+ * - Estimated Probability: the same empirical distribution, but relabeled
+ *   with its real sample size and (when computable) a Wilson confidence
+ *   interval — an estimate, not a guarantee, and never fake precision.
+ * - True Strategy Win Rate: the strictest metric (real settled option
+ *   entry/exit P&L) — honestly "Unavailable" today because this project
+ *   does not yet capture real point-in-time option entry/exit prices for
+ *   any settled decision (see services/track_record.py). */
+function ProbabilityCard({
+  historicalCompatibility,
+  estimatedProbability,
+}: {
+  historicalCompatibility: MoveCompatibility | null;
+  estimatedProbability: EstimatedProbability | null;
+}) {
+  return (
+    <div style={{ marginTop: 12 }}>
+      <div style={{ fontWeight: 600, marginBottom: 6 }}>Historical Reliability</div>
+      <table className="legs-table">
+        <tbody>
+          <tr>
+            <td>Historical Compatibility</td>
+            <td className="mono">
+              {historicalCompatibility
+                ? `${formatPlainPercent(historicalCompatibility.compatible_pct)} (${
+                    historicalCompatibility.compatible_count
+                  }/${historicalCompatibility.sample_size} events)`
+                : "Not available"}
+            </td>
+          </tr>
+          <tr>
+            <td>Estimated Probability</td>
+            <td className="mono">
+              {estimatedProbability
+                ? `${formatPlainPercent(estimatedProbability.probability)} (Empirical earnings ` +
+                  `distribution${estimatedProbability.low_sample_confidence ? ", Low sample confidence" : ""})` +
+                  (estimatedProbability.wilson_lower !== null && estimatedProbability.wilson_upper !== null
+                    ? ` — 95% CI [${formatPlainPercent(estimatedProbability.wilson_lower)}, ${formatPlainPercent(
+                        estimatedProbability.wilson_upper
+                      )}]`
+                    : "")
+                : "Not available"}
+            </td>
+          </tr>
+          <tr>
+            <td>True Strategy Win Rate</td>
+            <td className="mono">Unavailable (No settled historical option trades yet)</td>
+          </tr>
+        </tbody>
+      </table>
+      <p className="text-sm text-faint" style={{ marginBottom: 0 }}>
+        These are three different, deliberately unmixed questions: how often the underlying's
+        historical move would have satisfied this breakeven (Historical Compatibility / Estimated
+        Probability, same empirical basis), versus whether the actual options position was ever
+        recorded to make money (True Strategy Win Rate — not yet possible to compute honestly).
+      </p>
+    </div>
+  );
+}
+
 function StrategyDecisionCard({
   label,
   strategy,
+  historicalCompatibility,
+  estimatedProbability,
 }: {
   label: string;
   strategy: {
@@ -212,7 +299,13 @@ function StrategyDecisionCard({
     why: string[];
     risks: string[];
     budget_fit?: ScoredStrategy["budget_fit"];
+    why_expiration?: string[];
+    why_strikes?: string[];
+    why_risk_profile?: string[];
+    why_not_alternative?: string[];
   };
+  historicalCompatibility?: MoveCompatibility | null;
+  estimatedProbability?: EstimatedProbability | null;
 }) {
   const a = strategy.analysis;
   return (
@@ -274,6 +367,13 @@ function StrategyDecisionCard({
         <BudgetFitCard fit={strategy.budget_fit} legs={strategy.legs} />
       )}
 
+      {(historicalCompatibility !== undefined || estimatedProbability !== undefined) && (
+        <ProbabilityCard
+          historicalCompatibility={historicalCompatibility ?? null}
+          estimatedProbability={estimatedProbability ?? null}
+        />
+      )}
+
       <div style={{ marginTop: 12 }}>
         <div style={{ fontWeight: 600 }}>Why this strategy</div>
         <ul style={{ margin: "6px 0 0", paddingLeft: 18 }}>
@@ -284,6 +384,46 @@ function StrategyDecisionCard({
           ))}
         </ul>
       </div>
+
+      {strategy.why_expiration && strategy.why_expiration.length > 0 && (
+        <div style={{ marginTop: 10 }}>
+          <div style={{ fontWeight: 600 }}>Why This Expiration</div>
+          <ul style={{ margin: "6px 0 0", paddingLeft: 18 }}>
+            {strategy.why_expiration.map((line, i) => (
+              <li key={i} className="text-sm text-muted">
+                {line}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {strategy.why_strikes && strategy.why_strikes.length > 0 && (
+        <div style={{ marginTop: 10 }}>
+          <div style={{ fontWeight: 600 }}>Why These Strikes</div>
+          <ul style={{ margin: "6px 0 0", paddingLeft: 18 }}>
+            {strategy.why_strikes.map((line, i) => (
+              <li key={i} className="text-sm text-muted">
+                {line}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {strategy.why_risk_profile && strategy.why_risk_profile.length > 0 && (
+        <div style={{ marginTop: 10 }}>
+          <div style={{ fontWeight: 600 }}>Why This Risk Level Fit</div>
+          <ul style={{ margin: "6px 0 0", paddingLeft: 18 }}>
+            {strategy.why_risk_profile.map((line, i) => (
+              <li key={i} className="text-sm text-muted">
+                {line}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
       <div style={{ marginTop: 10 }}>
         <div style={{ fontWeight: 600 }}>Main risks</div>
         <ul style={{ margin: "6px 0 0", paddingLeft: 18 }}>
@@ -294,6 +434,19 @@ function StrategyDecisionCard({
           ))}
         </ul>
       </div>
+
+      {strategy.why_not_alternative && strategy.why_not_alternative.length > 0 && (
+        <div style={{ marginTop: 10 }}>
+          <div style={{ fontWeight: 600 }}>Why Not #2</div>
+          <ul style={{ margin: "6px 0 0", paddingLeft: 18 }}>
+            {strategy.why_not_alternative.map((line, i) => (
+              <li key={i} className="text-sm text-muted">
+                {line}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
     </div>
   );
 }
@@ -308,6 +461,14 @@ function CurrentViewCard({ decision }: { decision: AIDecisionVersion }) {
         </span>
         <span className="pill pill-neutral">{VOLATILITY_LABELS[decision.volatility_view]}</span>
         <span className="text-sm text-muted">Confidence {decision.confidence_score} / 100</span>
+        {decision.risk_profile && (
+          <span className="pill pill-neutral" title={RISK_PROFILE_DESCRIPTIONS[decision.risk_profile]}>
+            Risk: {RISK_PROFILE_LABELS[decision.risk_profile]}
+          </span>
+        )}
+        {decision.expiration && (
+          <span className="text-sm text-muted">Expiration {decision.expiration}</span>
+        )}
         {decision.decision_source === "manual_override" && (
           <span className="pill pill-neutral">Manual override</span>
         )}
@@ -496,6 +657,12 @@ export function DecisionTab({ ticker }: { ticker: string }) {
   const [riskCapIsPercent, setRiskCapIsPercent] = useState(true);
   const [settling, setSettling] = useState(false);
   const [settlementMessage, setSettlementMessage] = useState<string | null>(null);
+  const [riskProfile, setRiskProfile] = useState<RiskProfile>("moderate");
+  const [expirationMode, setExpirationMode] = useState<"auto" | "manual">("auto");
+  const [manualExpiration, setManualExpiration] = useState("");
+  const [expirationCandidates, setExpirationCandidates] = useState<ExpirationCandidate[]>([]);
+  const [expirationLoading, setExpirationLoading] = useState(false);
+  const [expirationWarning, setExpirationWarning] = useState<string | null>(null);
 
   useEffect(() => {
     if (history.data && history.data.length > 0 && activeId === null) {
@@ -507,6 +674,35 @@ export function DecisionTab({ ticker }: { ticker: string }) {
   useEffect(() => {
     setSettlementMessage(null);
   }, [activeId]);
+
+  useEffect(() => {
+    if (expirationMode !== "manual" || expirationCandidates.length > 0) return;
+    let cancelled = false;
+    setExpirationLoading(true);
+    api
+      .getExpirationSelection(ticker, { mode: "auto" })
+      .then((result) => {
+        if (cancelled) return;
+        const all = result.selected
+          ? [result.selected, ...result.alternatives]
+          : result.alternatives;
+        setExpirationCandidates(all);
+        setExpirationWarning(result.warning);
+        if (all.length > 0 && !manualExpiration) setManualExpiration(all[0].expiration);
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          setExpirationWarning(err instanceof ApiError ? err.message : "Could not load real expirations.");
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setExpirationLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [expirationMode, ticker]);
 
   const active = history.data?.find((d) => d.id === activeId) ?? null;
 
@@ -520,6 +716,8 @@ export function DecisionTab({ ticker }: { ticker: string }) {
         ...(tradeBudget.trim() && riskCap.trim()
           ? { risk_cap: riskCap.trim(), risk_cap_is_percent: riskCapIsPercent }
           : {}),
+        risk_profile: riskProfile,
+        ...(expirationMode === "manual" && manualExpiration ? { expiration: manualExpiration } : {}),
       });
       history.reload();
       setActiveId(null);
@@ -570,6 +768,62 @@ export function DecisionTab({ ticker }: { ticker: string }) {
           a probability of a correct outcome. Every generation is saved as a new version — nothing
           is overwritten.
         </p>
+        <div className="grid grid-2" style={{ gap: 12, marginBottom: 12, maxWidth: 560 }}>
+          <div className="field">
+            <label htmlFor="decision-risk-profile">Risk profile</label>
+            <select
+              id="decision-risk-profile"
+              value={riskProfile}
+              onChange={(e) => setRiskProfile(e.target.value as RiskProfile)}
+              disabled={generating}
+            >
+              {(Object.keys(RISK_PROFILE_LABELS) as RiskProfile[]).map((p) => (
+                <option key={p} value={p}>
+                  {RISK_PROFILE_LABELS[p]}
+                </option>
+              ))}
+            </select>
+            <span className="text-sm text-faint">{RISK_PROFILE_DESCRIPTIONS[riskProfile]}</span>
+          </div>
+          <div className="field">
+            <label>Expiration</label>
+            <select
+              value={expirationMode}
+              onChange={(e) => setExpirationMode(e.target.value as "auto" | "manual")}
+              disabled={generating}
+            >
+              <option value="auto">Auto (best real expiration)</option>
+              <option value="manual">Manual (choose a real expiration)</option>
+            </select>
+          </div>
+        </div>
+        {expirationMode === "manual" && (
+          <div className="field" style={{ maxWidth: 560, marginBottom: 12 }}>
+            <label>Real expiration</label>
+            {expirationLoading ? (
+              <span className="text-sm text-muted">Loading real listed expirations…</span>
+            ) : expirationCandidates.length > 0 ? (
+              <select
+                value={manualExpiration}
+                onChange={(e) => setManualExpiration(e.target.value)}
+                disabled={generating}
+              >
+                {expirationCandidates.map((c) => (
+                  <option key={c.expiration} value={c.expiration}>
+                    {c.expiration} — {c.dte} DTE, {c.quality}, score {c.score.total}/100
+                  </option>
+                ))}
+              </select>
+            ) : (
+              <span className="text-sm text-muted">
+                {expirationWarning ?? "No real expirations discovered yet."}
+              </span>
+            )}
+            {expirationWarning && expirationCandidates.length > 0 && (
+              <span className="text-sm text-faint">{expirationWarning}</span>
+            )}
+          </div>
+        )}
         <div className="grid grid-3" style={{ gap: 12, marginBottom: 12, maxWidth: 560 }}>
           <div className="field">
             <label>Trade budget (optional)</label>
@@ -747,7 +1001,13 @@ export function DecisionTab({ ticker }: { ticker: string }) {
                   why: active.recommended_strategy_why,
                   risks: active.recommended_strategy_risks,
                   budget_fit: recommendedBudgetFit(active),
+                  why_expiration: active.recommended_strategy_why_expiration ?? undefined,
+                  why_strikes: active.recommended_strategy_why_strikes ?? undefined,
+                  why_risk_profile: active.recommended_strategy_why_risk_profile ?? undefined,
+                  why_not_alternative: active.recommended_strategy_why_not_alternative ?? undefined,
                 }}
+                historicalCompatibility={active.historical_compatibility}
+                estimatedProbability={active.estimated_probability}
               />
             )}
 

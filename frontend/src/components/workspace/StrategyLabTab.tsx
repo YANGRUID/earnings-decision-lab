@@ -10,6 +10,7 @@ import {
   providerLabel,
 } from "../../lib/format";
 import type {
+  ExpirationCandidate,
   OptionLegInput,
   OptionQuote,
   RankedStrategy,
@@ -188,6 +189,141 @@ function StrategyLabStateBar({ lab }: { lab: StrategyLab }) {
 function pct(value: string | null, digits = 1): string {
   if (value === null) return "—";
   return formatPercent(Number(value), digits);
+}
+
+/** Options Decision Engine V3 Part C/H — a deterministic, explainable
+ * comparison of real listed expirations (see
+ * analytics/options/expiration_selection.py), distinct from the single
+ * pick the market-data resolver already makes for the state bar above.
+ * Auto shows the engine's own scored pick plus real alternatives it was
+ * compared against; Manual lets the user pick any real listed expiration,
+ * and every contract/strategy below recomputes from exactly that date. */
+function ExpirationSelector({
+  ticker,
+  mode,
+  onModeChange,
+  selectedExpiration,
+  onSelectExpiration,
+}: {
+  ticker: string;
+  mode: "auto" | "manual";
+  onModeChange: (mode: "auto" | "manual") => void;
+  selectedExpiration: string | null;
+  onSelectExpiration: (expiration: string) => void;
+}) {
+  const comparison = useAsync(() => api.getExpirationSelection(ticker, { mode: "auto" }), [ticker]);
+
+  if (comparison.loading && !comparison.data) {
+    return (
+      <div className="card" style={{ marginBottom: 16 }}>
+        <p className="text-sm text-muted" style={{ margin: 0 }}>
+          Loading real listed expirations…
+        </p>
+      </div>
+    );
+  }
+  if (!comparison.data) return null;
+
+  const candidates: ExpirationCandidate[] = comparison.data.selected
+    ? [comparison.data.selected, ...comparison.data.alternatives]
+    : comparison.data.alternatives;
+
+  return (
+    <div className="card" style={{ marginBottom: 16 }}>
+      <div style={{ display: "flex", gap: 12, alignItems: "center", marginBottom: 10 }}>
+        <h2 style={{ margin: 0 }}>Expiration</h2>
+        <div style={{ display: "flex", gap: 6 }}>
+          <button
+            className={mode === "auto" ? "btn" : "btn-secondary"}
+            onClick={() => onModeChange("auto")}
+          >
+            Auto
+          </button>
+          <button
+            className={mode === "manual" ? "btn" : "btn-secondary"}
+            onClick={() => onModeChange("manual")}
+            disabled={candidates.length === 0}
+          >
+            Manual
+          </button>
+        </div>
+      </div>
+
+      {comparison.data.warning && (
+        <div className="notice" style={{ marginBottom: 10 }}>
+          {comparison.data.warning}
+        </div>
+      )}
+
+      {comparison.data.selected && (
+        <p className="text-sm text-muted" style={{ marginTop: 0 }}>
+          <strong>Auto selected: {comparison.data.selected.expiration}</strong> (
+          {comparison.data.selected.dte} DTE, {comparison.data.selected.quality}, score{" "}
+          {comparison.data.selected.score.total}/100).{" "}
+          {comparison.data.reasons.join(" ")}
+        </p>
+      )}
+
+      {candidates.length > 0 && (
+        <table className="legs-table">
+          <thead>
+            <tr>
+              <th></th>
+              <th>Expiration</th>
+              <th>DTE</th>
+              <th>Days after earnings</th>
+              <th>Contracts</th>
+              <th>Quote coverage</th>
+              <th>Bid/ask coverage</th>
+              <th>ATM IV</th>
+              <th>Quality</th>
+              <th>Score</th>
+            </tr>
+          </thead>
+          <tbody>
+            {candidates.map((c) => {
+              const isAuto = comparison.data!.selected?.expiration === c.expiration;
+              const isChosen = mode === "manual" && selectedExpiration === c.expiration;
+              return (
+                <tr
+                  key={c.expiration}
+                  style={{
+                    cursor: "pointer",
+                    background: isChosen ? "var(--bg-hover, rgba(255,255,255,0.06))" : undefined,
+                  }}
+                  onClick={() => {
+                    onModeChange("manual");
+                    onSelectExpiration(c.expiration);
+                  }}
+                >
+                  <td>
+                    {isAuto && <span className="pill pill-neutral">Auto</span>}
+                    {isChosen && <span className="pill pill-positive">Selected</span>}
+                  </td>
+                  <td className="mono">{c.expiration}</td>
+                  <td className="mono">{c.dte}</td>
+                  <td className="mono">{c.days_after_earnings ?? "—"}</td>
+                  <td className="mono">
+                    {c.priceable_contract_count}/{c.contract_count}
+                  </td>
+                  <td className="mono">{pct(c.quote_coverage, 0)}</td>
+                  <td className="mono">{pct(c.bid_ask_coverage, 0)}</td>
+                  <td className="mono">{c.atm_iv ? pct(c.atm_iv, 1) : "—"}</td>
+                  <td>{c.quality}</td>
+                  <td className="mono">{c.score.total}/100</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      )}
+      {candidates.length === 0 && (
+        <p className="text-sm text-muted" style={{ marginBottom: 0 }}>
+          No real listed expirations could be discovered right now.
+        </p>
+      )}
+    </div>
+  );
 }
 
 function categoryLabel(category: string): string {
@@ -483,7 +619,12 @@ function ManualStrategyCalculator() {
 }
 
 export function StrategyLabTab({ ticker }: { ticker: string }) {
-  const lab = useAsync(() => api.getStrategyLab(ticker), [ticker]);
+  const [expirationMode, setExpirationMode] = useState<"auto" | "manual">("auto");
+  const [manualExpiration, setManualExpiration] = useState<string | null>(null);
+  const lab = useAsync(
+    () => api.getStrategyLab(ticker, expirationMode === "manual" ? (manualExpiration ?? undefined) : undefined),
+    [ticker, expirationMode, manualExpiration]
+  );
 
   if (lab.loading && !lab.data) return <LoadingState label="Loading strategy candidates…" />;
   if (lab.error && !lab.data) return <ErrorState message={lab.error} />;
@@ -492,6 +633,14 @@ export function StrategyLabTab({ ticker }: { ticker: string }) {
   return (
     <div>
       <StrategyLabStateBar lab={lab.data} />
+
+      <ExpirationSelector
+        ticker={ticker}
+        mode={expirationMode}
+        onModeChange={setExpirationMode}
+        selectedExpiration={manualExpiration}
+        onSelectExpiration={setManualExpiration}
+      />
 
       {lab.data.strategies.length === 0 ? (
         <div className="card">

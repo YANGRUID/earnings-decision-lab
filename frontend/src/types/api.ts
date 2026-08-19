@@ -649,6 +649,67 @@ export interface ScoredStrategy {
   target_price: string | null;
   payoff_at_target: string | null;
   budget_fit: BudgetFit | null;
+  why_expiration?: string[];
+  why_strikes?: string[];
+  why_risk_profile?: string[];
+  why_not_alternative?: string[];
+}
+
+export interface MoveCompatibility {
+  method: string;
+  sample_size: number;
+  requires_move_beyond_threshold: boolean;
+  required_move_pct: string;
+  compatible_count: number;
+  compatible_pct: string;
+}
+
+export interface EstimatedProbability {
+  method: string;
+  sample_size: number;
+  compatible_count: number;
+  probability: string;
+  low_sample_confidence: boolean;
+  wilson_lower: string | null;
+  wilson_upper: string | null;
+}
+
+export type RiskProfile = "conservative" | "moderate" | "aggressive";
+
+export interface ExpirationScore {
+  event_fit: number;
+  liquidity: number;
+  quote_coverage: number;
+  bid_ask_quality: number;
+  dte_suitability: number;
+  data_quality: number;
+  total: number;
+}
+
+export interface ExpirationCandidate {
+  expiration: string;
+  dte: number;
+  days_after_earnings: number | null;
+  contract_count: number;
+  priceable_contract_count: number;
+  quote_coverage: string;
+  bid_ask_coverage: string;
+  oi_coverage: string;
+  volume_coverage: string;
+  atm_iv: string | null;
+  atm_spread_pct: string | null;
+  quality: string;
+  score: ExpirationScore;
+  is_earnings_anchored: boolean;
+  excluded_pre_earnings: boolean;
+}
+
+export interface ExpirationSelectionResult {
+  mode: "auto" | "manual";
+  selected: ExpirationCandidate | null;
+  alternatives: ExpirationCandidate[];
+  reasons: string[];
+  warning: string | null;
 }
 
 export interface AIDecisionVersion {
@@ -667,6 +728,7 @@ export interface AIDecisionVersion {
   citations: Citation[];
   decision_source: "ai" | "manual_override";
   risk_preference: string;
+  risk_profile: RiskProfile | null;
   recommended_strategy_category: string | null;
   recommended_strategy_legs: OptionLeg[] | null;
   recommended_strategy_analysis: StrategyAnalysis | null;
@@ -674,6 +736,12 @@ export interface AIDecisionVersion {
   recommended_strategy_score_components: Record<string, number> | null;
   recommended_strategy_why: string[] | null;
   recommended_strategy_risks: string[] | null;
+  recommended_strategy_why_expiration: string[] | null;
+  recommended_strategy_why_strikes: string[] | null;
+  recommended_strategy_why_risk_profile: string[] | null;
+  recommended_strategy_why_not_alternative: string[] | null;
+  historical_compatibility: MoveCompatibility | null;
+  estimated_probability: EstimatedProbability | null;
   alternative_strategies: ScoredStrategy[] | null;
   expiration: string | null;
   underlying_price: string | null;
