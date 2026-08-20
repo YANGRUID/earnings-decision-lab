@@ -1,5 +1,9 @@
 name: CI
 
+# Continuous integration for Earnings Decision Lab: backend (ruff, mypy,
+# pytest), frontend (ESLint, typecheck, build), and a full Docker Compose
+# stack build + health check.
+
 on:
   push:
     branches: [main]
