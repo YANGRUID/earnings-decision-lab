@@ -253,7 +253,7 @@ as an example snapshot rather than a permanent number.
 ## Screenshots
 
 **Options Decision Engine V3** screenshots are inline in the [Major Features](#major-features)
-section above (real, live AVGO data). General product screens:
+section above (real, live AVGO and NVDA data). General product screens:
 
 | | |
 |---|---|
