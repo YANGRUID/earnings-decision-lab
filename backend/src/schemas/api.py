@@ -41,6 +41,30 @@ class PriceReactionResponse(BaseModel):
     five_day_move_pct: Decimal | None
 
 
+class EarningsCalendarEventResponse(BaseModel):
+    """Phase 4.2 -- one row from the forward-looking, Finnhub-sourced
+    earnings_calendar_event table. Deliberately a distinct schema from
+    EarningsEventSummary/EarningsEventDetail below, which describe the
+    existing retrospective, SEC-XBRL-sourced earnings_event table -- the
+    two are different tables with different provenance and grain, not two
+    views of the same data (see models/earnings_calendar_event.py).
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    symbol: str
+    company_name: str
+    logo_url: str | None
+    earnings_date: date
+    earnings_time: str
+    eps_estimate: Decimal | None
+    revenue_estimate: Decimal | None
+    market_cap: Decimal | None
+    source: str
+    status: str
+
+
 class EarningsEventSummary(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

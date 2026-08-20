@@ -17,8 +17,9 @@ from sqlalchemy.orm import Session
 from core.config import Settings
 from providers.alpha_vantage import AlphaVantageMarketDataProvider
 from providers.alpha_vantage_options import AlphaVantageOptionsProvider
-from providers.base import MarketDataProvider, OptionsDataProvider
+from providers.base import EarningsCalendarProvider, MarketDataProvider, OptionsDataProvider
 from providers.fallback import MarketDataProviderChain, OptionsProviderChain
+from providers.finnhub import FinnhubEarningsCalendarProvider
 from providers.fixture_options import FixtureOptionsProvider
 from providers.ibkr_options import IBKROptionsProvider
 from providers.tiingo import TiingoMarketDataProvider
@@ -193,3 +194,20 @@ def build_market_data_chain(
             "no market data provider configured — set TIINGO_API_KEY or ALPHA_VANTAGE_API_KEY"
         )
     return MarketDataProviderChain(providers)
+
+
+def build_earnings_calendar_provider(
+    settings: Settings, db: Session | None = None
+) -> EarningsCalendarProvider | None:
+    """Phase 4.2 -- Finnhub only (see EarningsCalendarProvider's own
+    docstring on why this needed a new interface, not a reuse of
+    EarningsDataProvider/EarningsEstimatesProvider). Returns None (never
+    raises) when unconfigured, matching every other ``_build_*`` function
+    here -- the calendar sync job (services/earnings_calendar_sync.py)
+    decides whether that's a hard failure or a skip."""
+    key = resolve_secret(settings, "finnhub", db)
+    if not key:
+        return None
+    return instrument_data_provider(
+        FinnhubEarningsCalendarProvider(api_key=key), db, "finnhub", "earnings_calendar"
+    )

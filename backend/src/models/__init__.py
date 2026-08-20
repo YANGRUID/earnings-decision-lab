@@ -7,6 +7,7 @@ from models.benchmark_portfolio import BenchmarkPortfolio
 from models.company import Company
 from models.decision_snapshot import DecisionSnapshot
 from models.document_chunk import DocumentChunk
+from models.earnings_calendar_event import EarningsCalendarEvent
 from models.earnings_estimate_snapshot import EarningsEstimateSnapshot
 from models.earnings_event import EarningsEvent
 from models.earnings_expectation_snapshot import EarningsExpectationSnapshot
@@ -35,6 +36,7 @@ __all__ = [
     "Company",
     "DecisionSnapshot",
     "DocumentChunk",
+    "EarningsCalendarEvent",
     "EarningsEstimateSnapshot",
     "EarningsEvent",
     "EarningsExpectationSnapshot",

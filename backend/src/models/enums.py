@@ -242,6 +242,46 @@ class OptionAction(enum.StrEnum):
     SELL = "sell"
 
 
+class EarningsTiming(enum.StrEnum):
+    """Session an earnings_calendar_event's report is expected in (Phase
+    4.2, see models/earnings_calendar_event.py) -- short codes mirroring
+    Finnhub's own raw calendar vocabulary directly (its /calendar/earnings
+    endpoint returns "bmo"/"amc"/"dmh", see providers/finnhub.py), rather
+    than the longer BEFORE_MARKET/AFTER_MARKET names AnnouncementTime uses
+    for the retrospective earnings_event table. Kept as its own enum,
+    not a reuse of AnnouncementTime, since this table's provenance and
+    grain are already deliberately separate from that one (see
+    PHASE4_ARCHITECTURE_REVIEW.md sec 1.2)."""
+
+    BMO = "bmo"
+    AMC = "amc"
+    DMH = "dmh"
+    UNKNOWN = "unknown"
+
+
+class EarningsSource(enum.StrEnum):
+    """Provenance of an earnings_calendar_event row (Phase 4.2). A single
+    member today (only Finnhub is wired up), kept as a real enum rather
+    than a bare string so a second calendar provider added later is a
+    one-line addition with a real migration, not a silent convention."""
+
+    FINNHUB = "finnhub"
+
+
+class EarningsCalendarEventStatus(enum.StrEnum):
+    """Lifecycle of one earnings_calendar_event row (Phase 4.2) -- distinct
+    from CaptureStatus/DecisionSnapshotStatus, which describe a decision's
+    own forward-test lifecycle, not the calendar entry it was scanned
+    from. UPCOMING is the only state Phase 4.2 itself ever writes;
+    ANALYZED/SKIPPED/COMPLETED are reserved for the eligibility scan and
+    decision-generation phases (4.3+) to set later."""
+
+    UPCOMING = "upcoming"
+    ANALYZED = "analyzed"
+    SKIPPED = "skipped"
+    COMPLETED = "completed"
+
+
 class RiskProfile(enum.StrEnum):
     """Options Decision Engine V3 Part D: selected PER DECISION (see
     schemas.api.DecisionGenerateRequest.risk_profile), not a single global

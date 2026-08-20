@@ -17,6 +17,7 @@ from providers.types import (
     EarningsEstimatePeriod,
     FilingMetadata,
     FinnhubCalendarEntry,
+    FinnhubCompanyProfile,
     OHLCBar,
     OptionQuote,
     TranscriptDocument,
@@ -148,6 +149,13 @@ class EarningsCalendarProvider(ABC):
         provider covers -- never filtered to a known universe by this
         method itself; eligibility (market cap, US-listed, tradable
         options) is a separate, later concern (Phase 5)."""
+
+    @abstractmethod
+    def get_company_profile(self, symbol: str) -> FinnhubCompanyProfile | None:
+        """Real name/logo/market-cap/country for ``symbol`` -- the
+        calendar entries above carry none of these, only a raw symbol.
+        None for an unknown/delisted symbol, never a malformed response
+        (Phase 4.2, see services/earnings_calendar_sync.py)."""
 
 
 class FilingsProvider(ABC):

@@ -15,6 +15,7 @@ from api.rate_limit import SlidingWindowRateLimiter
 from api.routers import (
     companies,
     earnings,
+    earnings_calendar,
     evaluations,
     health,
     options,
@@ -28,6 +29,7 @@ from api.routers import (
 from core.config import get_settings
 from observability.logging import configure_logging
 from rag.embeddings import FastEmbedProvider
+from services.scheduler import build_scheduler
 
 RESEARCH_QUERY_RATE_LIMIT = 10  # per window — real LLM cost per call, see api/rate_limit.py
 RESEARCH_QUERY_RATE_WINDOW_SECONDS = 60.0
@@ -65,7 +67,24 @@ async def lifespan(app: FastAPI):
     app.state.research_rate_limiter = SlidingWindowRateLimiter(
         max_requests=RESEARCH_QUERY_RATE_LIMIT, window_seconds=RESEARCH_QUERY_RATE_WINDOW_SECONDS
     )
+
+    # Phase 4.2 -- the first real background scheduler in this codebase;
+    # see services/scheduler.py for the full reasoning. Same resilience
+    # posture as the embedder above: a scheduler that fails to start
+    # (e.g. Postgres briefly unreachable at this exact moment) must not
+    # take the whole API down with it -- every other endpoint is
+    # unaffected by the earnings calendar sync being unavailable.
+    try:
+        app.state.scheduler = build_scheduler()
+        app.state.scheduler.start()
+    except Exception:
+        log.warning("Scheduler failed to start; earnings calendar sync disabled", exc_info=True)
+        app.state.scheduler = None
+
     yield
+
+    if app.state.scheduler is not None:
+        app.state.scheduler.shutdown(wait=False)
 
 
 def create_app() -> FastAPI:
@@ -101,6 +120,7 @@ def create_app() -> FastAPI:
     app.include_router(health.router, prefix="/api/v1")
     app.include_router(companies.router, prefix="/api/v1")
     app.include_router(earnings.router, prefix="/api/v1")
+    app.include_router(earnings_calendar.router, prefix="/api/v1")
     app.include_router(options.router, prefix="/api/v1")
     app.include_router(research.router, prefix="/api/v1")
     app.include_router(evaluations.router, prefix="/api/v1")
