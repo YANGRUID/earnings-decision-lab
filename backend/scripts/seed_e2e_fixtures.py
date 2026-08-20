@@ -16,6 +16,8 @@ direct DB insert, matching the same pattern the backend pytest suite
 already uses for market-data fixtures (see tests/test_api.py).
 """
 
+import json
+import os
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 
@@ -205,6 +207,29 @@ def main() -> None:
             f"expirations=[{near_expiration}, {sweet_spot_expiration}, {far_expiration}], "
             f"{len(signed_moves)} historical events."
         )
+
+        # Every date above is computed relative to "today" (real, by
+        # design -- a fixture anchored to an absolute date would eventually
+        # land in the past and stop being a valid earnings/expiration
+        # scenario). Spec files must never hardcode the resulting absolute
+        # dates -- that only matches on the day someone happened to run
+        # this script and silently breaks every day after (confirmed live:
+        # this is exactly what broke options-decision-engine.spec.ts before
+        # this was added). Written only when a caller (global-setup.ts)
+        # asks for it via this env var, so running the script standalone
+        # for local DB seeding doesn't require a frontend checkout at all.
+        dates_path = os.environ.get("E2E_FIXTURE_DATES_PATH")
+        if dates_path:
+            with open(dates_path, "w") as f:
+                json.dump(
+                    {
+                        "earnings_date": earnings_date.isoformat(),
+                        "near_expiration": near_expiration.isoformat(),
+                        "sweet_spot_expiration": sweet_spot_expiration.isoformat(),
+                        "far_expiration": far_expiration.isoformat(),
+                    },
+                    f,
+                )
     finally:
         db.close()
 

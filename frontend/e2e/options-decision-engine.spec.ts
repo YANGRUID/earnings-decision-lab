@@ -1,4 +1,6 @@
+import { readFileSync } from "node:fs";
 import { test, expect } from "@playwright/test";
+import { fixtureDatesPath } from "./global-setup";
 
 /**
  * Options Decision Engine V3 Part L (mandatory) -- deterministic E2E
@@ -11,6 +13,16 @@ import { test, expect } from "@playwright/test";
 const TICKER = "ZZE2E1";
 const NO_DATA_TICKER = "ZZE2ENODATA";
 
+// Written fresh by seed_e2e_fixtures.py on every globalSetup run -- these
+// are computed relative to "today" (see that script), never hardcoded
+// here. Read once at module load, after globalSetup has already run.
+const fixtureDates: {
+  earnings_date: string;
+  near_expiration: string;
+  sweet_spot_expiration: string;
+  far_expiration: string;
+} = JSON.parse(readFileSync(fixtureDatesPath, "utf-8"));
+
 test.describe("Strategy Lab expiration selection", () => {
   test("Auto expiration renders a real, non-empty comparison", async ({ page }) => {
     await page.goto(`/company/${TICKER}`);
@@ -22,9 +34,15 @@ test.describe("Strategy Lab expiration selection", () => {
     // The sweet-spot (9 days after earnings) candidate must win over the
     // near (2 days) and far (23 days) alternatives -- proves Auto is
     // score-driven, not "always nearest" (see seed_e2e_fixtures.py).
-    await expect(page.getByText(/Auto selected: 2026-09-07/)).toBeVisible();
-    await expect(page.locator("table").filter({ hasText: "2026-08-31" })).toBeVisible();
-    await expect(page.locator("table").filter({ hasText: "2026-09-21" })).toBeVisible();
+    await expect(
+      page.getByText(new RegExp(`Auto selected: ${fixtureDates.sweet_spot_expiration}`))
+    ).toBeVisible();
+    await expect(
+      page.locator("table").filter({ hasText: fixtureDates.near_expiration })
+    ).toBeVisible();
+    await expect(
+      page.locator("table").filter({ hasText: fixtureDates.far_expiration })
+    ).toBeVisible();
 
     await expect(page.getByRole("heading", { name: /deterministic candidates/i }).or(
       page.getByText(/deterministic candidates/i)
@@ -37,12 +55,18 @@ test.describe("Strategy Lab expiration selection", () => {
     await expect(page.getByText(/Auto selected:/)).toBeVisible();
 
     // Strategies initially reflect the default resolver pick.
-    await expect(page.getByText(/expiration 2026-08-31/)).toBeVisible();
+    await expect(
+      page.getByText(new RegExp(`expiration ${fixtureDates.near_expiration}`))
+    ).toBeVisible();
 
     // Clicking a real alternative row switches to Manual and recomputes.
-    await page.locator("tr", { hasText: "2026-09-21" }).click();
-    await expect(page.getByText(/expiration 2026-09-21/)).toBeVisible({ timeout: 10_000 });
-    await expect(page.locator("table").filter({ hasText: "2026-09-21" }).getByText("Selected")).toBeVisible();
+    await page.locator("tr", { hasText: fixtureDates.far_expiration }).click();
+    await expect(
+      page.getByText(new RegExp(`expiration ${fixtureDates.far_expiration}`))
+    ).toBeVisible({ timeout: 10_000 });
+    await expect(
+      page.locator("table").filter({ hasText: fixtureDates.far_expiration }).getByText("Selected")
+    ).toBeVisible();
   });
 });
 

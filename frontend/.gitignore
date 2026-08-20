@@ -16,6 +16,7 @@ dist-ssr
 test-results/
 playwright-report/
 blob-report/
+e2e/.fixture-dates.json
 
 # Editor directories and files
 .vscode/*
