@@ -25,7 +25,13 @@ class Settings(BaseSettings):
     tiingo_api_key: str | None = None
     alpha_vantage_api_key: str | None = None
     options_data_api_key: str | None = None
-    earnings_calendar_api_key: str | None = None
+
+    # Phase 4 -- the single source of truth for the forward-looking, cross-
+    # symbol earnings calendar (see providers/finnhub.py). Deliberately
+    # separate from alpha_vantage_api_key: the existing per-ticker "next
+    # earnings date" flow (services/market_expectations.py) is untouched
+    # and keeps using Alpha Vantage.
+    finnhub_api_key: str | None = None
 
     # --- Options-chain provider (provider-agnostic — see providers/base.py
     # and providers/factory.py) ---

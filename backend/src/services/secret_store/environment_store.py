@@ -11,6 +11,13 @@ _ENV_ATTR: dict[str, str] = {
     "openai": "openai_api_key",
     "anthropic": "anthropic_api_key",
     "openai_compatible": "openai_compatible_api_key",
+    # Not yet in services.secret_store.resolver.CREDENTIAL_PROVIDERS -- no
+    # Settings-UI credential form exists for it yet (Phase 4 scope is the
+    # provider adapter itself, see providers/finnhub.py), so this is
+    # currently env-var-only. Registering it here still makes
+    # resolve_secret()'s DB-then-env precedence correct in advance, for
+    # whenever that form is added.
+    "finnhub": "finnhub_api_key",
 }
 
 

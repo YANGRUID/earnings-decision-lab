@@ -159,7 +159,6 @@ frontend states the reason implied-vs-realized is empty rather than hiding it.
 
 | Provider | Covers | Cost | Notes |
 |---|---|---|---|
-| Finnhub | earnings calendar, consensus estimates, basic options | Free tier available | Superseded by Alpha Vantage's EARNINGS_ESTIMATES/EARNINGS_CALENDAR (Phase 12), which are already live. |
 | Tradier | real-time-delayed options chains incl. Greeks | Free developer sandbox | Candidate `OptionsDataProvider` if Alpha Vantage's options endpoints stay out of reach; requires signup, not yet done. |
 | ORATS / CBOE DataShop | historical options chains incl. IV | Paid, priced per dataset | Only realistic source of genuinely *historical* (not just current-snapshot) options data; deferred until justified by cost. |
 | Twelve Data | daily OHLCV, some fundamentals | Free tier: 800 req/day | Viable third option for market data if Tiingo/Alpha Vantage both degrade; not currently needed. |
@@ -167,6 +166,18 @@ frontend states the reason implied-vs-realized is empty rather than hiding it.
 `FixtureEarningsDataProvider` / `FixtureOptionsDataProvider` (`backend/src/providers/fixtures.py`)
 remain test-only fixtures for exercising the interface shape — never wired into ingestion or
 the API.
+
+### Finnhub (Phase 4 — the forward-looking earnings calendar's single source of truth)
+
+Rejected above as redundant with Alpha Vantage through Phase 12, then reversed for one specific
+use case: the AI Benchmark Portfolio (see `ARCHITECTURE_REVIEW_PHASE4.md`) needs a real
+cross-symbol "who reports in this date range" calendar scan, which nothing in this codebase's
+existing per-ticker providers can answer. `providers/finnhub.py::FinnhubEarningsCalendarProvider`
+wraps `/calendar/earnings` (the calendar itself) and `/stock/profile2` (name/logo/market cap,
+used once a calendar entry passes the eligibility filter). Deliberately does not replace or
+touch Alpha Vantage anywhere — the existing per-ticker "next earnings date" flow
+(`services/market_expectations.py`) is untouched and keeps using
+`AlphaVantageEarningsEstimatesProvider`.
 
 ## Not used
 

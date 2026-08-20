@@ -200,3 +200,41 @@ class TranscriptDocument(ProvenancedModel):
     call_date: date
     speakers: list[str]
     text: str
+
+
+class FinnhubCalendarEntry(ProvenancedModel):
+    """One real, scheduled earnings event from Finnhub's cross-symbol
+    calendar (Phase 4) -- deliberately a different shape from
+    EarningsCalendarEntry/UpcomingEarningsCalendarEntry above: those are
+    both single-ticker-scoped (see providers/base.py::EarningsCalendarProvider
+    docstring on why this needed a new interface, not an existing one).
+    ``session`` is Finnhub's own raw value ("bmo" | "amc" | "dmh" | ""),
+    intentionally not yet mapped to this project's AnnouncementTime enum
+    here -- that mapping is the calendar-sync service's job (Phase 3/4),
+    keeping this provider layer a thin, honest mirror of what Finnhub
+    actually returned, never a place that silently guesses a session."""
+
+    symbol: str
+    earnings_date: date
+    session: str
+    fiscal_year: int | None = None
+    fiscal_quarter: int | None = None
+    eps_estimate: Decimal | None = None
+    revenue_estimate: Decimal | None = None
+
+
+class FinnhubCompanyProfile(ProvenancedModel):
+    """Real company reference data from Finnhub's profile endpoint --
+    calendar entries alone don't carry a company name or logo, only a
+    symbol (see providers/finnhub.py). ``market_cap`` is already in the
+    provider's own reported currency/unit (Finnhub returns
+    marketCapitalization in millions of the listing currency); converted
+    to a real dollar figure by the caller, never assumed here."""
+
+    symbol: str
+    name: str | None = None
+    logo_url: str | None = None
+    exchange: str | None = None
+    country: str | None = None
+    market_cap_millions: Decimal | None = None
+    currency: str | None = None

@@ -16,6 +16,7 @@ from providers.types import (
     EarningsCalendarEntry,
     EarningsEstimatePeriod,
     FilingMetadata,
+    FinnhubCalendarEntry,
     OHLCBar,
     OptionQuote,
     TranscriptDocument,
@@ -127,6 +128,26 @@ class EarningsEstimatesProvider(ABC):
         """The provider's own prediction of the next report date -- not
         SEC-confirmed. ``None`` if the provider has nothing upcoming.
         """
+
+
+class EarningsCalendarProvider(ABC):
+    """Cross-symbol, forward-looking earnings calendar (Phase 4) -- distinct
+    from EarningsDataProvider and EarningsEstimatesProvider above, both of
+    which are single-ticker-scoped ("this ticker's calendar" / "this
+    ticker's next date"). Nothing before Phase 4 ever needed to ask "who
+    reports in this date range, across the whole market" -- this is that
+    question's real interface, not a retrofit of either existing one.
+    """
+
+    @abstractmethod
+    def get_earnings_calendar(
+        self, from_date: date, to_date: date
+    ) -> list[FinnhubCalendarEntry]:
+        """Every real, currently-scheduled earnings event in
+        ``[from_date, to_date]``, inclusive, across every symbol the
+        provider covers -- never filtered to a known universe by this
+        method itself; eligibility (market cap, US-listed, tradable
+        options) is a separate, later concern (Phase 5)."""
 
 
 class FilingsProvider(ABC):
