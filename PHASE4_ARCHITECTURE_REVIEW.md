@@ -21,6 +21,15 @@ have actually been *built* since: a real Finnhub provider and a real BMO/AMC/DMH
 Where this document's conclusion matches the prior one, it says so briefly and cites it rather
 than re-deriving it. Where new code changes the picture, that's called out explicitly.
 
+**Addendum (2026-08-20):** §2.3 below originally recommended inline entry/exit columns on
+`decision_snapshot` over separate tables, for the reasons given there at the time. That
+recommendation was reviewed and explicitly overridden: this project is an AI-assisted decision
+engine whose core value is a trustworthy, inspectable research record, not a CRUD app optimizing
+for the fewest joins — immutable research history, point-in-time reproducibility, future ML
+evaluation, and hedge-fund-style auditability outrank query convenience. §2.3 has been rewritten
+in place to reflect the adopted design. Open question #1 in the summary below is marked
+**resolved**, not deleted, so the reversal itself stays part of this document's own audit trail.
+
 ---
 
 ## 1. Current decision lifecycle
@@ -110,53 +119,109 @@ created_at
 ```
 
 "Immutable" is enforced the same way `ai_decision_version` enforces append-only today: a
-convention (exactly two writer functions, each callable at most once per row), not a DB
-constraint. A Postgres `BEFORE UPDATE` trigger rejecting writes to the frozen generation columns
-is a reasonable stretch goal once the core is working, not a blocker for V1.
+convention, not a DB constraint. As of the §2.3 revision below, `decision_snapshot` has exactly
+**one** writer, `freeze_decision_snapshot()`, called once per row — entry and exit capture no
+longer write to this table at all. The only field that changes after generation is the `status`
+rollup (`PENDING_ENTRY → ENTERED → SETTLED`/`VOID`), an operational lifecycle field, not a
+research fact — mirroring how `ai_decision_version.status` is already mutated post-generation in
+V3 today without compromising that row's own generation-payload immutability. A Postgres
+`BEFORE UPDATE` trigger rejecting writes to the frozen generation columns remains a reasonable
+stretch goal once the core is working, not a blocker for V1.
 
-### 2.3 Option Entry Snapshot and Settlement Snapshot — evaluated, not adopted as separate tables
+### 2.3 Option Entry Snapshot and Settlement Snapshot — adopted as separate tables
 
-The brief asks to evaluate these as their own entities. Evaluated and **not recommended as
-standalone tables** — here's the reasoning, so it can be overruled explicitly rather than
-defaulted past:
-
-- Every field the brief lists for both (`bid/ask/mid/IV/Greeks/timestamp` at entry; underlying
-  reaction, theoretical P/L, breakeven result at exit) is 1:1 with exactly one `decision_snapshot`
-  row. A separate table just for these fields still needs a unique `decision_snapshot_id` FK and
-  is joined back 1:1 on every real read (list view, detail view, track-record aggregation) —
-  it adds a join for every query without buying independent identity for anything.
-- Splitting them works *against* the "two writer functions, each called once" immutability
-  convention from §2.2: three tables to freeze correctly instead of one is three places the
-  discipline can slip, not one.
-- This project already has a real per-contract quote table, `options_snapshot`, built for exactly
-  this shape of data. The recommended design (below) uses it for full audit-trail granularity
-  instead of inventing a parallel one.
-
-**Recommendation:** capture entry/exit as columns directly on `decision_snapshot`, and separately
-persist the *raw* quotes into the existing `options_snapshot` table (tagging a new
-`OptionsSnapshotPurpose.BENCHMARK_ENTRY` / `BENCHMARK_EXIT` value) when full per-contract audit
-beyond the summarized leg prices is wanted:
+**Decision reversed on 2026-08-20** (see the addendum at the top of this document). This section
+originally recommended inline entry/exit columns on `decision_snapshot`, on query-simplicity
+grounds. Overridden by explicit direction: this project prioritizes immutable research history,
+point-in-time reproducibility, future ML evaluation, and hedge-fund-style auditability over the
+fewest joins. `entry_snapshot` and `settlement_snapshot` are adopted as their own tables, each a
+child of `decision_snapshot`:
 
 ```
--- on decision_snapshot --
-entry_status (PENDING | CAPTURED | FAILED | SKIPPED), entry_timestamp,
-entry_underlying_price, entry_leg_prices (JSON: [{option_type, action, strike, bid, ask,
-  entry_price}], entry_price = ASK for a long leg, BID for a short leg), entry_capture_error,
-
-exit_status (PENDING | CAPTURED | FAILED | SKIPPED), exit_timestamp,
-exit_underlying_price, exit_leg_prices (same shape, exit_price = BID for a long leg, ASK for a
-  short leg), exit_capture_error,
-
-pnl, return_pct, r_multiple, is_win (nullable bool),
-capital_allocated, capital_utilized_pct
+decision_snapshot
+        |
+        +-- entry_snapshot      (0..N rows -- see "append-only attempts" below)
+        |
+        +-- settlement_snapshot (0..N rows -- see "append-only attempts" below)
 ```
 
-A `FAILED`/`SKIPPED` status here is a first-class, expected outcome, not an error path to hide —
-see §4's IBKR-reliability note. **Open question flagged for confirmation in §5 of the summary
-below:** if a future requirement needs *partial* exits (scaling out of a spread leg-by-leg) or
-*multiple* capture attempts per event, this inline design would need revisiting — V1's scope (one
-entry, one exit, per decision) doesn't need that, so this isn't blocking, but it's the one place
-where the "separate table" alternative would earn its complexity back.
+**`entry_snapshot`** — what the recommended trade would have actually cost, captured at the
+decision's real entry moment:
+
+```
+id (PK)
+decision_snapshot_id (FK -> decision_snapshot.id, indexed -- deliberately NOT unique, see below)
+attempt_number (int, default 1)
+status (CaptureStatus: PENDING | CAPTURED | FAILED | SKIPPED)
+captured_at (datetime, nullable)
+underlying_price (numeric, nullable)
+leg_quotes (JSON, nullable) -- one entry per leg:
+  {option_type, action, strike, bid, ask, mid, implied_volatility,
+   delta, gamma, theta, vega, entry_price}
+  entry_price = ASK for a long leg, BID for a short leg (the conservative rule, computed and
+  stored at capture time, never re-derived at read time)
+capture_error (str, nullable)
+source_provider (str, e.g. "ibkr")
+created_at (TimestampMixin)
+```
+
+**`settlement_snapshot`** — the real outcome once the market has had a session to react:
+
+```
+id (PK)
+decision_snapshot_id (FK -> decision_snapshot.id, indexed -- deliberately NOT unique)
+attempt_number (int, default 1)
+status (CaptureStatus: PENDING | CAPTURED | FAILED | SKIPPED)
+captured_at (datetime, nullable)
+
+-- underlying
+underlying_exit_price (numeric, nullable)
+earnings_reaction_pct (numeric, nullable)   -- the real next-day move
+realized_volatility (numeric, nullable)
+
+-- options
+leg_quotes (JSON, nullable)                 -- exit quotes, same per-leg shape as entry_snapshot,
+                                                exit_price = BID for a long leg, ASK for a short leg
+theoretical_pnl (numeric, nullable)
+return_pct (numeric, nullable)
+r_multiple (numeric, nullable)
+is_win (bool, nullable)
+max_gain (numeric, nullable)
+max_loss (numeric, nullable)
+breakeven_result (str, nullable)            -- e.g. "met" | "missed", against the frozen breakeven
+expiration_outcome (str, nullable)          -- e.g. "expired_otm" | "expired_itm" | "closed_early"
+capital_allocated (numeric, nullable)
+capital_utilized_pct (numeric, nullable)
+
+capture_error (str, nullable)
+source_provider (str, nullable)
+created_at (TimestampMixin)
+```
+
+Headline metrics (`theoretical_pnl`, `r_multiple`, `earnings_reaction_pct`, etc.) are real typed
+columns, not JSON — the explicit reason is the brief's own "future ML evaluation capability": a
+feature-extraction job querying "every settled decision's R-multiple, bucketed by DTE" should
+never have to parse JSON to do it. `leg_quotes` stays JSON because its shape is genuinely
+variable (strategy leg count varies), not because it's a place to avoid designing real columns.
+
+**Why `decision_snapshot_id` is indexed, not unique — append-only attempts, not overwritten
+rows.** A hard 1:1 unique constraint would force a retry after a transient IBKR failure to either
+UPDATE the existing (failed) row — silently destroying the record that an attempt failed and
+when — or leave a permanently un-retriable `FAILED` row with no path forward. Neither serves
+"immutable research history." Instead: every capture attempt, successful or not, is its own
+permanent row, numbered by `attempt_number`, never edited or deleted. The **operative** entry (or
+settlement) for a given `decision_snapshot_id` is the most recent row with `status=CAPTURED`; if
+none succeeded, the most recent row's `capture_error` is the honest, permanent record of why. This
+is a direct, necessary consequence of the auditability priority behind this decision, not a
+separate open question — it's implemented exactly this way starting in Phase 4.1.
+
+**Not built now, flagged for later:** a further-normalized `entry_leg_quote`/`settlement_leg_
+quote` table (one row per leg, not one JSON array per snapshot) is the natural next step in this
+direction if per-leg queryability independent of its parent snapshot is ever needed — V1's scale
+doesn't need it, and it wasn't part of what was asked for in this decision. The existing
+`options_snapshot` table remains available, unchanged, as a separate general-purpose per-contract
+quote store if a raw-provider-response audit trail beyond `leg_quotes` is ever wanted — not
+required by this design.
 
 ### 2.4 Benchmark Portfolio — small config table
 
@@ -320,10 +385,14 @@ drops that autogenerate produces around the raw-SQL pgvector/FTS indexes).
 4. `add_benchmark_portfolio_table` — §2.4, with the single seed row written as a data migration in
    the same revision (matching this project's existing precedent for singleton config rows, e.g.
    `app_provider_settings`).
-5. `add_decision_snapshot_table` — §2.2/§2.3, plus new `CaptureStatus` and `DecisionSnapshotStatus`
-   enums.
-6. (Optional, only if the entry/exit audit trail in §2.3 is wanted) `add_benchmark_options_
-   snapshot_purpose` — extend the existing `OptionsSnapshotPurpose` enum rather than a new table.
+5. `add_decision_snapshot_table` — §2.2 only now (generation payload + `status` rollup), plus the
+   new `DecisionSnapshotStatus` enum. Smaller than originally planned — entry/exit fields have
+   moved to their own tables and migrations below (§2.3, decision reversed 2026-08-20).
+6. `add_entry_snapshot_table` — §2.3, plus a new shared `CaptureStatus` enum. FK to
+   `decision_snapshot.id`, indexed, deliberately not unique (append-only capture attempts, see
+   §2.3's reasoning).
+7. `add_settlement_snapshot_table` — §2.3, reusing `CaptureStatus`. Same FK shape as
+   `entry_snapshot`.
 
 Each migration's `upgrade()`/`downgrade()` gets verified against the disposable test Postgres
 (`edl-test-db`, port 5434) before being considered done, matching this session's standing
@@ -356,7 +425,11 @@ GET /api/v1/benchmark-portfolio/calibration
 
 Matches the brief's two named examples (`GET /earnings/calendar`, `GET /decisions/history`)
 under the project's existing `/api/v1/{domain}` prefix convention, plus the read paths a working
-dashboard actually needs.
+dashboard actually needs. **Since §2.3's revision, `GET /benchmark-portfolio/decisions/{id}`
+composes three tables into one response** — the `decision_snapshot` row plus its operative
+`entry_snapshot` and `settlement_snapshot` rows (most recent `CAPTURED` row each, per §2.3's
+append-only-attempts rule) — rather than reading a single wide row. The response shape is
+unaffected from the frontend's perspective; only the read query changes.
 
 **No `POST /decisions/{id}/settle`-style mutation endpoint is proposed**, deliberately — the
 brief's own worked example includes one, but the phase goal's own constraints ("never modify
@@ -428,10 +501,16 @@ already passing in CI today.
   independent table-driven pure function, plus the integration case ("store the event, skip
   generation, persist the honest `eligibility_reason`").
 - Entry/exit capture: given a fixture options provider, assert ASK-for-long/BID-for-short at
-  entry, BID/ASK swapped at exit, and assert a provider failure produces `FAILED` +
-  `entry_capture_error` — never a fabricated price.
-- Settlement/P&L math: PnL, Return %, R-Multiple, Win/Loss, capital utilization — table-driven,
-  including a losing trade, a breakeven trade, and a capped-max-loss trade.
+  entry, BID/ASK swapped at exit, and assert a provider failure inserts a new `entry_snapshot`/
+  `settlement_snapshot` row with `status=FAILED` + `capture_error` — never a fabricated price, and
+  never an UPDATE of a prior failed row (§2.3's append-only-attempts rule).
+- Settlement/P&L math: `theoretical_pnl`, `return_pct`, `r_multiple`, win/loss, `max_gain`/
+  `max_loss`, `breakeven_result`, `expiration_outcome`, `earnings_reaction_pct`,
+  `realized_volatility`, capital utilization — table-driven, including a losing trade, a
+  breakeven trade, and a capped-max-loss trade.
+- "Operative row" selection: given a `decision_snapshot` with two `entry_snapshot` attempts (one
+  `FAILED`, one later `CAPTURED`), assert reads return the `CAPTURED` one, and assert the `FAILED`
+  row is still present and queryable, never deleted.
 - Track-record analytics: Win Rate, Average/Median R, Expectancy, Profit Factor, Max Drawdown —
   each cross-checked against an independently hand-computed fixture, the same practice already
   used for this project's Wilson-CI probability tests.
@@ -475,7 +554,9 @@ detail this document summarizes rather than repeats.
   yet even though the adapter itself is real and tested (§3).
 - No real option entry/exit price capture, therefore no real P&L, anywhere in the system today
   (§1, §2.3).
-- No DB-enforced immutability for any decision record — convention only (§1, §2.2).
+- No DB-enforced immutability for any decision record — convention only, now spanning three
+  tables (`decision_snapshot`, `entry_snapshot`, `settlement_snapshot`) instead of one (§1, §2.2,
+  §2.3).
 - No fixed-capital benchmark portfolio concept (§2.4).
 - Branch is 6 commits behind `main` (presentation/CI only, but should be rebased before real
   implementation work starts).
@@ -519,10 +600,12 @@ biggest single piece of new logic in this phase.)
 | 12. E2E | M | Extends an existing, working fixture pattern; six new scenarios. |
 
 ### 5. Questions requiring confirmation before coding
-1. **§2.3 — Option Entry/Settlement as inline columns vs. standalone tables.** This review
-   recommends inline columns on `decision_snapshot` plus reuse of `options_snapshot` for raw
-   audit. Confirm before migration 5 is written, since reversing this later means an actual
-   schema migration, not a design-doc edit.
+1. **[RESOLVED 2026-08-20] §2.3 — Option Entry/Settlement as inline columns vs. standalone
+   tables.** This review originally recommended inline columns on `decision_snapshot`. Overridden
+   by explicit direction: `entry_snapshot` and `settlement_snapshot` are adopted as separate,
+   append-only-attempt tables, prioritizing immutable research history and hedge-fund-style
+   auditability over query simplicity. See the addendum at the top of this document and the
+   revised §2.3 for the full reasoning and schema. Migrations 6–7 (§5) implement this.
 2. **§6 — no settlement mutation endpoint.** The brief's own worked example
    (`POST /decisions/{id}/settle`) implies one; this review recommends against exposing any write
    path on `decision_snapshot` from the API at all, settlement being scheduler-internal only.

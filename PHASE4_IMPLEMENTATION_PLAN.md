@@ -12,6 +12,12 @@ Branch: `feature/ai-earnings-forward-test`, rebased onto `main` at `20718ca` (se
 Five open questions from the architecture review are **not** re-litigated here; they're linked
 into the specific sub-phase each one blocks, so none can be silently skipped once coding starts.
 
+**Update (2026-08-20):** open question #1 (entry/settlement design) is now resolved — reversed
+from the architecture review's original inline-columns recommendation to separate
+`entry_snapshot`/`settlement_snapshot` tables, prioritizing immutable research history and
+hedge-fund-style auditability over query simplicity. This plan has been updated throughout to
+match; Phase 4.1, 4.3, 4.4, 4.5, and 4.6 below all reflect the three-table design.
+
 ---
 
 ## Phase 4.1 — Database foundation
@@ -29,11 +35,13 @@ drops, per this project's standing convention):
 - [ ] `add_earnings_calendar_event_table` — new table + new `CalendarEligibilityStatus` enum.
 - [ ] `add_benchmark_portfolio_table` — new table, seeded with one row ($2,000 / Moderate / Auto)
       as a data migration in the same revision.
-- [ ] `add_decision_snapshot_table` — new table + new `CaptureStatus` and `DecisionSnapshotStatus`
-      enums.
-- [ ] *(optional, only if per-contract audit trail beyond `entry_leg_prices`/`exit_leg_prices` is
-      wanted)* extend `OptionsSnapshotPurpose` with `BENCHMARK_ENTRY`/`BENCHMARK_EXIT` — no new
-      table.
+- [ ] `add_decision_snapshot_table` — new table + new `DecisionSnapshotStatus` enum. Generation
+      payload + `status` rollup only — no entry/exit fields (those live in the two migrations
+      below, per the reversed §2.3 decision).
+- [ ] `add_entry_snapshot_table` — new table + new shared `CaptureStatus` enum. FK to
+      `decision_snapshot.id`, indexed, deliberately **not** unique (append-only capture attempts).
+- [ ] `add_settlement_snapshot_table` — new table, reusing `CaptureStatus`. Same FK shape as
+      `entry_snapshot`.
 
 **Tables:**
 
@@ -43,8 +51,16 @@ drops, per this project's standing convention):
       eligibility_checked_at, source_provider, created_at, updated_at`.
 - [ ] `benchmark_portfolio` — `id, name, capital, risk_profile, expiration_mode, is_active,
       created_at`.
-- [ ] `decision_snapshot` — full column set per architecture review §2.2/§2.3 (generation payload
-      + entry/exit capture + P&L, all on one row).
+- [ ] `decision_snapshot` — generation payload + `status` rollup only, per architecture review
+      §2.2. One writer (`freeze_decision_snapshot()`), called once.
+- [ ] `entry_snapshot` — `id, decision_snapshot_id (FK, indexed, not unique), attempt_number,
+      status, captured_at, underlying_price, leg_quotes (JSON), capture_error, source_provider,
+      created_at`, per architecture review §2.3.
+- [ ] `settlement_snapshot` — `id, decision_snapshot_id (FK, indexed, not unique), attempt_number,
+      status, captured_at, underlying_exit_price, earnings_reaction_pct, realized_volatility,
+      leg_quotes (JSON), theoretical_pnl, return_pct, r_multiple, is_win, max_gain, max_loss,
+      breakeven_result, expiration_outcome, capital_allocated, capital_utilized_pct,
+      capture_error, source_provider, created_at`, per architecture review §2.3.
 
 **Indexes:**
 
@@ -54,6 +70,10 @@ drops, per this project's standing convention):
       every dashboard query filters by at least one of these).
 - [ ] `decision_snapshot.status` — the pending/settled dashboard split (Phase 4.6) filters on this
       directly; confirm it's indexed, not just enum-typed.
+- [ ] `entry_snapshot.decision_snapshot_id`, `settlement_snapshot.decision_snapshot_id` — both
+      indexed (not unique). The "find the operative row" read pattern (most recent `CAPTURED`,
+      else most recent overall) filters on this FK plus `status` on every request; confirm
+      `status` is indexed on both child tables too, not just the FK.
 
 **Constraints:**
 
@@ -65,6 +85,11 @@ drops, per this project's standing convention):
       `company_id`); **no** DB-level uniqueness on `(calendar_event_id, portfolio_id)` — "already
       frozen for this portfolio" is a service-layer check before generation (Phase 4.3), not a DB
       constraint, so a legitimate retry-after-crash isn't blocked by a hard uniqueness error.
+- [ ] `entry_snapshot`/`settlement_snapshot` — FK to `decision_snapshot.id` only, **deliberately no
+      unique constraint** on that FK (or on `(decision_snapshot_id, attempt_number)` as anything
+      stronger than an app-assigned sequence) — a retry after a transient IBKR failure inserts a
+      new row, it never updates or deletes the failed one. This is the concrete DB-level
+      expression of the reversed §2.3 decision: the audit trail is the point.
 
 **Done when:** all migrations apply and roll back cleanly against `edl-test-db` (port 5434,
 already running and at head as of this plan), `alembic upgrade head` and `alembic downgrade -1`
@@ -145,12 +170,17 @@ time, reusing `generate_decision()` completely unmodified.
 
 **Data-freezing rules:**
 
-- [ ] Exactly two writer functions touch a `decision_snapshot` row for its entire life:
-      `freeze_decision_snapshot()` (this phase) and `capture_exit_and_settle()` (Phase 4.5). Each
-      callable at most once per row — a service-layer convention, not yet a DB guarantee (matches
-      `ai_decision_version`'s existing append-only convention exactly).
-- [ ] No `PUT`/`PATCH` endpoint exists for `decision_snapshot`, ever (see Phase 4.6 — read-only API
-      surface).
+- [ ] `decision_snapshot` has exactly **one** writer for its entire life: `freeze_decision_
+      snapshot()` (this phase), called once per row. Entry and exit capture (Phase 4.4/4.5) never
+      write to this table at all — they insert their own rows into `entry_snapshot`/
+      `settlement_snapshot` instead (§2.3, reversed 2026-08-20). The only exception is the
+      `status` rollup field, updated by the same jobs as an operational lifecycle marker — not a
+      research fact, mirroring `ai_decision_version.status`'s existing precedent.
+- [ ] `entry_snapshot`/`settlement_snapshot` rows are themselves append-only: a writer inserts a
+      new row per capture attempt and never updates or deletes a prior one, including `FAILED`
+      rows (see Phase 4.1's constraints).
+- [ ] No `PUT`/`PATCH` endpoint exists for `decision_snapshot`, `entry_snapshot`, or
+      `settlement_snapshot`, ever (see Phase 4.6 — read-only API surface).
 - [ ] *(stretch goal, not blocking V1)* a Postgres `BEFORE UPDATE` trigger rejecting writes to the
       frozen generation columns — real hard guarantee instead of convention-only.
 
@@ -181,35 +211,43 @@ real moment the frozen decision says it should be entered.
 - [ ] Uses the existing IBKR options-chain provider (`providers/ibkr_client.py` or equivalent,
       whichever `OptionsDataProvider` is configured) — no new provider code, this phase is pure
       orchestration over what already exists.
+- [ ] Each attempt inserts a **new** `entry_snapshot` row (`attempt_number` incremented per
+      `decision_snapshot_id`) — never updates a prior row, including a prior `FAILED` one (§2.3's
+      append-only-attempts rule).
 - [ ] **Honest failure handling, not optional:** if the IBKR Gateway session isn't authenticated
       (a real, previously-observed, recurring failure mode — **open question #4 from the
-      architecture review must be confirmed**: is a visible `FAILED`/`SKIPPED` snapshot acceptable
-      for V1, with no retry/alerting?), the job sets `entry_status=FAILED`,
-      `entry_capture_error=<real message>`, and moves on to the next company — one failure never
-      aborts the whole day's run, mirroring `prepare_company_research`'s existing per-step
-      isolation.
+      architecture review must be confirmed**: is a visible `FAILED`/`SKIPPED` row acceptable for
+      V1, with no retry/alerting?), the job inserts an `entry_snapshot` row with `status=FAILED`,
+      `capture_error=<real message>`, and moves on to the next company — one failure never aborts
+      the whole day's run, mirroring `prepare_company_research`'s existing per-step isolation.
+- [ ] `decision_snapshot.status` advances to `ENTERED` only when the operative `entry_snapshot`
+      row (the most recent `CAPTURED` one) exists — a `FAILED`-only history leaves the parent row
+      at `PENDING_ENTRY`, visibly stalled, never silently advanced.
 
 **Bid/ask/mid capture:**
 
-- [ ] `entry_leg_prices` JSON per leg: `{option_type, action, strike, bid, ask, entry_price}`.
+- [ ] `entry_snapshot.leg_quotes` JSON per leg: `{option_type, action, strike, bid, ask, mid,
+      implied_volatility, entry_price}` (Greeks appended below).
+- [ ] `mid` computed and stored at capture time (`(bid + ask) / 2` where both exist), not derived
+      at read time — the brief's own field list names it explicitly, distinct from `entry_price`.
 - [ ] `entry_price` = **ASK** for a long leg, **BID** for a short leg — the conservative,
-      already-specified rule (never mid, never a favorable fill assumed).
-- [ ] `entry_underlying_price` captured alongside, same timestamp.
+      already-specified rule (never `mid`, never a favorable fill assumed, for the actual cost
+      basis; `mid` is retained as a separate, honest reference point, not used for P&L).
+- [ ] `entry_snapshot.underlying_price` captured alongside, same `captured_at` timestamp.
 
 **Greeks capture:**
 
 - [ ] `delta`/`gamma`/`theta`/`vega`, where the provider actually returns them (`OptionQuote`
-      already has all four fields, `providers/types.py`) — persisted per-leg in `entry_leg_prices`,
+      already has all four fields, `providers/types.py`) — persisted per-leg in `leg_quotes`,
       `None` where unavailable, never estimated or backfilled from a model.
-- [ ] *(if full per-contract audit is wanted beyond the summarized leg prices)* persist the raw
-      `OptionQuote` rows into the existing `options_snapshot` table, tagged
-      `OptionsSnapshotPurpose.BENCHMARK_ENTRY` (Phase 4.1's optional enum extension) — no new
-      table, reuses what already exists.
+- [ ] *(if full per-contract audit is wanted beyond `leg_quotes`)* the existing `options_snapshot`
+      table remains available, unchanged, as a separate general-purpose raw-quote store — not
+      required by this design, per the revised §2.3.
 
-**Done when:** a real entry capture at a real 15:55 ET produces real bid/ask/Greeks for every leg
-of the frozen strategy, a simulated IBKR-auth failure produces `FAILED` with a real error message
-and never a fabricated price, and the job's per-company isolation is verified (one bad company
-doesn't stop the rest).
+**Done when:** a real entry capture at a real 15:55 ET inserts one `entry_snapshot` row with real
+bid/ask/mid/IV/Greeks for every leg of the frozen strategy, a simulated IBKR-auth failure inserts
+a `FAILED` row with a real error message (never a fabricated price, never an overwrite of a prior
+row), and the job's per-company isolation is verified (one bad company doesn't stop the rest).
 
 ---
 
@@ -226,32 +264,44 @@ actually would have made or lost — the number this entire phase exists to prod
 - [ ] Real underlying reaction: reuse `PriceReaction`/`EarningsResult` exactly as
       `decision_settlement.py::find_settlement_event()` already does for `ai_decision_version` —
       same pattern, new caller, scoped to `earnings_calendar_event` instead of `EarningsEvent`.
+- [ ] `settlement_snapshot.earnings_reaction_pct` (the real next-day move) and
+      `realized_volatility`, both real typed columns per the reversed §2.3 decision — queryable
+      directly for future ML feature extraction, never buried in JSON.
 
 **Option P/L calculation:**
 
-- [ ] Exit-capture: same IBKR-integration shape as Phase 4.4, `exit_leg_prices` JSON,
+- [ ] Exit-capture inserts a **new** `settlement_snapshot` row per attempt (same append-only rule
+      as `entry_snapshot`, §2.3) — same IBKR-integration shape as Phase 4.4, `leg_quotes` JSON,
       `exit_price` = **BID** for a long leg, **ASK** for a short leg (swapped from entry — same
-      conservative-pricing principle, worked-out direction).
-- [ ] Real, deterministic PnL math (table-driven test cases required, not spot-checked): `pnl`,
-      `return_pct`, `r_multiple`, `is_win`, `capital_allocated`, `capital_utilized_pct` — computed
-      once, at settlement, only from real captured entry/exit prices. **Never computed from a
-      theoretical/model price when a real capture failed** — a `FAILED` entry or exit means the
-      whole `decision_snapshot` stays unsettled (`status` never reaches `SETTLED`), not settled
-      with a substituted estimate.
+      conservative-pricing principle, worked-out direction). `mid` stored alongside as a reference
+      point, same as entry.
+- [ ] Real, deterministic PnL math (table-driven test cases required, not spot-checked):
+      `theoretical_pnl`, `return_pct`, `r_multiple`, `is_win`, `max_gain`, `max_loss`,
+      `breakeven_result`, `expiration_outcome`, `capital_allocated`, `capital_utilized_pct` — all
+      real typed columns on `settlement_snapshot`, computed once, at settlement, only from real
+      captured entry/exit prices. **Never computed from a theoretical/model price when a real
+      capture failed** — a `FAILED` entry or exit means `decision_snapshot.status` never reaches
+      `SETTLED`, not settled with a substituted estimate.
+- [ ] `decision_snapshot.status` advances to `SETTLED` only when the operative `settlement_
+      snapshot` row (most recent `CAPTURED`) exists; a `FAILED`-only settlement history leaves the
+      parent at `ENTERED`, visibly stalled.
 
 **Realized vs. expected comparison:**
 
-- [ ] Compare the real settlement outcome against `estimated_probability`/`historical_
-      compatibility`, both frozen at generation time (Phase 4.3) — this is the literal mechanism
-      that finally gives this project's "True Strategy Win Rate" a non-zero N, for the first time
-      (the architecture review §3 noted this is system-wide N=0 today).
+- [ ] Compare the real settlement outcome (`settlement_snapshot`) against `estimated_probability`/
+      `historical_compatibility`, both frozen at generation time on `decision_snapshot` (Phase
+      4.3) — this is the literal mechanism that finally gives this project's "True Strategy Win
+      Rate" a non-zero N, for the first time (the architecture review §3 noted this is system-wide
+      N=0 today).
 - [ ] Feeds the probability-calibration dataset (predicted-bucket midpoint vs. realized rate) —
-      computed on read in Phase 4.6, not stored as a separate aggregate table.
+      computed on read in Phase 4.6, joining `decision_snapshot` + `settlement_snapshot`, not
+      stored as a separate aggregate table.
 
-**Done when:** a settled `decision_snapshot` row shows real PnL matching a hand-computed reference
-value (table-driven tests: a losing trade, a breakeven trade, a capped-max-loss trade), and
-`strategy_pnl_available`-equivalent honesty is preserved — no row is ever marked `SETTLED` with a
-fabricated or estimated price standing in for a real one.
+**Done when:** a settled `decision_snapshot` shows an operative `settlement_snapshot` row with
+real PnL matching a hand-computed reference value (table-driven tests: a losing trade, a
+breakeven trade, a capped-max-loss trade), and no row is ever marked `SETTLED` with a fabricated
+or estimated price standing in for a real one. A `FAILED` settlement attempt remains permanently
+queryable, never deleted or overwritten by a later successful retry.
 
 ---
 
@@ -262,17 +312,21 @@ settled alike, including the honest failures.
 
 **Pending decisions:**
 
-- [ ] `GET /api/v1/benchmark-portfolio/decisions?status=PENDING_ENTRY,ENTERED` — list view, real
-      entry/exit status per row, `FAILED`/`SKIPPED` shown as a real, visible outcome, never hidden
-      or silently filtered out.
+- [ ] `GET /api/v1/benchmark-portfolio/decisions?status=PENDING_ENTRY,ENTERED` — list view, joins
+      each `decision_snapshot` to its operative `entry_snapshot` row (most recent `CAPTURED`, else
+      most recent overall), `FAILED`/`SKIPPED` shown as a real, visible outcome, never hidden or
+      silently filtered out.
 - [ ] Detail view: read-only, reuses `DecisionTab.tsx`'s `StrategyDecisionCard`/`ProbabilityCard`
       (no risk-profile selector, no Generate button — frozen means frozen) plus
       `StrategyLabTab.tsx`'s `ExpirationSelector` table for the recommended-vs-alternatives view.
+      Composes all three tables (`decision_snapshot` + operative `entry_snapshot` +
+      `settlement_snapshot`) into one response, per architecture review §6.
 
 **Settled decisions:**
 
 - [ ] `GET /api/v1/benchmark-portfolio/decisions?status=SETTLED` — same list, same detail view,
-      plus the realized PnL/R-multiple/win-loss fields once populated.
+      plus the realized `theoretical_pnl`/`r_multiple`/`is_win` fields from the operative
+      `settlement_snapshot` row once populated.
 
 **Performance metrics:**
 
@@ -295,7 +349,9 @@ worked example proposed a `POST /decisions/{id}/settle` endpoint and this plan c
 
 **Done when:** the dashboard shows real pending and settled decisions with no fabricated numbers
 anywhere, a `FAILED`/`SKIPPED` capture is visibly distinguishable from a real settled outcome, and
-every metric on the page is independently reproducible from the raw `decision_snapshot` rows.
+every metric on the page is independently reproducible from the raw `decision_snapshot` +
+`entry_snapshot` + `settlement_snapshot` rows — including every non-operative (superseded/failed)
+attempt still being visible in the audit trail, not just the row the dashboard chose to display.
 
 ---
 
