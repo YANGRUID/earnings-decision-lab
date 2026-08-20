@@ -1,174 +1,231 @@
 # Earnings Decision Lab
 
-**An on-demand earnings research and AI-assisted options decision system.** Search a stock, and
-the system prepares its earnings history, filings, expectations, price data, and option-chain
-data; synthesizes a grounded AI Earnings Thesis; classifies a direction/volatility view; and
-deterministically ranks real option strategies against that view — with every decision persisted
-as a point-in-time record and, once real outcomes exist, honestly evaluated.
+**v3.0.0 — AI Earnings Decision Platform.** Search a stock, and the system prepares its earnings
+history, filings, expectations, price data, and option-chain data; synthesizes a grounded AI
+Earnings Thesis; classifies a direction/volatility view; and deterministically ranks real option
+strategies against that view using a full options-decision engine — real expiration selection
+across multiple scored candidates, a per-decision risk profile, honest probability/reliability
+metrics, and a numeric explanation for every recommendation — with every decision persisted as a
+point-in-time record and, once real outcomes exist, honestly evaluated.
 
 > **Not investment advice.** A personal research tool, not a trading system. See
 > [Disclaimer](#disclaimer).
 
-## Why this exists
+## Product Overview
 
-Before an earnings release, I want to know: what happened last time, how did the stock react,
-what is the market currently pricing in, and what has management actually said in its own
-filings — not a summary someone else wrote, but the real text, cited. Then I want that evidence
-turned into an actual, explainable view — not just data — and I want to remember what I decided
-and how it turned out, without re-deriving it from scratch every time. This system does the
-mechanical parts (fetching, storing, computing) deterministically in Python, uses an LLM only for
-the parts that genuinely need language understanding, and never lets either one quietly forget or
-overwrite what it produced.
+Earnings Decision Lab is an AI earnings analyst you can actually audit. Before an earnings
+release, it answers: what happened last time, how did the stock react, what is the market
+currently pricing in, and what has management actually said in its own filings — the real text,
+cited, not a summary someone else wrote. That evidence becomes an explainable directional/
+volatility view, which the **Options Decision Engine V3** turns into a real, scored, ranked
+options recommendation: which expiration, which strategy, how risky, how it compares to the
+runner-up — every number traceable back to real market data, never invented by the LLM. Nothing
+the system produces is silently rewritten later; a new generation is always a new, point-in-time
+version, and once real outcomes exist they're evaluated honestly, including when the honest
+answer is "not enough data yet."
+
+## Major Features
+
+### Options Decision Engine V3
+
+The core of this release: a deterministic pipeline that goes from a real option chain to a
+scored, explained recommendation, with every intermediate decision — which expiration, how much
+risk, how likely, why — shown explicitly rather than buried in a black box.
+
+#### Expiration Engine
+
+Real, listed expirations are discovered live from the options provider and scored on six
+components (Event Fit, Liquidity, Quote Coverage, Bid/Ask Quality, DTE Suitability, Data
+Quality) — never a single hard-coded "nearest expiration" pick. **Auto** mode selects the
+highest-scoring real candidate; **Manual** mode lets the user pick any real listed expiration
+directly, and every contract, strike, premium, and strategy candidate downstream is recomputed
+from exactly that date. Alternatives are never hidden — the full comparison is always shown, so
+"why this expiration and not the others" has a real, inspectable answer.
+
+Real, live AVGO example (screenshot below):
+
+| Expiration | DTE | Contracts priceable | Score |
+|---|---|---|---|
+| Sep 4  | 2  | 14/22 | 67  |
+| **Sep 11** | **9**  | **10/10** | **90** — selected |
+| Sep 25 | 23 | 10/10 | 83  |
+
+Auto picked Sep 11 over the nearer Sep 4 expiration — a shorter DTE is not automatically better;
+Sep 4's lower bid/ask coverage and worse DTE-suitability score outweighed its proximity to the
+earnings date.
+
+![Strategy Lab expiration ranking](docs/images/strategy_lab_expiration_ranking.png)
+
+#### Risk Profile Engine
+
+Risk profile is selected **per decision**, not a single global setting, and genuinely changes
+what gets recommended — not just a cosmetic label:
+
+- **Conservative** — defined-risk structures only, requires ≥80% real bid/ask coverage on the
+  chain, lower default risk-budget utilization (~15%).
+- **Moderate** — defined-risk spreads, iron condors, and butterflies allowed, requires ≥40%
+  bid/ask coverage, moderate default utilization (~30%).
+- **Aggressive** — may allow single-leg long calls/puts and closer-to-the-money strikes, no
+  minimum liquidity gate, higher default utilization (~50%) — uncovered/naked short options are
+  never a default recommendation at any profile.
+
+The same ticker, snapshot, and budget can produce a genuinely different recommended category and
+position size across the three profiles — confirmed live: the identical AVGO snapshot produced a
+defined-risk spread at Conservative/Moderate (differing only in size) and switched to a
+single-leg long option at Aggressive.
+
+![Risk profile selection](docs/images/risk_profile_selection.png)
+
+#### Probability Engine
+
+"How likely is this to work" is deliberately never collapsed into one number:
+
+- **Historical Compatibility** — how often the company's own real past earnings-day moves would
+  have satisfied this exact strategy's breakeven condition, with its real sample size shown
+  (e.g. "100.0% (25/25 events)") — never a bare percentage.
+- **Estimated Probability** — the same empirical basis, explicitly labeled by method, with a
+  **Wilson 95% confidence interval** and a `Low sample confidence` flag whenever N is below 20 —
+  no fake precision on a small sample.
+- **True Strategy Win Rate** — the strictest metric (real settled option entry/exit P&L) — shown
+  as honestly `Unavailable (No settled historical option trades yet)` until this project actually
+  captures that data, rather than substituted with one of the other two.
+- **Calibration foundation** — confidence-bucketed realized accuracy already exists in the Track
+  Record (below); the same real settled-decision data is the basis a full probability-calibration
+  view builds on as more decisions settle.
+
+The Model Strategy Score (0–100) is shown right alongside these and is explicitly labeled a
+deterministic **fit** score, never a probability of profit — the UI never lets the two be
+confused for each other.
+
+#### Strategy Ranking V2
+
+Every candidate is scored on 9 components, summing to 100:
+
+| Component | Weight |
+|---|---|
+| Direction Fit | 15 |
+| Volatility Fit | 11 |
+| Expiration Fit | 10 |
+| Breakeven Fit | 12 |
+| Historical Fit | 12 |
+| Risk/Reward | 12 |
+| Risk Profile Fit | 8 |
+| Liquidity | 10 |
+| Data Quality | 10 |
+
+Liquidity scoring distinguishes a chain with real, live bid/ask from one reconstructed from
+historical last-price data — a last-price-only chain is explicitly labeled and never scores full
+execution confidence; real bid/ask is labeled "Estimated Entry at Mid," reconstructed pricing is
+labeled "Historical Last Reference" — the two are never presented as equivalent.
+
+#### Explanation Engine
+
+Every recommendation carries four distinct, numeric explanation sections — never generic,
+duplicated prose:
+
+- **Why This Strategy** — view, breakeven distance, implied move, historical compatibility, real
+  capped risk.
+- **Why This Expiration** — real DTE relative to the earnings date and this project's DTE
+  reference window.
+- **Why These Strikes** — real strike distance from the underlying, resulting breakeven distance.
+- **Why Not Alternative** — a direct, numeric comparison against the #2 candidate: premium cost
+  ratio, max loss difference, which score component drove the gap, and the real historical
+  compatibility difference between the two.
+
+![AI Decision recommendation](docs/images/ai_decision_recommendation.png)
+![Probability and explanation detail](docs/images/probability_explanation.png)
 
 ## How it works
 
 1. **Search a ticker.** Symbol resolution against a real reference dataset; no hard-coded list.
 2. **Prepare or refresh research.** Earnings history, filings, price data, analyst estimates, and
-   options data are ingested on demand, with real, persistent progress — a job that finishes with
-   a warning still leaves a usable workspace, and existing data stays visible while a refresh runs.
+   options data are ingested on demand, with real, persistent progress.
 3. **Review the upcoming earnings event** — consensus expectations, implied move, ATM IV, and the
-   real options-market state (a chain can exist without enough priceable quotes to compute a move,
-   and that's shown explicitly, not collapsed into "no data").
-4. **Read the grounded AI Earnings Thesis** — a cited synthesis of filings, historical pattern, and
-   guidance trend, persisted so it survives navigation, a browser refresh, or a backend restart.
-5. **Generate an AI Decision** — a direction (strong bullish → strong bearish) and volatility view
-   (long/neutral/short vol), classified by the LLM from that same real evidence, with a confidence
-   score built entirely from real signals (evidence coverage, consensus agreement, historical
-   consistency, data freshness, options completeness) — never the model's own self-rating.
-6. **Compare ranked option strategies** built deterministically from the real chain against that
-   view — legs, debit/credit, max profit, max loss, breakeven, and a six-component Model Strategy
-   Score, with a recommended candidate plus alternatives.
-7. **See why each strategy was suggested** — a "Why this strategy" / "Main risks" breakdown built
-   entirely from real numbers already shown elsewhere, never invented by the LLM.
-8. **Mark a Final Decision** once you're satisfied — later research creates new, separate versions;
-   nothing is silently rewritten, and the Final Decision is the record used for later evaluation.
-9. **After earnings, settle the outcome** where real data supports it — did the stock move in the
-   predicted direction, did it cross the recommended structure's breakeven — without ever
-   fabricating an options P&L the system doesn't actually have the data to compute.
-10. **Track decision reliability over time** — directional accuracy, breakeven success, and (only
-    when real point-in-time option pricing exists) strategy win rate, each with its own sample size.
+   real options-market state, shown with an explicit data-quality state rather than collapsed
+   into a generic "no data."
+4. **Read the grounded AI Earnings Thesis** — a cited synthesis of filings, historical pattern,
+   and guidance trend, persisted so it survives navigation, a browser refresh, or a backend
+   restart.
+5. **Choose a risk profile and expiration mode**, then **generate an AI Decision** — a direction
+   and volatility view classified from real evidence, run through the full Options Decision
+   Engine V3 pipeline above.
+6. **Compare the recommendation against real alternatives** — legs, debit/credit, max profit/
+   loss, breakeven, the 9-component score, probability/reliability, and the numeric "why not #2"
+   comparison.
+7. **Mark a Final Decision** once you're satisfied — later research creates new, separate
+   versions; nothing is silently rewritten, and the Final Decision is the record used for later
+   evaluation.
+8. **After earnings, settle the outcome** where real data supports it — directional accuracy,
+   breakeven success — without ever fabricating an options P&L the system doesn't actually have
+   the data to compute.
+9. **Track decision reliability over time** — directional accuracy, breakeven success, confidence
+   calibration, and (only once real point-in-time option pricing exists) strategy win rate, each
+   with its own real sample size.
+
+![Track Record](docs/images/track_record.png)
 
 ## Current capabilities
 
 **On-demand research**
 - Search any supported US-listed ticker; symbol resolution against a real reference dataset
-- On-demand ingestion — a ticker's earnings history, filings, price data, and options data are
-  fetched and stored only once that ticker is actually requested
-- Freshness-aware refresh — re-running research only re-fetches what's stale, not everything
-- Real, persistent preparation status per run (`completed`, `completed_with_warnings`, `failed`),
-  with a per-step result (done/failed/skipped, and whether the failure is worth retrying) that
-  stays visible after the job finishes instead of disappearing the moment it does
-- **Retry Missing Data** — re-attempts only the steps that actually failed or are stale, not a
-  full re-fetch, and is hidden when the underlying failure (e.g. a provider's daily quota) won't
-  be fixed by retrying right now
-- Existing, previously-fetched data stays on screen during a refresh — a failed refresh shows
-  "displaying last successful data," it never blanks the workspace
+- On-demand ingestion, freshness-aware refresh, real persistent per-step preparation status
+- **Retry Missing Data** — re-attempts only what actually failed or is stale
+- Existing data stays on screen during a refresh — a failed refresh never blanks the workspace
 
 **Data Provider Control Center** (Settings → Data Providers / AI Provider / IBKR / System Status)
-- Per-domain provider configuration — price history, earnings estimates, filings, options, and the
-  LLM each show their real configured provider, with primary/fallback selection where more than
-  one real adapter exists (price history and options)
-- Provider health and a real **Test Connection** check per provider, with results recorded and
-  shown with a timestamp
-- Masked credential status only — a configured API key is shown as present/masked, never returned
-  to the frontend in full
-- Requested-provider / actual-provider / fallback-reason provenance is retained, so a page that
-  fell back to a secondary provider says so rather than presenting it as the primary
-- A strategy risk preference (see AI Options Decision Engine below), configurable from
-  Settings → AI Provider
+- Per-domain provider configuration with primary/fallback selection, real health/Test Connection
+  checks, masked credential status only, requested/actual/fallback-reason provenance
 
 **Earnings**
-- Real historical earnings events — EPS, report date, next-day and five-day price reaction —
-  sourced from SEC EDGAR and Tiingo/Alpha Vantage
-- The next, unreported earnings event tracked separately from historical events, so expectation
-  and outcome are never mixed
-- Analyst consensus (EPS/revenue estimates, analyst count, revision trend) for the next report
-- Historical move statistics (average, median, largest move) computed from a company's own
-  reported history
+- Real historical earnings events (EPS, report date, next-day/five-day price reaction) from SEC
+  EDGAR and Tiingo/Alpha Vantage; the next unreported event tracked separately from history;
+  analyst consensus and historical move statistics
 
-**Options & Strategy Lab**
-- Real option-chain ingestion through the user's own Interactive Brokers account, with an
-  Alpha Vantage adapter where the endpoint and plan entitlement allow it
-- A canonical options-market state computed once and shared by every page that shows it: whether a
-  chain exists at all, how many contracts are priceable (real bid/ask), whether IV/Greeks are
-  available, and whether an implied move can actually be computed from them — a chain existing and
-  a chain having enough priceable quotes are shown as genuinely different states, never collapsed
-  into one generic "no data"
-- Implied move and ATM IV computed from the real chain via an ATM-straddle method, only when the
-  chain actually supports it
-- Deterministic strategy-candidate generation across common categories (long call/put, spreads,
-  straddle, strangle, iron condor) from real strikes and premiums — legs, net debit/credit, max
-  profit, max loss, and breakeven are plain, unit-tested Python, never an LLM estimate
-- Every candidate shows a **Model Strategy Score** and its component breakdown — explicitly
-  labeled as a deterministic fit score, **not a probability of profit**
-- A historical move compatibility check per candidate against the company's own real past
-  earnings-day moves — see [Limitations](#limitations) for why this is not a backtest
-- Advanced: a manual payoff calculator for arbitrary strikes/premiums, as a fallback outside the
-  generated candidates
+**Strategy Lab** (market-focused, real chain, no budget/sizing)
+- A canonical options-market state shared by every page that shows it — chain existence, priceable
+  contract count, IV/Greeks availability, and implied-move computability are genuinely distinct
+  states, never collapsed into one generic "no data"
+- The full Expiration Engine comparison (above), deterministic strategy-candidate generation
+  (long call/put, spreads, straddle, strangle, iron condor, butterflies), and a historical move
+  compatibility check per candidate
+- Advanced: a manual payoff calculator for arbitrary strikes/premiums
 
-**AI Options Decision Engine**
-- Classifies a direction (strong bullish → strong bearish) and volatility view (long/neutral/short
-  vol) from the same real evidence the Earnings Thesis uses, then deterministically ranks real
-  strategy candidates against that view
-- A confidence score (0–100) built entirely from real, already-known signals — never the LLM's own
-  self-reported certainty
-- Every ranked candidate carries a "Why this strategy" / "Main risks" explanation built from real,
-  already-computed numbers (breakeven distance, implied move, historical compatibility, capped
-  risk) — the LLM explains, it never computes
-- A strategy risk preference (Defined Risk Only by default, or Allow Single-Leg Long Options) caps
-  which categories can be surfaced; uncovered/naked short options are not generated by this
-  version of the product — see [Limitations](#limitations)
-- An owner can override the AI's direction/volatility view manually; everything downstream
-  (ranking, scoring, reasoning) stays fully deterministic either way
+**AI Decision** (budget-aware, the full Options Decision Engine V3 pipeline)
+- Direction/volatility classification from real evidence, risk-profile-aware strategy generation
+  and sizing, the 9-component Strategy Ranking V2 score, the Probability Engine, and the
+  Explanation Engine — all described above
+- An owner can override the AI's direction/volatility view manually; everything downstream stays
+  fully deterministic either way
 
-**Persistent AI Research**
-- Every AI Research answer is persisted to PostgreSQL, not held only in frontend state — it
-  survives navigating away, a browser refresh, and a backend or full Docker restart
-- Recent research history, filterable by ticker, with citations and tool-trace provenance stored
-  alongside the answer
-- Selecting a past answer restores exactly what was generated, without re-running the LLM;
-  answers can be individually deleted
-
-**Persistent AI Earnings Thesis**
-- Each generation is saved as a new, append-only version — a new thesis never overwrites an
-  older one
-- Every version records which analyst-estimate and options-volatility snapshot it was actually
-  grounded in, so a stored thesis can be checked against *current* data and flagged as stale
-  without ever silently pretending it used data that didn't exist yet at generation time
-- Past versions reopen exactly as generated, never regenerated on selection
+**Persistent AI Research & AI Earnings Thesis**
+- Every AI Research answer and every Earnings Thesis generation is persisted as a new,
+  append-only version in PostgreSQL — survives navigation, refresh, and restart; never silently
+  overwritten or regenerated on selection
 
 **Decision Journal**
-- Every AI Decision generation is stored as a new, point-in-time version — later research never
-  rewrites an earlier decision
-- **Mark as Final Decision** designates the one record used for later, real evaluation; generating
-  further versions afterward does not disturb it
-- Each record keeps the real snapshot ids (analyst estimate, options volatility) and the exact
-  strategy legs it was built from, for later, honest settlement
+- Every AI Decision generation is a new, point-in-time version; **Mark as Final Decision**
+  designates the record used for later, real evaluation
+- Each record keeps the real snapshot ids and exact strategy legs it was built from, for later,
+  honest settlement
 
 **Track Record & reliability**
-- Once real post-earnings price data exists, a decision can be settled: did the stock move in the
-  predicted direction (**Directional Accuracy**), did it cross the recommended structure's
-  breakeven (**Breakeven Success**) — kept as two explicitly distinct metrics
-- **Strategy Win Rate** is shown only when real, point-in-time option entry/exit prices actually
-  exist for that decision — this project does not fabricate an options P&L it can't compute
-- Every reported rate carries its real sample size (e.g. "10 / 14 decisions"), never a bare
-  percentage; confidence-calibration buckets show whether higher stated confidence has actually
-  correlated with higher realized accuracy so far
-- The live track record only ever contains decisions the system actually recorded before the
-  event they're about — see [No-lookahead principle](#no-lookahead-principle)
+- Directional Accuracy and Breakeven Success as two explicitly distinct, real-sample-size metrics
+- Strategy Win Rate shown only once real, point-in-time option entry/exit prices actually exist —
+  never fabricated
+- Confidence-calibration buckets; the live track record only ever contains decisions the system
+  recorded before the event they're about — see [No-lookahead principle](#no-lookahead-principle)
 
 **Portfolio**
-- Real, read-only positions from the user's own Interactive Brokers account, matched to the
-  researched ticker
-- Never a market-quote source; never places, modifies, or cancels an order
+- Real, read-only positions from the user's own Interactive Brokers account; never a market-quote
+  source, never places, modifies, or cancels an order
 
 **System**
 - Python 3.12 / FastAPI / SQLAlchemy 2.0 / Alembic / PostgreSQL + pgvector
 - React 18 + TypeScript / Vite frontend
 - Docker Compose for the full stack; GitHub Actions CI (frontend, backend, and Docker
   build-and-boot jobs) on every push
-- Provider abstraction for market data, filings, options, and the LLM, so a provider can be
-  swapped — by the owner, at runtime, from Settings — without touching calling code
+- Provider abstraction for market data, filings, options, and the LLM — swappable by the owner at
+  runtime from Settings, without touching calling code
 
 ## Data-state UX
 
@@ -181,21 +238,22 @@ with a live one.
 
 ## Supported tickers and data
 
-The system was originally exercised against a handful of tickers (NVDA, AMD, MU, SNDK) while it
-was being built, but that was never a hard-coded limit — search prepares research for any
-supported US-listed ticker on demand, and detailed data (earnings history, filings, price bars,
-options snapshots) is ingested and persisted only once a ticker is actually requested, rather than
-preloading thousands of companies nobody has asked about. Provider coverage (SEC EDGAR, Tiingo,
-Alpha Vantage, IBKR) can vary by ticker: a newly requested company may come back with partial
-data, or a preparation run may complete with warnings, if a provider has limited or no data for it.
+Search prepares research for any supported US-listed ticker on demand — detailed data (earnings
+history, filings, price bars, options snapshots) is ingested and persisted only once a ticker is
+actually requested, rather than preloading thousands of companies nobody has asked about.
+Provider coverage (SEC EDGAR, Tiingo, Alpha Vantage, IBKR) can vary by ticker: a newly requested
+company may come back with partial data, or a preparation run may complete with warnings, if a
+provider has limited or no data for it.
 
-As of the most recent local run (the live `GET /api/v1/system-status` endpoint): 8 companies
-researched, 308 earnings events, 43,270 daily price bars, 223 SEC filings, 4,170 searchable
-filing chunks. These are live counts for one local deployment, not a fixed catalog — they change
-every time a ticker is researched, so treat them as an example snapshot rather than a permanent
-number.
+As of the most recent local run (the live `GET /api/v1/system-status` endpoint): 9 companies
+researched, 359 earnings events, 48,208 daily price bars, 237 SEC filings, 4,641 searchable
+filing chunks. These are live counts for one local deployment, not a fixed catalog — treat them
+as an example snapshot rather than a permanent number.
 
 ## Screenshots
+
+**Options Decision Engine V3** screenshots are inline in the [Major Features](#major-features)
+section above (real, live AVGO data). General product screens:
 
 | | |
 |---|---|
@@ -210,10 +268,12 @@ Additional screens: [Company Overview](docs/screenshots/company_overview.png) ·
 [System Status](docs/screenshots/system_status.png) (live data coverage and freshness) ·
 [Cross-Company Replay](docs/screenshots/cross_company_replay.png).
 
-These screenshots are captured automatically — fixed viewport, real already-rendered page content,
-no manual cropping — by `npm run screenshots` (`frontend/scripts/capture_screenshots.ts`, driven by
-Playwright) against a locally running dev stack with at least one company already researched. Run
-it again after a UI change to regenerate every image in this section in one pass.
+General screens are captured by `npm run screenshots`
+(`frontend/scripts/capture_screenshots.ts`); the V3-specific screenshots above by
+`npm run screenshots:v3` (`frontend/scripts/capture_v3_screenshots.ts`) — both fixed-viewport,
+real already-rendered page content, no manual cropping, driven by Playwright against a locally
+running dev stack with at least one company already researched and at least one AI Decision
+generated.
 
 ## Architecture
 
@@ -230,8 +290,8 @@ User
   -> Providers (SEC EDGAR, Tiingo, Alpha Vantage, IBKR)
   -> PostgreSQL + pgvector
   -> Deterministic analytics (earnings, options, strategy candidates/scoring, historical moves)
-  -> AI Earnings Thesis / AI Options Decision Engine (RAG + tool orchestration)
-  -> Strategy ranking
+  -> AI Earnings Thesis (RAG + tool orchestration)
+  -> Options Decision Engine V3 (Expiration Engine, Risk Profile, Probability, Ranking V2, Explanation)
   -> Decision Journal (point-in-time versions, Final Decision)
   -> Post-earnings settlement / Track Record
   -> React research workspace
@@ -251,24 +311,23 @@ account via the official, locally-run **Client Portal Gateway** — read-only, n
 modification, or cancellation anywhere in the integration. The Gateway is deliberately
 **local-first**: it runs and is authenticated on the user's own machine, and this project never
 sees an IBKR username, password, or 2FA code; the Gateway session can also expire and require
-local re-authentication. Cloud/Azure synchronization for IBKR data has not been implemented — if
-this system is ever deployed off a local machine, the Gateway either keeps running locally and
-forwards already-collected snapshots, or a different, officially supported IBKR cloud
-authentication model would need to be adopted first. That decision is explicitly deferred, not
-solved by what exists today. Full architecture and real, live-captured request/response examples
-in [docs/ibkr_integration.md](docs/ibkr_integration.md).
+local re-authentication — the Expiration Engine's live comparison and any manual-expiration
+selection depend on it being authenticated, and degrade to an explicit, honest unavailable state
+(never a fabricated one) when it isn't. Cloud/Azure synchronization for IBKR data has not been
+implemented. Full architecture and real, live-captured request/response examples in
+[docs/ibkr_integration.md](docs/ibkr_integration.md).
 
 ## Deterministic analytics vs. AI
 
 A core design principle of this system: **all financial arithmetic is deterministic Python, never
 an LLM guess.** Breakeven, max profit/loss, net premium, implied move, ATM IV, historical move
-statistics, strategy scores, and settlement metrics are all computed by plain code with unit
-tests. The AI Options Decision Engine follows the same split explicitly:
+statistics, expiration/strategy/risk-profile scores, probability/confidence-interval math, and
+settlement metrics are all computed by plain code with unit tests.
 
 | | LLM | Deterministic Python |
 |---|---|---|
-| Does | Interprets filing text, synthesizes evidence, classifies direction/volatility, writes the explanation | Payoff math, breakeven, max profit/loss, score components, historical move comparisons, settlement metrics |
-| Never does | Compute a number, invent a strike or premium | Judge qualitative evidence or write prose |
+| Does | Interprets filing text, synthesizes evidence, classifies direction/volatility, writes the explanation prose | Payoff math, breakeven, expiration/strategy/risk-profile scoring, probability/Wilson-CI math, historical move comparisons, settlement metrics |
+| Never does | Compute a number, invent a strike, premium, expiration, or probability | Judge qualitative evidence or write prose |
 
 Every AI-generated answer is grounded in data computed or retrieved by the deterministic layer,
 cited back to its source, and never the source of a number that appears elsewhere in the app.
@@ -277,7 +336,7 @@ cited back to its source, and never the source of a number that appears elsewher
 
 Point-in-time correctness is enforced structurally, not just by convention: an AI Decision or
 Earnings Thesis is only ever created going forward, from a real generation call — nothing is
-backfilled after the fact using information that wasn't available yet. Concretely, this means:
+backfilled after the fact using information that wasn't available yet.
 
 - The live Track Record only ever contains decisions the system actually recorded *before* the
   earnings event they're being evaluated against.
@@ -290,9 +349,8 @@ backfilled after the fact using information that wasn't available yet. Concretel
 ## Measured evaluation
 
 This system's AI components are evaluated against a hand-curated, hand-verified dataset, not
-graded on impression
-([docs/evaluation.md](docs/evaluation.md) has full methodology, per-item results, and an honest
-discussion of *why* retrieval scores what it does):
+graded on impression ([docs/evaluation.md](docs/evaluation.md) has full methodology, per-item
+results, and an honest discussion of *why* retrieval scores what it does):
 
 | Category | Metric | Result |
 |---|---|---|
@@ -301,21 +359,32 @@ discussion of *why* retrieval scores what it does):
 | Agent orchestration (10 items) | Intent + tool-selection accuracy | 100% |
 | Structured extraction (8 items) | Capex-guidance accuracy | 100% |
 
-## Testing and quality
+## Testing
 
-Verified against the current repository: 688/688 backend tests passing on a clean, disposable
-database, `ruff` clean, `mypy` clean, frontend `tsc` typecheck clean, frontend `eslint` clean,
-frontend production build clean, and a full Docker Compose stack (`db` → `migrate` → `backend` →
-`frontend`) building and booting successfully. GitHub Actions runs the frontend, backend, and
-Docker jobs on every push to `main`, all green as of the latest commit.
+**Backend**: 925+ tests passing on a clean, disposable PostgreSQL database, `ruff` clean, `mypy`
+clean.
+
+**Frontend**: TypeScript (`tsc`) clean, ESLint clean, production build clean.
+
+**Playwright E2E**: 8/8 passing, deterministic — a dedicated fixture ticker seeded into a
+disposable database, run against a backend configured with a DB-backed fixture options provider
+(`OPTIONS_PROVIDER=fixture`), so the suite has zero live-IBKR dependency and is safe in CI.
+Covers: Auto expiration selection is score-driven (not just nearest), Manual expiration
+recomputes the active expiration and strategy set, the Risk Profile selector round-trips through
+decision generation, budget sizing stays within its configured risk cap, probability fields
+always carry a real sample size, True Strategy Win Rate is never fabricated, Why Not Alternative
+carries real numeric comparisons, and an unresearched ticker never fabricates a recommendation. A
+separate, CI-skipped live spec covers the same flow against real IBKR data for local manual QA.
+
+GitHub Actions runs the frontend, backend, and Docker build-and-boot jobs on every push to `main`.
 
 ## Documentation
 
 | Doc | Covers |
 |---|---|
-| [docs/architecture.md](docs/architecture.md) | System design as of Phase 11 — schema, providers, and module status at that point; superseded on research orchestration, Strategy Lab, and AI Thesis/Decision Engine by this README and the phases below |
+| [docs/architecture.md](docs/architecture.md) | System design as of Phase 11 — schema, providers, and module status at that point; superseded on research orchestration, Strategy Lab, and the Options Decision Engine by this README |
 | [docs/data_model.md](docs/data_model.md) | Table grain, keys, indexing, point-in-time semantics |
-| [docs/data_sources.md](docs/data_sources.md) | Providers evaluated, chosen, and why (incl. two rejected for blocking automated access) |
+| [docs/data_sources.md](docs/data_sources.md) | Providers evaluated, chosen, and why |
 | [docs/options_methodology.md](docs/options_methodology.md) / [docs/earnings_methodology.md](docs/earnings_methodology.md) | Payoff formulas, Greeks assumptions, implied-move methodology |
 | [docs/llm_providers.md](docs/llm_providers.md) | Provider-agnostic LLM layer |
 | [docs/ai_architecture.md](docs/ai_architecture.md) | RAG pipeline + agent orchestration design |
@@ -337,36 +406,37 @@ Runs the full stack: PostgreSQL + pgvector, a one-shot Alembic migration, the Fa
 (`http://localhost:8000`), and the frontend (`http://localhost:5173`). Backend and frontend can
 also be run independently outside Docker — see `backend/README.md` and `frontend/README.md`.
 
-Everything works without a running IBKR Client Portal Gateway except real option-chain data,
-IBKR-sourced implied move/ATM IV, and Portfolio/My Exposure — those show an explicit
-not-available state instead of a number. See
-[docs/ibkr_integration.md](docs/ibkr_integration.md) for how to run and authenticate the Gateway
-locally.
+Everything works without a running IBKR Client Portal Gateway except real option-chain data, the
+Expiration Engine's live comparison, manual-expiration selection, IBKR-sourced implied move/ATM
+IV, and Portfolio/My Exposure — those show an explicit not-available state instead of a number.
+See [docs/ibkr_integration.md](docs/ibkr_integration.md) for how to run and authenticate the
+Gateway locally.
 
 ## Limitations
 
 - The IBKR Client Portal Gateway requires local authentication on the user's own machine and its
   session can expire and need re-authentication; there is no cloud-hosted IBKR connection today,
   and Azure/cloud synchronization for IBKR data has not been built (see
-  [Interactive Brokers integration](#interactive-brokers-integration)).
-- Provider rate limits and plan entitlements (e.g. a free-tier daily quota) can degrade an
-  individual preparation step — a malformed or degraded provider response is detected rather than
-  silently parsed as real data, and an optional step's failure does not invalidate the rest of an
-  already-prepared research workspace.
+  [Interactive Brokers integration](#interactive-brokers-integration)). The Expiration Engine's
+  live, multi-candidate comparison degrades to an explicit unavailable state (never a fabricated
+  one) when the Gateway session has expired.
+- Provider rate limits and plan entitlements can degrade an individual preparation step — a
+  malformed or degraded provider response is detected rather than silently parsed as real data.
 - An options chain can exist without enough priceable quotes (real bid/ask) to compute an implied
-  move or generate strategy candidates from — this is shown as its own explicit state, never
-  collapsed into a generic "no data."
+  move or generate strategy candidates from — shown as its own explicit state, never collapsed
+  into a generic "no data."
 - Complete historical point-in-time options-chain data does not exist for all past earnings
   events, so historical move compatibility compares against real past price moves, not a real
   options backtest.
-- The Model Strategy Score is a deterministic, explainable heuristic, not a probability of profit
-  or a recommendation; AI Decision confidence is likewise built from real signals, not a
-  probability that the direction will turn out correct.
+- The Model Strategy Score is a deterministic, explainable fit heuristic, not a probability of
+  profit; Estimated Probability is a real empirical estimate with a real confidence interval, but
+  is still distinct from — and must never be read as — a guarantee. AI Decision confidence is
+  built from real signals, not a probability the direction will turn out correct.
+- True Strategy Win Rate has a real, current system-wide sample size of zero — this project does
+  not yet capture real point-in-time option entry/exit prices for any settled decision, so the
+  metric is honestly `Unavailable` everywhere rather than estimated.
 - The AI decision track record currently has a limited sample size — confidence-calibration and
   win-rate figures become more meaningful as more real, settled decisions accumulate.
-- Strategy Win Rate is only ever shown for a decision with real, point-in-time option entry/exit
-  pricing on record; this project does not yet capture that data for most decisions, so the metric
-  is honestly absent rather than estimated.
 - No retrospective AI predictions are ever inserted into the live track record — see
   [No-lookahead principle](#no-lookahead-principle).
 - Decision/thesis/research history management is currently owner/private functionality without

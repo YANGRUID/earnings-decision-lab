@@ -9,6 +9,7 @@
     "lint": "eslint .",
     "preview": "vite preview",
     "screenshots": "tsx scripts/capture_screenshots.ts",
+    "screenshots:v3": "tsx scripts/capture_v3_screenshots.ts",
     "test:e2e": "playwright test --project=chromium e2e/options-decision-engine.spec.ts",
     "test:e2e:live": "playwright test --project=chromium e2e/avgo-live.spec.ts"
   },
