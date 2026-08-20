@@ -258,7 +258,7 @@ section above (real, live AVGO and NVDA data). General product screens:
 | | |
 |---|---|
 | ![Home](docs/screenshots/home.png) **Home** — search-first, recently researched companies | ![Upcoming Earnings](docs/screenshots/upcoming_earnings.png) **Upcoming Earnings** — consensus, implied move, ATM IV, historical comparison |
-| ![Strategy Lab](docs/screenshots/strategy_lab.png) **Strategy Lab** — ranked candidates from a real option chain (including butterflies and condors), with breakeven and historical compatibility | ![AI Decision](docs/screenshots/ai_decision.png) **AI Decision** — budget-aware recommendation with a deterministic score breakdown, "why this strategy," and settlement status |
+| ![Strategy Lab](docs/screenshots/strategy_lab.png) **Strategy Lab** — the Expiration Engine's real Auto/Manual comparison, ranked candidates from a real option chain (including butterflies and condors), with breakeven and historical compatibility | ![AI Decision](docs/screenshots/ai_decision.png) **AI Decision** — risk-profile-aware recommendation with the 9-component score, probability/reliability, and the full Why This Strategy/Expiration/Strikes/Not-Alternative explanation |
 | ![AI Earnings Thesis](docs/screenshots/earnings_thesis.png) **AI Earnings Thesis** — grounded, cited synthesis | ![Track Record](docs/screenshots/track_record.png) **Track Record** — honest reliability metrics and pending Final Decisions awaiting a real outcome |
 
 Additional screens: [Company Overview](docs/screenshots/company_overview.png) ·
