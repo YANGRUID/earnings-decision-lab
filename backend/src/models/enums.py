@@ -202,6 +202,46 @@ class StrategyRiskPreference(enum.StrEnum):
     ADVANCED_ALLOW_UNCOVERED_SHORT = "advanced_allow_uncovered_short"
 
 
+class DecisionSnapshotStatus(enum.StrEnum):
+    """Lifecycle rollup for a forward-tested Benchmark Portfolio decision
+    (Phase 4, see models/decision_snapshot.py) -- the only column on that
+    table ever written after generation; every other column there is
+    frozen for good at insert time. Mutated only by the entry/settlement
+    capture jobs (Phase 4.4/4.5), never by hand, and never via any API
+    mutation endpoint."""
+
+    PENDING_ENTRY = "pending_entry"
+    ENTERED = "entered"
+    SETTLED = "settled"
+    VOID = "void"
+
+
+class CaptureStatus(enum.StrEnum):
+    """Outcome of one real capture attempt -- shared by EntrySnapshot and
+    SettlementSnapshot (Phase 4). A FAILED/SKIPPED row is never deleted or
+    overwritten; a retry inserts a new row with the same decision_id
+    instead. The operative capture for a decision is its most recent
+    CAPTURED row, or -- if none succeeded -- its most recent row's own
+    honest failure reason, permanently on record."""
+
+    PENDING = "pending"
+    CAPTURED = "captured"
+    FAILED = "failed"
+    SKIPPED = "skipped"
+
+
+class OptionAction(enum.StrEnum):
+    """Long vs. short, for one captured option leg (Phase 4, see
+    models/entry_snapshot.py). Mirrors analytics/options/payoff.py's own
+    Action enum values -- kept as a separate, DB-mapped enum rather than
+    importing that one, since this project's models layer doesn't import
+    from analytics. Determines which side of the NBBO a leg's honest fill
+    price reads from (ASK for BUY, BID for SELL)."""
+
+    BUY = "buy"
+    SELL = "sell"
+
+
 class RiskProfile(enum.StrEnum):
     """Options Decision Engine V3 Part D: selected PER DECISION (see
     schemas.api.DecisionGenerateRequest.risk_profile), not a single global
