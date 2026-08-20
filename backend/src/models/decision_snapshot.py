@@ -1,51 +1,94 @@
 """Point-in-time AI Benchmark Portfolio decision (Phase 4) -- the
 immutable core of the forward-testing infrastructure this phase builds.
-See PHASE4_ARCHITECTURE_REVIEW.md sec 2.2/2.3 for the full design and
-PHASE4_IMPLEMENTATION_PLAN.md Phase 4.3 for how a row here actually gets
+See PHASE4_ARCHITECTURE_REVIEW.md sec 2.2/2.3 and
+PHASE4.3_ARCHITECTURE_REVIEW.md for the full design, and
+services/decision_snapshot_freezing.py for how a row here actually gets
 written.
 
-Exactly one writer touches the columns below (whatever service generates
-and freezes a decision, Phase 4.3), called once per row, never edited
-after. ``status`` is the sole exception -- an operational lifecycle
-rollup mutated by the entry/settlement capture jobs (Phase 4.4/4.5), not
-a research fact; ``generated_at`` itself never changes once set, even
-when ``status`` does.
+Fully immutable, no exceptions -- a real Postgres BEFORE UPDATE trigger
+(reusing entry_snapshot's own reject_snapshot_update(), installed by the
+migration that widens this table for Phase 4.3) makes every column
+reject an UPDATE, including ``status``.
+This is a deliberate change from this table's original Phase 4.1 design
+(where ``status`` was meant to roll forward as entry/settlement capture
+happened) -- Phase 4.3's own explicit decision is "no UPDATE of frozen
+decisions," full stop; a later phase that actually needs to mutate
+``status`` will need its own migration to relax this trigger, not
+assumed here. TimestampMixin's ``updated_at`` was dropped for the same
+reason entry_snapshot/settlement_snapshot never had it: a row that can
+never be updated has no meaningful "last updated" moment.
 
-Deliberately denormalized against earnings_calendar_event/company --
-neither is a hard FK here (earnings_calendar_event doesn't exist as of
-Phase 4.1; company_id was dropped from this phase's scope). ``ticker``/
-``company_name`` are stored directly so a later correction to an
-upstream table can never silently change what this row is understood to
-have said at generation time.
+Deliberately denormalized against company -- no ``company_id`` FK.
+``ticker``/``company_name`` are frozen copies, so a later correction to
+``company`` can never silently change what this row is understood to
+have said at generation time. ``earnings_calendar_event_id`` and
+``benchmark_portfolio_id`` ARE real FKs (unlike the denormalized fields)
+-- Phase 4.3 decision #1: every snapshot traces back to exactly one real
+calendar event and exactly one real portfolio, enforced at the DB level
+via a unique constraint on the pair (never two snapshots for the same
+event+portfolio -- see the "never overwrite" requirement).
 
-entry_snapshot/settlement_snapshot (their own tables -- see those
-modules) hold everything about what actually happened after generation.
-This table never gains entry/exit/P&L columns; see the architecture
-review's reversed decision on that (2026-08-20).
+Most columns below are nullable, mirroring ai_decision_version's own
+real precedent: ``generate_decision()`` can genuinely return no
+``recommended`` strategy (no actionable real market data) and this is
+still a real, honest, frozen outcome worth keeping on record -- never
+guessed or backfilled.
 """
 
-from datetime import datetime
+from datetime import date, datetime
+from decimal import Decimal
 from typing import TYPE_CHECKING
 
-from sqlalchemy import DateTime, Enum, ForeignKey, String
+from sqlalchemy import (
+    JSON,
+    Date,
+    DateTime,
+    Enum,
+    ForeignKey,
+    Integer,
+    Numeric,
+    String,
+    UniqueConstraint,
+    func,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from db.base import Base
 from models.enums import DecisionDirection, DecisionSnapshotStatus
-from models.mixins import TimestampMixin
 
 if TYPE_CHECKING:
     from models.ai_thesis_version import AIThesisVersion
+    from models.benchmark_portfolio import BenchmarkPortfolio
+    from models.earnings_calendar_event import EarningsCalendarEvent
     from models.entry_snapshot import EntrySnapshot
     from models.settlement_snapshot import SettlementSnapshot
 
+NUM = Numeric(18, 6)
 
-class DecisionSnapshot(TimestampMixin, Base):
-    """Grain: one row per frozen AI Benchmark Portfolio decision."""
+
+class DecisionSnapshot(Base):
+    """Grain: one row per frozen AI Benchmark Portfolio decision, one per
+    (earnings_calendar_event, benchmark_portfolio) pair -- see the unique
+    constraint below."""
 
     __tablename__ = "decision_snapshot"
+    __table_args__ = (
+        UniqueConstraint(
+            "earnings_calendar_event_id",
+            "benchmark_portfolio_id",
+            name="uq_decision_snapshot_event_portfolio",
+        ),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
+
+    # --- Event -----------------------------------------------------
+    earnings_calendar_event_id: Mapped[int] = mapped_column(
+        ForeignKey("earnings_calendar_event.id"), index=True
+    )
+    benchmark_portfolio_id: Mapped[int] = mapped_column(
+        ForeignKey("benchmark_portfolio.id"), index=True
+    )
 
     ticker: Mapped[str] = mapped_column(String(16), index=True)
     company_name: Mapped[str] = mapped_column(String(255))
@@ -55,12 +98,10 @@ class DecisionSnapshot(TimestampMixin, Base):
     )
     # Free-form, like ai_decision_version.recommended_strategy_category --
     # the strategy engine's candidate set is open-ended (butterflies,
-    # condors, spreads, ...), not a fixed short enum.
-    strategy_type: Mapped[str] = mapped_column(String(32))
+    # condors, spreads, ...), not a fixed short enum. Nullable: null when
+    # generate_decision() returned no recommended strategy at all.
+    strategy_type: Mapped[str | None] = mapped_column(String(32))
 
-    # Nullable, matching ai_decision_version's own earnings_estimate_
-    # snapshot_id/volatility_snapshot_id precedent for optional grounding
-    # references.
     ai_thesis_version_id: Mapped[int | None] = mapped_column(
         ForeignKey("ai_thesis_version.id"), index=True
     )
@@ -68,8 +109,6 @@ class DecisionSnapshot(TimestampMixin, Base):
     # The real domain moment of generation -- explicitly set by the
     # writer, never server-defaulted (matches every other provider-
     # timestamp column in this codebase, e.g. retrieved_at elsewhere).
-    # Immutable: no onupdate, and never touched by the status transitions
-    # below -- see tests/test_models.py for a regression test of this.
     generated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
 
     status: Mapped[DecisionSnapshotStatus] = mapped_column(
@@ -77,6 +116,65 @@ class DecisionSnapshot(TimestampMixin, Base):
         default=DecisionSnapshotStatus.PENDING_ENTRY,
     )
 
+    # --- Market snapshot --------------------------------------------
+    underlying_price: Mapped[Decimal | None] = mapped_column(NUM)
+    # Sourced from the grounding VolatilitySnapshot's near-term ATM IV
+    # (see option_snapshot_reference below) -- DecisionResult itself only
+    # exposes implied_move_pct (the % move), not a raw IV number.
+    implied_volatility: Mapped[Decimal | None] = mapped_column(NUM)
+    # New, small classification this phase introduces (no existing V3
+    # concept) -- "high"/"normal"/"low" derived from the same
+    # VolatilitySnapshot's iv_percentile; see
+    # services/decision_snapshot_freezing.py::_classify_volatility_regime.
+    # "unknown" when no percentile was available, never guessed.
+    volatility_regime: Mapped[str | None] = mapped_column(String(16))
+    # DecisionResult.volatility_snapshot_id, renamed to match this
+    # table's naming -- the real grounding volatility/options-market
+    # snapshot this decision was generated against.
+    option_snapshot_reference: Mapped[int | None] = mapped_column(
+        ForeignKey("volatility_snapshot.id"), index=True
+    )
+
+    # --- Strategy -----------------------------------------------------
+    strategy_score: Mapped[int | None] = mapped_column(Integer)
+    score_breakdown: Mapped[dict | None] = mapped_column(JSON)
+    selected_expiration: Mapped[date | None] = mapped_column(Date)
+    legs: Mapped[list | None] = mapped_column(JSON)
+
+    # --- Probability (frozen -- Phase 4.3 decision #2, a deliberate
+    # departure from ai_decision_version's live-recomputed equivalent;
+    # see PHASE4.3_ARCHITECTURE_REVIEW.md sec 2) --------------------
+    estimated_probability: Mapped[Decimal | None] = mapped_column(NUM)
+    confidence_interval: Mapped[dict | None] = mapped_column(JSON)
+    historical_sample_size: Mapped[int | None] = mapped_column(Integer)
+    historical_compatibility: Mapped[dict | None] = mapped_column(JSON)
+
+    # --- Explanation --------------------------------------------------
+    why_this_strategy: Mapped[list | None] = mapped_column(JSON)
+    why_this_expiration: Mapped[list | None] = mapped_column(JSON)
+    why_these_strikes: Mapped[list | None] = mapped_column(JSON)
+    why_not_alternatives: Mapped[list | None] = mapped_column(JSON)
+
+    # --- Metadata -------------------------------------------------
+    # Version stamps for the deterministic engine / LLM prompt that
+    # produced this row -- no existing versioning mechanism for either
+    # exists elsewhere in this codebase; see
+    # services/decision_snapshot_freezing.py's own module constants.
+    engine_version: Mapped[str] = mapped_column(String(32))
+    prompt_version: Mapped[str] = mapped_column(String(32))
+    # Phase 4.3 decision #3: V3's current expiration resolver behavior
+    # is kept as-is, not refactored to call the separate scored
+    # Expiration Engine -- this column records which mechanism actually
+    # produced ``selected_expiration``, for future analysis, without
+    # changing that behavior now.
+    expiration_source: Mapped[str] = mapped_column(String(32))
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+    earnings_calendar_event: Mapped["EarningsCalendarEvent"] = relationship()  # noqa: F821
+    benchmark_portfolio: Mapped["BenchmarkPortfolio"] = relationship()  # noqa: F821
     ai_thesis_version: Mapped["AIThesisVersion | None"] = relationship()
     entry_snapshots: Mapped[list["EntrySnapshot"]] = relationship(  # noqa: F821
         back_populates="decision_snapshot"

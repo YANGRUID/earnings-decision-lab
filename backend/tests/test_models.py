@@ -111,6 +111,25 @@ def test_earnings_calendar_event_historical_events_preserved(db_session):
     assert reloaded.status == EarningsCalendarEventStatus.COMPLETED
 
 
+def _seed_event_and_portfolio(
+    db_session, symbol: str = "TESTP4"
+) -> tuple[EarningsCalendarEvent, BenchmarkPortfolio]:
+    event = EarningsCalendarEvent(
+        symbol=symbol,
+        company_name="Phase 4 Test Co",
+        earnings_date=date(2026, 8, 20),
+        earnings_time=EarningsTiming.AMC,
+    )
+    portfolio = BenchmarkPortfolio(
+        name=f"Test Portfolio {symbol}",
+        initial_capital=Decimal("2000.00"),
+        cash_balance=Decimal("2000.00"),
+    )
+    db_session.add_all([event, portfolio])
+    db_session.flush()
+    return event, portfolio
+
+
 def _make_decision_snapshot(**overrides) -> DecisionSnapshot:
     defaults = dict(
         ticker="TESTP4",
@@ -119,6 +138,9 @@ def _make_decision_snapshot(**overrides) -> DecisionSnapshot:
         strategy_type="iron_condor",
         generated_at=datetime(2026, 8, 20, 15, 55, tzinfo=UTC),
         status=DecisionSnapshotStatus.PENDING_ENTRY,
+        engine_version="options-decision-engine-v3",
+        prompt_version="v1",
+        expiration_source="v3_auto_resolver",
     )
     defaults.update(overrides)
     return DecisionSnapshot(**defaults)
@@ -128,7 +150,10 @@ def test_decision_snapshot_can_exist_without_settlement(db_session):
     """A frozen decision is real on its own -- entry/settlement capture
     happen later (Phase 4.4/4.5), not built yet, and a decision with
     neither is a normal, valid state (PENDING_ENTRY)."""
-    decision = _make_decision_snapshot()
+    event, portfolio = _seed_event_and_portfolio(db_session)
+    decision = _make_decision_snapshot(
+        earnings_calendar_event_id=event.id, benchmark_portfolio_id=portfolio.id
+    )
     db_session.add(decision)
     db_session.flush()
 
@@ -143,7 +168,12 @@ def test_entry_snapshot_links_correctly(db_session):
     """A multi-leg capture attempt: two EntrySnapshot rows share one
     decision_id (one per leg) and both traverse back to the same parent
     via the relationship, matching this table's per-leg grain."""
-    decision = _make_decision_snapshot(ticker="TESTP4B")
+    event, portfolio = _seed_event_and_portfolio(db_session, symbol="TESTP4B")
+    decision = _make_decision_snapshot(
+        ticker="TESTP4B",
+        earnings_calendar_event_id=event.id,
+        benchmark_portfolio_id=portfolio.id,
+    )
     db_session.add(decision)
     db_session.flush()
 
@@ -214,11 +244,15 @@ def test_invalid_decision_relationships_fail_for_both_child_tables(db_session):
 
 
 def test_decision_snapshot_timestamps_stored_correctly(db_session):
-    """generated_at round-trips exactly as stored, and stays untouched by
-    a later status transition -- the "immutable generated timestamp"
-    requirement, verified as real behavior, not just a docstring claim."""
+    """generated_at round-trips exactly as stored."""
+    event, portfolio = _seed_event_and_portfolio(db_session, symbol="TESTP4C")
     generated_at = datetime(2026, 8, 20, 15, 55, 0, tzinfo=UTC)
-    decision = _make_decision_snapshot(ticker="TESTP4C", generated_at=generated_at)
+    decision = _make_decision_snapshot(
+        ticker="TESTP4C",
+        generated_at=generated_at,
+        earnings_calendar_event_id=event.id,
+        benchmark_portfolio_id=portfolio.id,
+    )
     db_session.add(decision)
     db_session.flush()
     db_session.refresh(decision)
@@ -226,19 +260,36 @@ def test_decision_snapshot_timestamps_stored_correctly(db_session):
     assert decision.generated_at == generated_at
     assert decision.created_at is not None
 
-    decision.status = DecisionSnapshotStatus.ENTERED
-    db_session.flush()
-    db_session.refresh(decision)
 
-    assert decision.status == DecisionSnapshotStatus.ENTERED
-    assert decision.generated_at == generated_at
+def test_decision_snapshot_rejects_update(db_session):
+    """Phase 4.3 decision #5: no UPDATE of frozen decisions, full stop --
+    unlike Phase 4.1's original design, not even ``status`` is exempt.
+    The same reject_snapshot_update() trigger entry_snapshot already uses
+    is installed on decision_snapshot too (migration 201cc8a16cb0)."""
+    event, portfolio = _seed_event_and_portfolio(db_session, symbol="TESTP4E")
+    decision = _make_decision_snapshot(
+        ticker="TESTP4E",
+        earnings_calendar_event_id=event.id,
+        benchmark_portfolio_id=portfolio.id,
+    )
+    db_session.add(decision)
+    db_session.flush()
+
+    decision.status = DecisionSnapshotStatus.ENTERED
+    with pytest.raises(ProgrammingError, match="insert-only"):
+        db_session.flush()
 
 
 def test_entry_snapshot_rejects_update(db_session):
     """The BEFORE UPDATE trigger installed by migration 78ee400f83ab
     makes this a real, enforced DB guarantee, not just a service-layer
     convention -- a retry after a failed capture must INSERT a new row."""
-    decision = _make_decision_snapshot(ticker="TESTP4D")
+    event, portfolio = _seed_event_and_portfolio(db_session, symbol="TESTP4D")
+    decision = _make_decision_snapshot(
+        ticker="TESTP4D",
+        earnings_calendar_event_id=event.id,
+        benchmark_portfolio_id=portfolio.id,
+    )
     db_session.add(decision)
     db_session.flush()
 

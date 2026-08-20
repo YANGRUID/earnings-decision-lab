@@ -41,6 +41,50 @@ class PriceReactionResponse(BaseModel):
     five_day_move_pct: Decimal | None
 
 
+class DecisionSnapshotResponse(BaseModel):
+    """Phase 4.3 -- one immutable, frozen AI Benchmark Portfolio decision.
+    Read-only: no endpoint anywhere accepts an update to this shape (see
+    api/routers/decision_snapshots.py)."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    earnings_calendar_event_id: int
+    benchmark_portfolio_id: int
+    ticker: str
+    company_name: str
+    strategy_direction: str
+    strategy_type: str | None
+    ai_thesis_version_id: int | None
+    generated_at: datetime
+    status: str
+
+    underlying_price: Decimal | None
+    implied_volatility: Decimal | None
+    volatility_regime: str | None
+    option_snapshot_reference: int | None
+
+    strategy_score: int | None
+    score_breakdown: dict | None
+    selected_expiration: date | None
+    legs: list | None
+
+    estimated_probability: Decimal | None
+    confidence_interval: dict | None
+    historical_sample_size: int | None
+    historical_compatibility: dict | None
+
+    why_this_strategy: list | None
+    why_this_expiration: list | None
+    why_these_strikes: list | None
+    why_not_alternatives: list | None
+
+    engine_version: str
+    prompt_version: str
+    expiration_source: str
+    created_at: datetime
+
+
 class EarningsCalendarEventResponse(BaseModel):
     """Phase 4.2 -- one row from the forward-looking, Finnhub-sourced
     earnings_calendar_event table. Deliberately a distinct schema from
