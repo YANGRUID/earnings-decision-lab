@@ -32,6 +32,20 @@ made here.
 
 ## Authentication
 
+**Two supported workflows as of Phase 4.8A**, both against the exact same Gateway and the exact
+same `IBKRClient`/`IBKROptionsProvider`/`IBKRPortfolioProvider` described on this page — nothing
+below changes between them:
+
+1. **Manual (this page's original design, still fully supported).** You run the Gateway yourself
+   and log in by hand at `https://localhost:5001` — this backend never sees your username,
+   password, or 2FA code.
+2. **Automated (Phase 4.8A, optional).** `docker-compose.yml`'s `ibkr-gateway` service runs the
+   same Gateway inside a container and logs in on your behalf via
+   [IBeam](https://github.com/Voyz/ibeam), so the session stays authenticated 24/7 without a human
+   re-logging in every few hours. This backend application still never reads your credentials —
+   only that one new, isolated container does. See **`docs/ibkr_gateway_runtime.md`** for the full
+   setup, 2FA options, reliability design, and security model.
+
 Every call first checks `/iserver/auth/status`. Real response, captured live:
 
 ```json

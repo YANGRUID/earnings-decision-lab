@@ -53,12 +53,24 @@ from services.benchmark_exit_capture import (
 from services.decision_pipeline import run_decision_pipeline_for_event
 from services.earnings_calendar_sync import sync_earnings_calendar
 from services.llm.factory import get_llm_provider
+from services.system_status import get_ibkr_status
 
 log = logging.getLogger("services.scheduler")
 
 CALENDAR_SYNC_JOB_ID = "earnings_calendar_sync"
 DECISION_AND_ENTRY_CAPTURE_JOB_ID = "decision_and_entry_capture"
 EXIT_CAPTURE_JOB_ID = "exit_capture"
+IBKR_GATEWAY_HEALTHCHECK_JOB_ID = "ibkr_gateway_healthcheck"
+
+# Phase 4.8A: how often the keep-alive/observability job below polls the
+# Gateway, all day -- not just around the two ~15:55 ET capture windows.
+# Real reason this needs to exist at all: before this phase, NOTHING
+# touched the Gateway between those two daily cron fires (see
+# PHASE4_8A_IBKR_RUNTIME_ARCHITECTURE_REVIEW.md sec 3.4/5.3), so an idle-
+# timed-out session could go undetected for up to 24 hours, discovered
+# only as a FAILED capture attempt. 10 minutes is well inside IBKR's
+# documented keep-alive window and cheap (one auth-status call).
+IBKR_HEALTHCHECK_INTERVAL_MINUTES = 10
 
 # The real, fixed wall-clock trigger every eligible event's entry_
 # timestamp resolves to (analytics/earnings_timing.py::ENTRY_EXIT_TIME)
@@ -273,6 +285,55 @@ def run_exit_capture_job() -> None:
         db.close()
 
 
+def run_ibkr_gateway_healthcheck_job() -> None:
+    """Phase 4.8A -- periodic, low-cost observation of the IBKR Gateway's
+    real auth status, independent of the two daily capture jobs. Two real
+    purposes (see PHASE4_8A_IBKR_RUNTIME_ARCHITECTURE_REVIEW.md sec
+    3.4/5.3): (1) a keep-alive touch well inside IBKR's session-idle
+    window, since nothing else calls the Gateway between the two ~15:55
+    ET cron fires; (2) a structured, greppable log line every run gives
+    an operator real visibility into reconnect/re-auth cycles well
+    before the next actual capture window, instead of only discovering a
+    dead session from a FAILED capture attempt at 15:55 ET.
+
+    Reuses services.system_status.get_ibkr_status() -- the exact same
+    real check the Settings -> Interactive Brokers page already makes --
+    rather than a second, parallel auth-status call; the job and the
+    status page can never disagree about what "connected" means.
+
+    Deliberately attempts no remediation itself: no call to the IBKR
+    Gateway automation container's own activation endpoints or similar.
+    Session recovery is that automation layer's own job (IBeam already
+    restarts the Gateway process internally on a dropped session); this
+    job only observes and reports, matching the capture jobs' own "never
+    crash, log and move on" posture. No DB session needed, unlike the
+    other three jobs above -- get_ibkr_status() is a pure live HTTP
+    check, nothing here reads or writes any table.
+
+    Skips entirely, logged, when OPTIONS_PROVIDER isn't ibkr -- a
+    deployment that has never opted into IBKR shouldn't get a recurring
+    "gateway unreachable" warning for a Gateway it never configured,
+    mirroring run_earnings_calendar_sync_job's own precedent of skipping
+    cleanly when its own precondition isn't configured.
+    """
+    try:
+        settings = get_settings()
+        if settings.options_provider.lower() != "ibkr":
+            log.debug("ibkr gateway healthcheck skipped: OPTIONS_PROVIDER is not ibkr")
+            return
+        status = get_ibkr_status(settings)
+        if status.status_label == "CONNECTED":
+            log.info("ibkr gateway healthcheck: %s", status.status_label)
+        else:
+            log.warning(
+                "ibkr gateway healthcheck: %s%s",
+                status.status_label,
+                f" ({status.error})" if status.error else "",
+            )
+    except Exception:
+        log.error("ibkr gateway healthcheck job failed", exc_info=True)
+
+
 def build_scheduler(embedder: EmbeddingProvider | None = None) -> AsyncIOScheduler:
     """Constructs (but does not start) the scheduler -- see
     api/main.py::lifespan for the actual start/shutdown lifecycle.
@@ -310,6 +371,13 @@ def build_scheduler(embedder: EmbeddingProvider | None = None) -> AsyncIOSchedul
         minute=_ENTRY_MINUTE_ET,
         timezone="America/New_York",
         id=EXIT_CAPTURE_JOB_ID,
+        replace_existing=True,
+    )
+    scheduler.add_job(
+        run_ibkr_gateway_healthcheck_job,
+        trigger="interval",
+        minutes=IBKR_HEALTHCHECK_INTERVAL_MINUTES,
+        id=IBKR_GATEWAY_HEALTHCHECK_JOB_ID,
         replace_existing=True,
     )
     return scheduler

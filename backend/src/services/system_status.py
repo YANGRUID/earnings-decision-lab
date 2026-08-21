@@ -109,6 +109,32 @@ class IbkrStatus:
     connected: bool
     competing: bool
     error: str | None
+    # Phase 4.8A -- the short, glanceable label the runtime-automation
+    # brief asks for ("IBKR: CONNECTED" / "IBKR: AUTH_REQUIRED"), computed
+    # from the same real fields above by ibkr_status_label() below. Not a
+    # second live check -- every existing field on this dataclass is
+    # unchanged, so frontend/src/pages/Settings/Ibkr.tsx's existing
+    # consumption of gateway_reachable/authenticated/connected/competing
+    # keeps working exactly as before; this is purely additive.
+    status_label: str
+
+
+def ibkr_status_label(
+    *, gateway_reachable: bool, authenticated: bool, connected: bool, competing: bool
+) -> str:
+    """Pure mapping, no I/O -- kept separate from get_ibkr_status() so the
+    keep-alive scheduler job (services/scheduler.py::run_ibkr_gateway_
+    healthcheck_job) can log the same real label the status page shows,
+    without a second live call. Order matters: a competing session is
+    reported even when authenticated=True (mirrors IBKRClient.ensure_
+    authenticated()'s own precedence -- see providers/ibkr_client.py)."""
+    if not gateway_reachable:
+        return "GATEWAY_UNREACHABLE"
+    if competing:
+        return "COMPETING_SESSION"
+    if not (authenticated and connected):
+        return "AUTH_REQUIRED"
+    return "CONNECTED"
 
 
 def get_ibkr_status(settings: Settings) -> IbkrStatus:
@@ -126,6 +152,12 @@ def get_ibkr_status(settings: Settings) -> IbkrStatus:
             connected=status.connected,
             competing=status.competing,
             error=None,
+            status_label=ibkr_status_label(
+                gateway_reachable=True,
+                authenticated=status.authenticated,
+                connected=status.connected,
+                competing=status.competing,
+            ),
         )
     except IBKRError as exc:
         return IbkrStatus(
@@ -134,4 +166,7 @@ def get_ibkr_status(settings: Settings) -> IbkrStatus:
             connected=False,
             competing=False,
             error=str(exc),
+            status_label=ibkr_status_label(
+                gateway_reachable=False, authenticated=False, connected=False, competing=False
+            ),
         )

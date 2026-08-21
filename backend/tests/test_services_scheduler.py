@@ -1,14 +1,19 @@
-"""Phase 4.2/4.4/4.5 -- tests for services/scheduler.py: all three jobs
-are registered correctly, and api/main.py's real lifespan starts/stops
-them gracefully."""
+"""Phase 4.2/4.4/4.5/4.8A -- tests for services/scheduler.py: all four
+jobs are registered correctly, and api/main.py's real lifespan
+starts/stops them gracefully."""
+
+import logging
 
 from fastapi.testclient import TestClient
 
+from core.config import Settings
 from services.scheduler import (
     CALENDAR_SYNC_JOB_ID,
     DECISION_AND_ENTRY_CAPTURE_JOB_ID,
     EXIT_CAPTURE_JOB_ID,
+    IBKR_GATEWAY_HEALTHCHECK_JOB_ID,
     build_scheduler,
+    run_ibkr_gateway_healthcheck_job,
 )
 
 
@@ -66,6 +71,21 @@ def test_exit_capture_job_registered_correctly():
     assert str(job.trigger.timezone) == "America/New_York"
 
 
+def test_ibkr_gateway_healthcheck_job_registered_correctly():
+    """Phase 4.8A: a real interval trigger (every IBKR_HEALTHCHECK_
+    INTERVAL_MINUTES, all day) -- unlike the other three jobs, this one
+    isn't anchored to a single daily wall-clock moment, since its whole
+    purpose is to catch a dead/idle session well before the next
+    scheduled capture window (see the job's own docstring)."""
+    scheduler = build_scheduler()
+
+    job = scheduler.get_job(IBKR_GATEWAY_HEALTHCHECK_JOB_ID)
+    assert job is not None
+    assert job.func.__name__ == "run_ibkr_gateway_healthcheck_job"
+    assert job.args == ()
+    assert job.trigger.interval.total_seconds() == 600  # 10 minutes
+
+
 def test_job_persists_across_app_restart_without_duplicating():
     """SQLAlchemyJobStore persists the job registrations to the database;
     a second, independent app instance (simulating a process restart)
@@ -80,15 +100,16 @@ def test_job_persists_across_app_restart_without_duplicating():
 
     app1 = main_module.create_app()
     with TestClient(app1):
-        assert len(app1.state.scheduler.get_jobs()) == 3
+        assert len(app1.state.scheduler.get_jobs()) == 4
 
     app2 = main_module.create_app()
     with TestClient(app2):
         jobs = app2.state.scheduler.get_jobs()
-        assert len(jobs) == 3
+        assert len(jobs) == 4
         assert app2.state.scheduler.get_job(CALENDAR_SYNC_JOB_ID) is not None
         assert app2.state.scheduler.get_job(DECISION_AND_ENTRY_CAPTURE_JOB_ID) is not None
         assert app2.state.scheduler.get_job(EXIT_CAPTURE_JOB_ID) is not None
+        assert app2.state.scheduler.get_job(IBKR_GATEWAY_HEALTHCHECK_JOB_ID) is not None
 
 
 def test_scheduler_starts_and_shuts_down_gracefully_with_the_app():
@@ -101,5 +122,79 @@ def test_scheduler_starts_and_shuts_down_gracefully_with_the_app():
         assert app.state.scheduler.get_job(CALENDAR_SYNC_JOB_ID) is not None
         assert app.state.scheduler.get_job(DECISION_AND_ENTRY_CAPTURE_JOB_ID) is not None
         assert app.state.scheduler.get_job(EXIT_CAPTURE_JOB_ID) is not None
+        assert app.state.scheduler.get_job(IBKR_GATEWAY_HEALTHCHECK_JOB_ID) is not None
 
     assert app.state.scheduler.running is False
+
+
+class TestIbkrGatewayHealthcheckJob:
+    """Phase 4.8A -- the job body itself (registration is covered above).
+    Real HTTP mocked via httpx_mock, exactly like
+    test_providers_ibkr_client.py, rather than reaching a live Gateway."""
+
+    def _settings(self, *, options_provider: str = "ibkr") -> Settings:
+        return Settings(
+            options_provider=options_provider,
+            ibkr_base_url="https://localhost:5001/v1/api",
+            _env_file=None,
+        )
+
+    def test_skips_when_options_provider_is_not_ibkr(self, monkeypatch, caplog):
+        import services.scheduler as scheduler_module
+
+        monkeypatch.setattr(
+            scheduler_module,
+            "get_settings",
+            lambda: self._settings(options_provider="alpha_vantage"),
+        )
+        with caplog.at_level(logging.DEBUG, logger="services.scheduler"):
+            run_ibkr_gateway_healthcheck_job()
+
+        assert "skipped" in caplog.text
+
+    def test_logs_info_when_connected(self, monkeypatch, httpx_mock, caplog):
+        import services.scheduler as scheduler_module
+
+        monkeypatch.setattr(scheduler_module, "get_settings", lambda: self._settings())
+        httpx_mock.add_response(
+            url="https://localhost:5001/v1/api/iserver/auth/status",
+            json={"authenticated": True, "connected": True, "competing": False},
+        )
+
+        with caplog.at_level(logging.INFO, logger="services.scheduler"):
+            run_ibkr_gateway_healthcheck_job()
+
+        assert "CONNECTED" in caplog.text
+        assert not any(record.levelno >= logging.WARNING for record in caplog.records)
+
+    def test_logs_warning_when_not_authenticated(self, monkeypatch, httpx_mock, caplog):
+        import services.scheduler as scheduler_module
+
+        monkeypatch.setattr(scheduler_module, "get_settings", lambda: self._settings())
+        httpx_mock.add_response(
+            url="https://localhost:5001/v1/api/iserver/auth/status",
+            json={"authenticated": False, "connected": False, "competing": False},
+        )
+
+        with caplog.at_level(logging.INFO, logger="services.scheduler"):
+            run_ibkr_gateway_healthcheck_job()
+
+        assert "AUTH_REQUIRED" in caplog.text
+        assert any(record.levelno == logging.WARNING for record in caplog.records)
+
+    def test_logs_warning_when_gateway_unreachable(self, monkeypatch, httpx_mock, caplog):
+        """Reconnect-detection scenario: the Gateway is down entirely (not
+        just unauthenticated) -- the job must still log a clear, honest
+        signal, never raise, and never crash the scheduler."""
+        import httpx
+
+        import services.scheduler as scheduler_module
+
+        monkeypatch.setattr(scheduler_module, "get_settings", lambda: self._settings())
+        httpx_mock.add_exception(httpx.ConnectError("connection refused"))
+
+        with caplog.at_level(logging.INFO, logger="services.scheduler"):
+            run_ibkr_gateway_healthcheck_job()  # must not raise
+
+        assert "GATEWAY_UNREACHABLE" in caplog.text
+        assert any(record.levelno == logging.WARNING for record in caplog.records)

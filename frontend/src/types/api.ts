@@ -316,6 +316,10 @@ export interface IbkrStatus {
   connected: boolean;
   competing: boolean;
   error: string | null;
+  // Phase 4.8A -- the short label services/system_status.py::ibkr_status_label
+  // computes from the fields above: "CONNECTED" | "AUTH_REQUIRED" |
+  // "COMPETING_SESSION" | "GATEWAY_UNREACHABLE".
+  status_label: string;
 }
 
 export interface ProviderCapabilities {

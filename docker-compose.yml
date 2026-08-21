@@ -33,6 +33,56 @@ services:
     command: ["alembic", "upgrade", "head"]
     restart: "no"
 
+  # Phase 4.8A -- automates login to the IBKR Client Portal Gateway (the
+  # same REST Gateway providers/ibkr_client.py has always talked to; see
+  # docs/ibkr_gateway_runtime.md for why this is IBeam + the Client Portal
+  # Gateway, not IBC + classic IB Gateway -- a different product this
+  # codebase was never built against) so the backend can pull IBKR data
+  # 24/7 without a human re-logging in via browser every few hours.
+  # Entirely optional: leave IBKR_ACCOUNT/IBKR_PASSWORD blank in .env and
+  # this container simply never authenticates -- OPTIONS_PROVIDER=alpha_
+  # vantage (the default) never touches it, and the original Phase 13
+  # manual/host-Gateway workflow keeps working unchanged (docs/ibkr_
+  # integration.md).
+  #
+  # network_mode: bridge and restart: "no" are IBeam's own upstream
+  # guidance (github.com/Voyz/ibeam), not this project's invention:
+  # clientportal.gw's own IP allow-list rejects requests routed through a
+  # custom Compose network, and a container-level restart resets IBeam's
+  # internal failed-login counter, risking repeated automated login
+  # attempts against a LIVE brokerage account past IBEAM_MAX_FAILED_AUTH.
+  # IBeam already restarts the Gateway process internally on a dropped
+  # session (RESTART_FAILED_SESSIONS, its own default) -- a human
+  # investigating and restarting this container is the deliberate
+  # fallback for a genuine, repeated auth failure, not another automatic
+  # retry loop against a live account.
+  ibkr-gateway:
+    image: voyz/ibeam:0.5.12
+    env_file:
+      - .env
+    environment:
+      IBEAM_ACCOUNT: ${IBKR_ACCOUNT:-}
+      IBEAM_PASSWORD: ${IBKR_PASSWORD:-}
+      IBEAM_KEY: ${IBKR_PASSWORD_KEY:-}
+      IBEAM_TWO_FA_HANDLER: ${IBKR_TWO_FA_HANDLER:-}
+      IBEAM_PYOTP_SECRET: ${IBKR_PYOTP_SECRET:-}
+    network_mode: bridge
+    restart: "no"
+    ports:
+      - "${IBKR_GATEWAY_PORT:-5000}:5000"
+      - "${IBKR_GATEWAY_HEALTH_PORT:-5001}:5001"
+    healthcheck:
+      # IBeam's own health server (plain HTTP, port 5001 -- separate from
+      # the Gateway's self-signed-HTTPS REST API on 5000): /readyz is 200
+      # only once the Gateway session is actually authenticated, 503
+      # otherwise. This never blocks `backend` from starting -- see the
+      # note on `backend`'s own depends_on below.
+      test: ["CMD", "python3", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:5001/readyz').status==200 else 1)"]
+      interval: 30s
+      timeout: 10s
+      start_period: 90s
+      retries: 5
+
   backend:
     build:
       context: ./backend
@@ -42,11 +92,18 @@ services:
     environment:
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-change_me}@db:5432/${POSTGRES_DB:-earnings_decision_lab}
     # host.docker.internal resolves natively on Docker Desktop (Mac/Windows);
-    # this extra_hosts entry is what makes it also resolve on Linux Docker,
-    # so IBKR_BASE_URL=https://host.docker.internal:5001/... (see
-    # .env.example) reaches a Gateway running on the host from inside the
-    # container on every supported platform -- previously undocumented as a
-    # deliberately deferred gap (see docs/ibkr_integration.md), now fixed.
+    # this extra_hosts entry is what makes it also resolve on Linux Docker.
+    # Two real Gateways can live at this address depending on IBKR_BASE_URL
+    # (see .env.example): the new ibkr-gateway container above, published to
+    # the host on port 5000 (network_mode: bridge means it isn't reachable
+    # by Compose service-name DNS, only via its published host port -- see
+    # docs/ibkr_gateway_runtime.md), or a manually-run Gateway on the
+    # operator's own machine on port 5001 (the original Phase 13 workflow).
+    # Deliberately NOT in `depends_on`: a not-yet-authenticated or still-
+    # starting Gateway must never block the backend from serving every
+    # other, unrelated endpoint -- providers/ibkr_client.py already turns
+    # that into a clean, handled IBKRGatewayUnavailableError per call, not
+    # a startup failure.
     extra_hosts:
       - "host.docker.internal:host-gateway"
     ports:

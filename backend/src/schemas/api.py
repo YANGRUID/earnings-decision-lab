@@ -536,6 +536,8 @@ class IbkrStatusResponse(BaseModel):
     connected: bool
     competing: bool
     error: str | None
+    # Phase 4.8A -- see services/system_status.py::ibkr_status_label.
+    status_label: str
 
 
 class ProviderCapabilitiesResponse(BaseModel):

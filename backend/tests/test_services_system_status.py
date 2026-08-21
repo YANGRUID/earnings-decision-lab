@@ -1,6 +1,8 @@
 from datetime import UTC, date, datetime
 from decimal import Decimal
 
+import httpx
+
 from core.config import Settings
 from models.company import Company
 from models.earnings_event import EarningsEvent
@@ -10,7 +12,11 @@ from services.system_status import (
     describe_llm_configuration,
     get_data_counts,
     get_data_freshness,
+    get_ibkr_status,
+    ibkr_status_label,
 )
+
+_IBKR_SETTINGS = Settings(ibkr_base_url="https://localhost:5001/v1/api", _env_file=None)
 
 
 def _seed_company(db_session, ticker: str = "ZZSTAT1") -> Company:
@@ -80,6 +86,89 @@ class TestGetDataFreshness:
         assert freshness.latest_options_snapshot_at is None or isinstance(
             freshness.latest_options_snapshot_at, datetime
         )
+
+
+class TestIbkrStatusLabel:
+    """Phase 4.8A -- the pure mapping (real gateway/session flags -> the
+    short, glanceable label the runtime-automation brief asks for)."""
+
+    def test_connected_when_fully_authenticated(self):
+        label = ibkr_status_label(
+            gateway_reachable=True, authenticated=True, connected=True, competing=False
+        )
+        assert label == "CONNECTED"
+
+    def test_gateway_unreachable_takes_priority(self):
+        label = ibkr_status_label(
+            gateway_reachable=False, authenticated=True, connected=True, competing=False
+        )
+        assert label == "GATEWAY_UNREACHABLE"
+
+    def test_auth_required_when_not_authenticated(self):
+        label = ibkr_status_label(
+            gateway_reachable=True, authenticated=False, connected=False, competing=False
+        )
+        assert label == "AUTH_REQUIRED"
+
+    def test_competing_session_reported_even_when_authenticated(self):
+        # Mirrors IBKRClient.ensure_authenticated()'s own precedence
+        # (providers/ibkr_client.py) -- a competing session must not be
+        # masked by authenticated=True.
+        label = ibkr_status_label(
+            gateway_reachable=True, authenticated=True, connected=True, competing=True
+        )
+        assert label == "COMPETING_SESSION"
+
+
+class TestGetIbkrStatus:
+    """Real HTTP mocked via httpx_mock, exactly like
+    test_providers_ibkr_client.py -- this is genuinely new coverage
+    (the pre-existing IBKRClient-level tests never checked the
+    system_status.py mapping layer built on top of it in Phase 4.8A)."""
+
+    def test_reports_connected_for_a_real_authenticated_session(self, httpx_mock):
+        httpx_mock.add_response(
+            url="https://localhost:5001/v1/api/iserver/auth/status",
+            json={"authenticated": True, "connected": True, "competing": False},
+        )
+
+        status = get_ibkr_status(_IBKR_SETTINGS)
+
+        assert status.gateway_reachable is True
+        assert status.status_label == "CONNECTED"
+        assert status.error is None
+
+    def test_reports_auth_required_when_session_not_authenticated(self, httpx_mock):
+        httpx_mock.add_response(
+            url="https://localhost:5001/v1/api/iserver/auth/status",
+            json={"authenticated": False, "connected": False, "competing": False},
+        )
+
+        status = get_ibkr_status(_IBKR_SETTINGS)
+
+        assert status.gateway_reachable is True
+        assert status.status_label == "AUTH_REQUIRED"
+
+    def test_reports_gateway_unreachable_on_connect_error(self, httpx_mock):
+        """Gateway-down scenario -- must degrade to an honest status, not
+        raise, matching every other IBKR call site's convention."""
+        httpx_mock.add_exception(httpx.ConnectError("connection refused"))
+
+        status = get_ibkr_status(_IBKR_SETTINGS)
+
+        assert status.gateway_reachable is False
+        assert status.status_label == "GATEWAY_UNREACHABLE"
+        assert status.error is not None
+
+    def test_reports_competing_session(self, httpx_mock):
+        httpx_mock.add_response(
+            url="https://localhost:5001/v1/api/iserver/auth/status",
+            json={"authenticated": True, "connected": True, "competing": True},
+        )
+
+        status = get_ibkr_status(_IBKR_SETTINGS)
+
+        assert status.status_label == "COMPETING_SESSION"
 
 
 class TestDescribeLlmConfiguration:

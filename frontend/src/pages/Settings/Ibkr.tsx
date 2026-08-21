@@ -50,10 +50,14 @@ export function Ibkr() {
       <div className="page-header">
         <h1>Interactive Brokers</h1>
         <p>
-          This project never holds IBKR credentials — the Client Portal Gateway runs on your own
-          machine and you authenticate to it yourself at{" "}
-          <span className="mono">https://localhost:5001</span>. This page only reflects the real,
-          current session state reported by that Gateway.
+          This page reflects the real, live session state of whichever Gateway is configured —
+          either one you run yourself and log into by hand at{" "}
+          <span className="mono">https://localhost:5001</span>, or (Phase 4.8A, optional) the
+          automated <span className="mono">ibkr-gateway</span> container that logs in on your
+          behalf so the session stays up without a human re-authenticating every few hours. Either
+          way, this backend application never holds your IBKR username or password itself — only
+          the automated container's own environment does, when that path is configured. See
+          docs/ibkr_gateway_runtime.md for the full setup and security model.
         </p>
       </div>
       <div className="card" style={{ marginBottom: 20, maxWidth: 640 }}>
@@ -61,6 +65,9 @@ export function Ibkr() {
           <strong>Gateway session</strong>
           <span className={`pill pill-${state.tone}`}>{state.label}</span>
         </div>
+        <p className="mono text-sm" style={{ marginTop: 6, marginBottom: 0 }}>
+          IBKR: {ibkr.status_label}
+        </p>
         <div className="grid grid-2" style={{ gap: 10, marginTop: 14 }}>
           <div className="stat">
             <span className="stat-label">Gateway reachable</span>
@@ -129,8 +136,11 @@ export function Ibkr() {
         </div>
       )}
       <p className="text-sm text-faint" style={{ maxWidth: 640 }}>
-        This project never automates IBKR login — no username, password, or 2FA code is ever
-        entered here. See docs/ibkr_integration.md for the full architecture.
+        No username, password, or 2FA code is ever entered on this page, and this backend
+        application never reads or stores them — read-only, always: no order-placement,
+        modification, or cancellation endpoint is ever called against either Gateway. See
+        docs/ibkr_integration.md (manual login) and docs/ibkr_gateway_runtime.md (Phase 4.8A
+        automated login) for the full architecture.
       </p>
     </div>
   );
