@@ -16,7 +16,7 @@ from datetime import date, datetime
 
 from observability.redact import redact
 from providers.base import MarketDataProvider, OptionsDataProvider
-from providers.types import OHLCBar, OptionQuote
+from providers.types import OHLCBar, OptionQuote, UnderlyingQuote
 
 log = logging.getLogger(__name__)
 
@@ -100,3 +100,33 @@ class OptionsProviderChain(OptionsDataProvider):
                 log.warning("provider %s failed for %s: %s", name, ticker, redact(str(exc)))
                 errors.append((name, exc))
         raise AllProvidersFailedError(errors)
+
+    def get_underlying_quote(self, ticker: str) -> UnderlyingQuote | None:
+        """Same primary-then-fallback shape as get_option_chain above, with
+        one difference: a provider reporting "no live underlying data" is
+        not an exception here, it's an honest ``None`` return (see
+        OptionsDataProvider.get_underlying_quote's own docstring) -- so
+        both an exception and a ``None`` result fall through to the next
+        provider. If every provider in the chain comes back empty, this
+        returns ``None`` too rather than raising, matching the same
+        "no live underlying quote" contract any single provider has."""
+        self.last_requested_provider = self._providers[0][0]
+        errors: list[tuple[str, Exception]] = []
+        for name, provider in self._providers:
+            try:
+                quote = provider.get_underlying_quote(ticker)
+            except Exception as exc:  # noqa: BLE001 — same rationale as get_option_chain
+                log.warning("provider %s failed for %s: %s", name, ticker, redact(str(exc)))
+                errors.append((name, exc))
+                continue
+            if quote is None:
+                errors.append((name, RuntimeError("no live underlying quote available")))
+                continue
+            self.last_actual_provider = name
+            if errors:
+                failed_name, failed_exc = errors[-1]
+                self.last_fallback_reason = f"{failed_name} failed: {redact(str(failed_exc))}"
+            else:
+                self.last_fallback_reason = None
+            return quote
+        return None

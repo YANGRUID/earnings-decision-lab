@@ -21,21 +21,33 @@ considered and rejected as unnecessary).
 Reuses, never duplicates: analytics/options/payoff.py's analyze() and
 analytics/decision/budget.py's compute_budget_fit() for every dollar
 figure this module produces (Phase 4.4 sec 9/10 explicitly forbid a
-second, parallel options-math system), services/options_analytics.py's
-_latest_close_price_on_or_before() for the underlying-price fallback
-(the same cross-module import services/expiration_engine.py and
-services/strategy_generation.py already use), services/options_
+second, parallel options-math system), services/options_
 reconstruction.py's MAX_UNDERLYING_OPTION_SKEW constant for timestamp-
 coherence validation, and analytics/earnings_timing.py's
 compute_entry_exit_schedule() for the no-lookahead timing gate (Phase
 4.4 sec 2/3) -- the exact same function services/decision_pipeline.py
 already uses for the decision-generation timing gate, not a second
 implementation of the same trading-day math.
+
+Hardening pass (post-Phase-4.4): the official entry's underlying context
+is always a live quote fetched via the provider's own
+get_underlying_quote() (see providers/base.py, providers/ibkr_options.py)
+-- never services/options_analytics.py's _latest_close_price_on_or_before()
+daily-bar fallback, which V3's own research code still uses correctly
+elsewhere but which this module must not fall back to: combining a live
+option quote with a previous session's underlying close and calling it
+one official entry would misrepresent what the benchmark could actually
+have entered. A missing or stale (see MAX_UNDERLYING_OPTION_SKEW) live
+underlying observation makes the official capture fail honestly instead.
+The capture window itself is also validated on both sides now -- not just
+"not too late" (LATE_CUTOFF_GRACE) but also "not materially early" (see
+EARLY_CAPTURE_TOLERANCE below) -- a 10:00 ET capture must never stand in
+for a 15:55 ET benchmark entry.
 """
 
 import logging
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 from sqlalchemy.orm import Session
@@ -58,9 +70,8 @@ from models.enums import (
     OptionType,
 )
 from providers.base import OptionsDataProvider
-from providers.types import OptionQuote
+from providers.types import OptionQuote, UnderlyingQuote
 from services.decision_pipeline import LATE_CUTOFF_GRACE
-from services.options_analytics import _latest_close_price_on_or_before
 from services.options_reconstruction import MAX_UNDERLYING_OPTION_SKEW
 
 log = logging.getLogger("services.benchmark_entry_capture")
@@ -71,6 +82,17 @@ _TIMING_TO_ANNOUNCEMENT_TIME: dict[EarningsTiming, AnnouncementTime] = {
     EarningsTiming.DMH: AnnouncementTime.UNKNOWN,
     EarningsTiming.UNKNOWN: AnnouncementTime.UNKNOWN,
 }
+
+# Phase 4.4 hardening sec 2: the official capture window is symmetric
+# around the scheduled entry timestamp, not just a late-side grace period
+# -- narrow and deterministic enough that a materially early capture (e.g.
+# 10:00 ET for a 15:55 ET benchmark) is rejected, not silently accepted as
+# if it were the same market moment. Same 5-minute magnitude as
+# LATE_CUTOFF_GRACE, kept as its own named constant since the two bound
+# conceptually different risks (a late capture risks reacting to news that
+# already broke; an early capture risks representing a materially
+# different, stale market) and may need to diverge in the future.
+EARLY_CAPTURE_TOLERANCE = timedelta(minutes=5)
 
 
 @dataclass
@@ -111,7 +133,14 @@ def _verify_no_lookahead(
     the earnings information becomes public, and the capture itself must
     happen inside the real pre-earnings window -- both checked freshly
     here, never assumed just because Phase 4.3 already checked the first
-    one at generation time."""
+    one at generation time.
+
+    Hardening pass sec 2: the capture-time check is a real window on both
+    sides of the scheduled entry timestamp (EARLY_CAPTURE_TOLERANCE ..
+    LATE_CUTOFF_GRACE), not just a late-side cutoff -- a materially early
+    capture (e.g. mid-morning for a 15:55 ET benchmark) does not represent
+    the same market moment and must be rejected exactly like a late one.
+    """
     calendar_event = decision_snapshot.earnings_calendar_event
     schedule = compute_entry_exit_schedule(
         calendar_event.earnings_date, _map_timing(calendar_event.earnings_time)
@@ -124,6 +153,13 @@ def _verify_no_lookahead(
             f"{LATE_CUTOFF_GRACE}) -- refusing to back an official entry with a decision that "
             "may not honestly predate the earnings reaction"
         )
+    if now < schedule.entry_timestamp - EARLY_CAPTURE_TOLERANCE:
+        return False, (
+            f"capture time ({now.isoformat()}) is before the valid pre-earnings entry window "
+            f"({schedule.entry_timestamp.isoformat()} - {EARLY_CAPTURE_TOLERANCE}) -- refusing "
+            "to capture a benchmark entry materially earlier than the scheduled entry, which "
+            "would not represent the same market moment"
+        )
     if now > schedule.entry_timestamp + LATE_CUTOFF_GRACE:
         return False, (
             f"capture time ({now.isoformat()}) is past the valid pre-earnings entry window "
@@ -134,30 +170,33 @@ def _verify_no_lookahead(
 
 
 def _resolve_underlying(
-    db: Session, ticker: str, quotes: list[OptionQuote], as_of: datetime
-) -> tuple[Decimal | None, datetime | None, str | None]:
-    """Real underlying price + timestamp for this capture, or an honest
-    reason why neither is available. Mirrors services/options_analytics.py's
-    own quotes[0].underlying_price -> _latest_close_price_on_or_before
-    fallback exactly (Phase 4.4 sec 7: reuse existing V3 coherence logic,
-    do not duplicate the resolver)."""
-    live_price = quotes[0].underlying_price if quotes else None
-    live_timestamp = quotes[0].underlying_timestamp if quotes else None
-    if live_price is not None:
-        if live_timestamp is not None and quotes[0].snapshot_timestamp is not None:
-            skew = abs(quotes[0].snapshot_timestamp - live_timestamp)
-            if skew > MAX_UNDERLYING_OPTION_SKEW:
-                return None, None, (
-                    f"underlying/option quote timestamp skew ({skew}) exceeds "
-                    f"{MAX_UNDERLYING_OPTION_SKEW} -- refusing to combine a stale underlying "
-                    "price with a fresh option quote"
-                )
-        return live_price, live_timestamp, None
+    underlying: UnderlyingQuote | None, option_market_timestamp: datetime
+) -> tuple[Decimal | None, Decimal | None, Decimal | None, datetime | None, str | None]:
+    """Real underlying price/bid/ask/timestamp for this capture, validated
+    for coherence against the option market's own timestamp, or an honest
+    reason why the official capture cannot proceed.
 
-    fallback_price = _latest_close_price_on_or_before(db, ticker, as_of.date())
-    if fallback_price is None:
-        return None, None, "no live or daily-close underlying price available"
-    return fallback_price, None, None
+    Hardening pass sec 1: ``underlying`` must be a live quote fetched via
+    the provider's own get_underlying_quote() (see providers/base.py) --
+    never a previous-session daily close. A missing quote (provider has no
+    live underlying capability, or a real fetch failure) or excessive
+    underlying/option timestamp skew both fail honestly here; neither ever
+    falls back to services/options_analytics.py's
+    _latest_close_price_on_or_before(), which remains correct and
+    untouched for V3's own research/reconstruction code but must never
+    let an OFFICIAL capture count as entered."""
+    if underlying is None:
+        reason = "no live underlying quote available from the options provider"
+        return None, None, None, None, reason
+
+    skew = abs(option_market_timestamp - underlying.timestamp)
+    if skew > MAX_UNDERLYING_OPTION_SKEW:
+        return None, None, None, None, (
+            f"underlying/option quote timestamp skew ({skew}) exceeds "
+            f"{MAX_UNDERLYING_OPTION_SKEW} -- refusing to combine a stale underlying "
+            "observation with a fresh option quote in one official entry"
+        )
+    return underlying.price, underlying.bid, underlying.ask, underlying.timestamp, None
 
 
 def _match_leg_quotes(
@@ -257,6 +296,13 @@ def capture_benchmark_entry(
         quotes = options_provider.get_option_chain(
             decision_snapshot.ticker, now, expiration=decision_snapshot.selected_expiration
         )
+        # Fetched in the same try/except as the option chain: a real
+        # provider failure fetching either one must produce the same
+        # honest FAILED attempt, not a partial capture (Phase 4.4
+        # hardening sec 1 -- see providers.base.OptionsDataProvider.
+        # get_underlying_quote's own docstring for why this is never a
+        # daily-close fallback instead).
+        underlying_quote = options_provider.get_underlying_quote(decision_snapshot.ticker)
     except Exception as exc:
         log.warning(
             "benchmark entry capture: provider call failed for decision_snapshot_id=%s",
@@ -277,11 +323,11 @@ def capture_benchmark_entry(
     for leg in leg_quotes:
         _price_leg(leg)
 
-    underlying_price, underlying_timestamp, underlying_error = _resolve_underlying(
-        db, decision_snapshot.ticker, quotes, now
-    )
-
     option_market_timestamp = quotes[0].snapshot_timestamp if quotes else now
+
+    underlying_price, underlying_bid, underlying_ask, underlying_timestamp, underlying_error = (
+        _resolve_underlying(underlying_quote, option_market_timestamp)
+    )
 
     failure_reason: str | None = None
     if underlying_error is not None:
@@ -348,12 +394,12 @@ def capture_benchmark_entry(
         status=status,
         capture_error=failure_reason,
         underlying_price=underlying_price,
-        # No provider today returns a separate underlying bid/ask
-        # alongside the option chain (see OptionQuote -- only a single
-        # underlying_price/underlying_timestamp pair) -- left null
-        # rather than fabricated, per Phase 4.4 sec 5/7's own rule.
-        underlying_bid=None,
-        underlying_ask=None,
+        # Real bid/ask from the provider's own live UnderlyingQuote when
+        # it exposes them (IBKR does, see providers/ibkr_options.py); left
+        # null, never fabricated, for a provider/quote that only offers a
+        # last/market price (Phase 4.4 sec 5/7's own rule).
+        underlying_bid=underlying_bid,
+        underlying_ask=underlying_ask,
         underlying_timestamp=underlying_timestamp,
         option_market_timestamp=option_market_timestamp,
         net_entry_price_per_share=(

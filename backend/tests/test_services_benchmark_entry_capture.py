@@ -21,10 +21,12 @@ from models.enums import (
     EarningsTiming,
     RiskProfile,
 )
+from models.price_bar import PriceBar
 from providers.base import OptionsDataProvider
 from providers.ibkr_client import IBKRGatewayUnavailableError, IBKRNotAuthenticatedError
-from providers.types import OptionQuote
-from services.benchmark_entry_capture import capture_benchmark_entry
+from providers.types import OptionQuote, UnderlyingQuote
+from services.benchmark_entry_capture import EARLY_CAPTURE_TOLERANCE, capture_benchmark_entry
+from services.decision_pipeline import LATE_CUTOFF_GRACE
 
 EARNINGS_DATE = date(2026, 9, 16)  # a Wednesday -- real trading day either side
 EXP = date(2026, 9, 18)
@@ -35,10 +37,26 @@ def _due_now() -> datetime:
     return schedule.entry_timestamp
 
 
+_UNSET = object()
+
+
 class _FakeOptionsProvider(OptionsDataProvider):
-    def __init__(self, quotes: list[OptionQuote] | None = None, raise_exc: Exception | None = None):
+    """``underlying`` defaults to a coherent live quote (price 100, same
+    timestamp as ``_due_now()``) unless a test explicitly overrides it --
+    matching almost every existing test's intent (a normal, coherent
+    capture) without every one of them having to spell it out. Pass
+    ``underlying=None`` explicitly to simulate a provider with no live
+    underlying data available at all (Phase 4.4 hardening sec 1)."""
+
+    def __init__(
+        self,
+        quotes: list[OptionQuote] | None = None,
+        raise_exc: Exception | None = None,
+        underlying: UnderlyingQuote | None = _UNSET,  # type: ignore[assignment]
+    ):
         self._quotes = quotes if quotes is not None else []
         self._raise_exc = raise_exc
+        self._underlying = underlying
 
     def get_option_chain(
         self, ticker, as_of, expiration=None, reference_date=None, earnings_anchored=True
@@ -47,8 +65,36 @@ class _FakeOptionsProvider(OptionsDataProvider):
             raise self._raise_exc
         return self._quotes
 
+    def get_underlying_quote(self, ticker) -> UnderlyingQuote | None:
+        if self._underlying is _UNSET:
+            return _underlying()
+        return self._underlying
+
     def list_available_expirations(self, ticker, after, max_candidates=5) -> list[date]:
         return [EXP]
+
+
+def _underlying(
+    price: Decimal | None = Decimal("100.00"),
+    *,
+    ts: datetime | None = None,
+    bid: Decimal | None = None,
+    ask: Decimal | None = None,
+) -> UnderlyingQuote:
+    """A real, live UnderlyingQuote -- the provider's own contemporaneous
+    observation (Phase 4.4 hardening sec 1), never derived from a daily
+    close. Defaults to coherent with ``_due_now()``-timed option quotes."""
+    ts = ts or _due_now()
+    return UnderlyingQuote(
+        ticker="TESTP44",
+        price=price,  # type: ignore[arg-type]
+        bid=bid,
+        ask=ask,
+        timestamp=ts,
+        market_data_quality="live",
+        source_provider="ibkr",
+        retrieved_at=ts,
+    )
 
 
 def _quote(
@@ -58,8 +104,6 @@ def _quote(
     ask: Decimal | None,
     *,
     ts: datetime | None = None,
-    underlying_price: Decimal | None = Decimal("100.00"),
-    underlying_timestamp: datetime | None = None,
     **overrides,
 ) -> OptionQuote:
     ts = ts or _due_now()
@@ -79,8 +123,6 @@ def _quote(
         vega=Decimal("0.10"),
         market_data_quality="live",
         external_contract_id="12345",
-        underlying_price=underlying_price,
-        underlying_timestamp=underlying_timestamp if underlying_timestamp is not None else ts,
         source_provider="ibkr",
         retrieved_at=ts,
     )
@@ -89,13 +131,17 @@ def _quote(
 
 
 def _seed_event_and_portfolio(
-    db_session, symbol: str = "TESTP44"
+    db_session,
+    symbol: str = "TESTP44",
+    *,
+    earnings_date: date = EARNINGS_DATE,
+    earnings_time: EarningsTiming = EarningsTiming.AMC,
 ) -> tuple[EarningsCalendarEvent, BenchmarkPortfolio]:
     event = EarningsCalendarEvent(
         symbol=symbol,
         company_name="Phase 4.4 Test Co",
-        earnings_date=EARNINGS_DATE,
-        earnings_time=EarningsTiming.AMC,
+        earnings_date=earnings_date,
+        earnings_time=earnings_time,
     )
     portfolio = BenchmarkPortfolio(
         name=f"Test Portfolio {symbol}",
@@ -244,13 +290,8 @@ def test_coherent_timestamps_accepted(db_session):
     event, portfolio = _seed_event_and_portfolio(db_session)
     decision = _seed_decision(db_session, event, portfolio, _long_call_legs())
     now = _due_now()
-    quotes = [
-        _quote(
-            Decimal("100"), "call", Decimal("1.90"), Decimal("2.10"),
-            ts=now, underlying_timestamp=now,
-        )
-    ]
-    provider = _FakeOptionsProvider(quotes)
+    quotes = [_quote(Decimal("100"), "call", Decimal("1.90"), Decimal("2.10"), ts=now)]
+    provider = _FakeOptionsProvider(quotes, underlying=_underlying(ts=now))
 
     attempt = capture_benchmark_entry(
         db_session, decision_snapshot=decision, portfolio=portfolio,
@@ -265,13 +306,10 @@ def test_excessive_timestamp_skew_rejected(db_session):
     event, portfolio = _seed_event_and_portfolio(db_session)
     decision = _seed_decision(db_session, event, portfolio, _long_call_legs())
     now = _due_now()
-    quotes = [
-        _quote(
-            Decimal("100"), "call", Decimal("1.90"), Decimal("2.10"),
-            ts=now, underlying_timestamp=now - timedelta(minutes=30),
-        )
-    ]
-    provider = _FakeOptionsProvider(quotes)
+    quotes = [_quote(Decimal("100"), "call", Decimal("1.90"), Decimal("2.10"), ts=now)]
+    provider = _FakeOptionsProvider(
+        quotes, underlying=_underlying(ts=now - timedelta(minutes=30))
+    )
 
     attempt = capture_benchmark_entry(
         db_session, decision_snapshot=decision, portfolio=portfolio,
@@ -624,3 +662,311 @@ def test_late_generated_decision_rejected_even_if_capture_runs_on_time(db_sessio
 
     assert attempt.status == CaptureStatus.FAILED
     assert "permitted decision cutoff" in (attempt.capture_error or "")
+
+
+# --------------------------------------------------------------------------
+# Hardening pass sec 1 -- underlying sourcing must be live, never a stale
+# daily close, and a missing live observation must fail honestly.
+# --------------------------------------------------------------------------
+
+
+def test_unavailable_live_underlying_creates_failed_attempt(db_session):
+    """The options provider has real, current option quotes but no live
+    underlying capability at all (get_underlying_quote -> None) -- the
+    official capture must fail honestly, never silently proceed without
+    underlying context and never reach for a daily close."""
+    event, portfolio = _seed_event_and_portfolio(db_session)
+    decision = _seed_decision(db_session, event, portfolio, _long_call_legs())
+    quotes = [_quote(Decimal("100"), "call", Decimal("1.90"), Decimal("2.10"))]
+    provider = _FakeOptionsProvider(quotes, underlying=None)
+
+    attempt = capture_benchmark_entry(
+        db_session, decision_snapshot=decision, portfolio=portfolio,
+        options_provider=provider, now=_due_now(),
+    )
+
+    assert attempt.status == CaptureStatus.FAILED
+    assert "no live underlying quote" in (attempt.capture_error or "")
+    assert attempt.underlying_price is None
+
+
+def test_stale_daily_close_never_satisfies_official_capture(db_session):
+    """A PriceBar daily-close row exists for this ticker/date with a
+    materially different price than the live underlying quote -- if the
+    forbidden fallback were still reachable, a missing/None underlying
+    quote could silently resolve to this value instead of failing. It
+    must not: the daily close is retained purely as V3 research/reference
+    data (services/options_analytics.py's own concern) and must never be
+    able to satisfy an OFFICIAL capture."""
+    event, portfolio = _seed_event_and_portfolio(db_session, symbol="TESTSTALE")
+    decision = _seed_decision(db_session, event, portfolio, _long_call_legs())
+    db_session.add(
+        PriceBar(
+            ticker="TESTSTALE",
+            trade_date=EARNINGS_DATE,
+            open=Decimal("50.00"),
+            high=Decimal("51.00"),
+            low=Decimal("49.00"),
+            close=Decimal("50.00"),  # deliberately far from the live 100.00 below
+            volume=1_000_000,
+            source_provider="stooq",
+            retrieved_at=_due_now(),
+        )
+    )
+    db_session.flush()
+    quotes = [_quote(Decimal("100"), "call", Decimal("1.90"), Decimal("2.10"))]
+
+    # Case A: no live underlying quote at all -- must fail, never silently
+    # resolve to the $50.00 daily close that exists in the DB.
+    provider_no_live = _FakeOptionsProvider(quotes, underlying=None)
+    failed = capture_benchmark_entry(
+        db_session, decision_snapshot=decision, portfolio=portfolio,
+        options_provider=provider_no_live, now=_due_now(),
+    )
+    assert failed.status == CaptureStatus.FAILED
+    assert failed.underlying_price is None
+    assert failed.underlying_price != Decimal("50.00")
+
+    # Case B: a real live underlying quote IS available (price 100) -- the
+    # captured attempt must use that live price, never the $50.00 daily
+    # close sitting in the same DB. Retried on the same decision -- the
+    # first attempt was FAILED, not CAPTURED, so idempotency (which only
+    # short-circuits on an existing CAPTURED attempt) allows this retry.
+    provider_live = _FakeOptionsProvider(quotes, underlying=_underlying(Decimal("100.00")))
+    captured = capture_benchmark_entry(
+        db_session, decision_snapshot=decision, portfolio=portfolio,
+        options_provider=provider_live, now=_due_now(),
+    )
+    assert captured.status == CaptureStatus.CAPTURED
+    assert captured.underlying_price == Decimal("100.00")
+
+
+def test_live_underlying_bid_ask_persisted_when_provider_offers_them(db_session):
+    event, portfolio = _seed_event_and_portfolio(db_session)
+    decision = _seed_decision(db_session, event, portfolio, _long_call_legs())
+    quotes = [_quote(Decimal("100"), "call", Decimal("1.90"), Decimal("2.10"))]
+    provider = _FakeOptionsProvider(
+        quotes, underlying=_underlying(bid=Decimal("99.95"), ask=Decimal("100.05"))
+    )
+
+    attempt = capture_benchmark_entry(
+        db_session, decision_snapshot=decision, portfolio=portfolio,
+        options_provider=provider, now=_due_now(),
+    )
+
+    assert attempt.status == CaptureStatus.CAPTURED
+    assert attempt.underlying_bid == Decimal("99.95")
+    assert attempt.underlying_ask == Decimal("100.05")
+
+
+def test_underlying_bid_ask_stay_null_when_provider_only_has_last_price(db_session):
+    """A provider (or IBKR response) that only returns a last/market price
+    for the underlying -- no bid/ask -- must never have those fabricated
+    from the price alone."""
+    event, portfolio = _seed_event_and_portfolio(db_session)
+    decision = _seed_decision(db_session, event, portfolio, _long_call_legs())
+    quotes = [_quote(Decimal("100"), "call", Decimal("1.90"), Decimal("2.10"))]
+    provider = _FakeOptionsProvider(quotes, underlying=_underlying())  # bid/ask default None
+
+    attempt = capture_benchmark_entry(
+        db_session, decision_snapshot=decision, portfolio=portfolio,
+        options_provider=provider, now=_due_now(),
+    )
+
+    assert attempt.status == CaptureStatus.CAPTURED
+    assert attempt.underlying_bid is None
+    assert attempt.underlying_ask is None
+
+
+# --------------------------------------------------------------------------
+# Hardening pass sec 2 -- both sides of the entry capture window
+# --------------------------------------------------------------------------
+
+
+def test_capture_exactly_at_scheduled_entry_accepted(db_session):
+    event, portfolio = _seed_event_and_portfolio(db_session)
+    decision = _seed_decision(db_session, event, portfolio, _long_call_legs())
+    quotes = [_quote(Decimal("100"), "call", Decimal("1.90"), Decimal("2.10"))]
+    provider = _FakeOptionsProvider(quotes)
+
+    attempt = capture_benchmark_entry(
+        db_session, decision_snapshot=decision, portfolio=portfolio,
+        options_provider=provider, now=_due_now(),
+    )
+
+    assert attempt.status == CaptureStatus.CAPTURED
+
+
+def test_capture_slightly_inside_early_tolerance_accepted(db_session):
+    event, portfolio = _seed_event_and_portfolio(db_session)
+    decision = _seed_decision(db_session, event, portfolio, _long_call_legs())
+    now = _due_now() - EARLY_CAPTURE_TOLERANCE + timedelta(minutes=1)
+    quotes = [_quote(Decimal("100"), "call", Decimal("1.90"), Decimal("2.10"), ts=now)]
+    provider = _FakeOptionsProvider(quotes, underlying=_underlying(ts=now))
+
+    attempt = capture_benchmark_entry(
+        db_session, decision_snapshot=decision, portfolio=portfolio,
+        options_provider=provider, now=now,
+    )
+
+    assert attempt.status == CaptureStatus.CAPTURED
+
+
+def test_capture_before_early_tolerance_rejected(db_session):
+    """A materially early capture (e.g. mid-morning for a 15:55 ET
+    benchmark) must never stand in for the scheduled entry -- Phase 4.4
+    hardening sec 2, the early half of the entry window."""
+    event, portfolio = _seed_event_and_portfolio(db_session)
+    decision = _seed_decision(db_session, event, portfolio, _long_call_legs())
+    now = _due_now() - EARLY_CAPTURE_TOLERANCE - timedelta(minutes=1)
+    quotes = [_quote(Decimal("100"), "call", Decimal("1.90"), Decimal("2.10"), ts=now)]
+    provider = _FakeOptionsProvider(quotes, underlying=_underlying(ts=now))
+
+    attempt = capture_benchmark_entry(
+        db_session, decision_snapshot=decision, portfolio=portfolio,
+        options_provider=provider, now=now,
+    )
+
+    assert attempt.status == CaptureStatus.FAILED
+    assert "before the valid pre-earnings entry window" in (attempt.capture_error or "")
+    assert db_session.query(EntrySnapshot).filter_by(capture_attempt_id=attempt.id).count() == 0
+
+
+def test_capture_slightly_inside_late_tolerance_accepted(db_session):
+    event, portfolio = _seed_event_and_portfolio(db_session)
+    decision = _seed_decision(db_session, event, portfolio, _long_call_legs())
+    now = _due_now() + LATE_CUTOFF_GRACE - timedelta(minutes=1)
+    quotes = [_quote(Decimal("100"), "call", Decimal("1.90"), Decimal("2.10"), ts=now)]
+    provider = _FakeOptionsProvider(quotes, underlying=_underlying(ts=now))
+
+    attempt = capture_benchmark_entry(
+        db_session, decision_snapshot=decision, portfolio=portfolio,
+        options_provider=provider, now=now,
+    )
+
+    assert attempt.status == CaptureStatus.CAPTURED
+
+
+def test_capture_after_late_tolerance_rejected(db_session):
+    event, portfolio = _seed_event_and_portfolio(db_session)
+    decision = _seed_decision(db_session, event, portfolio, _long_call_legs())
+    now = _due_now() + LATE_CUTOFF_GRACE + timedelta(minutes=1)
+    quotes = [_quote(Decimal("100"), "call", Decimal("1.90"), Decimal("2.10"), ts=now)]
+    provider = _FakeOptionsProvider(quotes, underlying=_underlying(ts=now))
+
+    attempt = capture_benchmark_entry(
+        db_session, decision_snapshot=decision, portfolio=portfolio,
+        options_provider=provider, now=now,
+    )
+
+    assert attempt.status == CaptureStatus.FAILED
+    assert "past the valid pre-earnings entry window" in (attempt.capture_error or "")
+
+
+def test_bmo_entry_window_anchors_to_previous_trading_day(db_session):
+    """BMO: the release is already known by the earnings date's own open,
+    so entry is the previous real trading day's 15:55 ET -- reusing
+    analytics/earnings_timing.py, never a separate rule. A capture at that
+    previous-day 15:55 ET is accepted; a capture on the earnings date
+    itself (a full day later) is not."""
+    bmo_earnings_date = date(2026, 9, 17)  # Thursday
+    event, portfolio = _seed_event_and_portfolio(
+        db_session, symbol="TESTBMO", earnings_date=bmo_earnings_date,
+        earnings_time=EarningsTiming.BMO,
+    )
+    schedule = compute_entry_exit_schedule(bmo_earnings_date, AnnouncementTime.BEFORE_MARKET)
+    assert schedule.decision_generation_date == date(2026, 9, 16)  # the prior Wednesday
+
+    decision = _seed_decision(
+        db_session, event, portfolio, _long_call_legs(),
+        generated_at=schedule.entry_timestamp,
+    )
+    quotes = [
+        _quote(
+            Decimal("100"), "call", Decimal("1.90"), Decimal("2.10"),
+            ts=schedule.entry_timestamp,
+        )
+    ]
+    provider = _FakeOptionsProvider(quotes, underlying=_underlying(ts=schedule.entry_timestamp))
+
+    # Rejected case first -- run before any CAPTURED attempt exists for
+    # this decision, since idempotency short-circuits on an existing
+    # CAPTURED attempt regardless of the window check.
+    too_late_by_a_day = capture_benchmark_entry(
+        db_session, decision_snapshot=decision, portfolio=portfolio,
+        options_provider=provider, now=schedule.entry_timestamp + timedelta(days=1),
+    )
+    # A full day later is past LATE_CUTOFF_GRACE -- confirms the window is
+    # anchored to the real BMO-shifted entry_timestamp (2026-09-16), not
+    # the raw earnings_date (2026-09-17).
+    assert too_late_by_a_day.status == CaptureStatus.FAILED
+
+    on_time = capture_benchmark_entry(
+        db_session, decision_snapshot=decision, portfolio=portfolio,
+        options_provider=provider, now=schedule.entry_timestamp,
+    )
+    assert on_time.status == CaptureStatus.CAPTURED
+
+
+def test_amc_entry_window_anchors_to_earnings_date_itself(db_session):
+    """AMC: the release happens after the close, so entering at 15:55 ET
+    on the earnings date itself is still pre-release -- entry is not
+    shifted to a different day, unlike BMO."""
+    event, portfolio = _seed_event_and_portfolio(db_session)  # default: AMC, EARNINGS_DATE
+    decision = _seed_decision(db_session, event, portfolio, _long_call_legs())
+    quotes = [_quote(Decimal("100"), "call", Decimal("1.90"), Decimal("2.10"))]
+    provider = _FakeOptionsProvider(quotes)
+
+    attempt = capture_benchmark_entry(
+        db_session, decision_snapshot=decision, portfolio=portfolio,
+        options_provider=provider, now=_due_now(),
+    )
+
+    assert attempt.status == CaptureStatus.CAPTURED
+    schedule = compute_entry_exit_schedule(EARNINGS_DATE, AnnouncementTime.AFTER_MARKET)
+    assert schedule.decision_generation_date == EARNINGS_DATE
+
+
+def test_bmo_over_a_weekend_skips_to_previous_friday(db_session):
+    """A Monday BMO earnings date must anchor entry to the previous real
+    trading day, skipping the weekend entirely (Friday, not Sunday) --
+    proving the window check operates against the real trading-day-aware
+    entry_timestamp, not a naive calendar day-before."""
+    monday_earnings_date = date(2026, 9, 21)  # Monday
+    event, portfolio = _seed_event_and_portfolio(
+        db_session, symbol="TESTWKND", earnings_date=monday_earnings_date,
+        earnings_time=EarningsTiming.BMO,
+    )
+    schedule = compute_entry_exit_schedule(monday_earnings_date, AnnouncementTime.BEFORE_MARKET)
+    assert schedule.decision_generation_date == date(2026, 9, 18)  # the prior Friday
+
+    decision = _seed_decision(
+        db_session, event, portfolio, _long_call_legs(),
+        generated_at=schedule.entry_timestamp,
+    )
+    quotes = [
+        _quote(
+            Decimal("100"), "call", Decimal("1.90"), Decimal("2.10"),
+            ts=schedule.entry_timestamp,
+        )
+    ]
+    provider = _FakeOptionsProvider(quotes, underlying=_underlying(ts=schedule.entry_timestamp))
+
+    # Rejected case first -- before any CAPTURED attempt exists for this
+    # decision (idempotency short-circuits on an existing CAPTURED
+    # attempt regardless of the window check). A capture attempted on the
+    # weekend itself (Saturday) is well before the real Friday
+    # entry_timestamp -- confirms the early-side check rejects naive
+    # weekend timestamps too, not just weekday ones.
+    weekend_now = datetime.combine(date(2026, 9, 19), schedule.entry_timestamp.timetz())
+    rejected = capture_benchmark_entry(
+        db_session, decision_snapshot=decision, portfolio=portfolio,
+        options_provider=provider, now=weekend_now,
+    )
+    assert rejected.status == CaptureStatus.FAILED
+
+    attempt = capture_benchmark_entry(
+        db_session, decision_snapshot=decision, portfolio=portfolio,
+        options_provider=provider, now=schedule.entry_timestamp,
+    )
+    assert attempt.status == CaptureStatus.CAPTURED

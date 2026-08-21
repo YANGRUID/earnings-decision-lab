@@ -166,6 +166,27 @@ class OptionQuote(ProvenancedModel):
     underlying_timestamp: datetime | None = None
 
 
+class UnderlyingQuote(ProvenancedModel):
+    """A real, live quote for the underlying itself, fetched fresh at call
+    time -- distinct from OptionQuote.underlying_price above, which is
+    exclusively a Phase 14.13 historical-reconstruction concept and is
+    never set by a live provider call. Phase 4.4 hardening (see
+    services/benchmark_entry_capture.py): the official benchmark entry
+    must pair a live option quote with a genuinely contemporaneous
+    underlying observation, never a previous-session close -- this type is
+    that observation. ``bid``/``ask`` are None when the provider genuinely
+    doesn't expose them for the underlying conid -- never fabricated from
+    ``price`` alone.
+    """
+
+    ticker: str
+    price: Decimal
+    bid: Decimal | None = None
+    ask: Decimal | None = None
+    timestamp: datetime
+    market_data_quality: str | None = None
+
+
 class PortfolioPosition(ProvenancedModel):
     """One real brokerage position, normalized separately from market-data
     types above -- a position is "what I hold", never a market quote, and

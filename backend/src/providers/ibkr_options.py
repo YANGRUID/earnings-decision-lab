@@ -37,7 +37,7 @@ from decimal import Decimal, InvalidOperation
 from analytics.options.implied_move import select_expiration_after, select_nearest_listed_expiration
 from providers.base import OptionsDataProvider
 from providers.ibkr_client import IBKRClient, IBKRError, decode_market_data_quality
-from providers.types import OptionQuote
+from providers.types import OptionQuote, UnderlyingQuote
 
 _MONTH_ABBR = [
     "JAN", "FEB", "MAR", "APR", "MAY", "JUN",
@@ -314,6 +314,33 @@ class IBKROptionsProvider(OptionsDataProvider):
         contracts = self._resolve_contracts(conid, month, target_expiration, strikes)
         return conid, underlying_price, contracts
 
+    def get_underlying_quote(self, ticker: str) -> UnderlyingQuote | None:
+        """Phase 4.4 hardening: a real, live quote for the underlying
+        itself -- last, bid, and ask all requested together (unlike the
+        price-only ``_underlying_quote`` helper below, used internally
+        just to center an ATM strike window), since here the underlying's
+        own market context is the actual deliverable. Used exclusively by
+        the official benchmark entry capture path (services/benchmark_
+        entry_capture.py) -- ordinary V3 research/reconstruction quotes
+        never call this.
+        """
+        self._client.ensure_authenticated()
+        conid, _available_months = self._resolve_underlying(ticker)
+        price, bid, ask, quality = self._underlying_quote_with_bid_ask(conid)
+        if price is None:
+            return None
+        now = datetime.now(UTC)
+        return UnderlyingQuote(
+            ticker=ticker.upper(),
+            price=price,
+            bid=bid,
+            ask=ask,
+            timestamp=now,
+            market_data_quality=quality,
+            source_provider="ibkr",
+            retrieved_at=now,
+        )
+
     def _resolve_underlying(self, ticker: str) -> tuple[int, list[str]]:
         """Deterministic rule, verified live for NVDA during Phase 13: the
         first secdef/search result whose symbol matches exactly and that
@@ -351,6 +378,27 @@ class IBKROptionsProvider(OptionsDataProvider):
         price = _decimal_or_none(row.get(_FIELD_LAST))
         quality = decode_market_data_quality(row.get(_FIELD_AVAILABILITY))
         return price, quality
+
+    def _underlying_quote_with_bid_ask(
+        self, conid: int
+    ) -> tuple[Decimal | None, Decimal | None, Decimal | None, str]:
+        """Same live-snapshot mechanism as ``_underlying_quote`` above (see
+        its own priming-delay comment), extended to also request bid/ask --
+        kept as a separate helper rather than widening ``_underlying_quote``
+        itself so that method's existing callers (strike-window centering
+        only, which needs just a price) stay untouched."""
+        fields = f"{_FIELD_LAST},{_FIELD_BID},{_FIELD_ASK},{_FIELD_AVAILABILITY}"
+        self._snapshot([conid], fields=fields)
+        time.sleep(_SNAPSHOT_PRIMING_DELAY_SECONDS)
+        data = self._snapshot([conid], fields=fields)
+        row = next((r for r in data if r.get("conid") == conid), None)
+        if row is None or _decimal_or_none(row.get(_FIELD_LAST)) is None:
+            return None, None, None, "unknown"
+        price = _decimal_or_none(row.get(_FIELD_LAST))
+        bid = _decimal_or_none(row.get(_FIELD_BID))
+        ask = _decimal_or_none(row.get(_FIELD_ASK))
+        quality = decode_market_data_quality(row.get(_FIELD_AVAILABILITY))
+        return price, bid, ask, quality
 
     def _resolve_target_expiration(
         self,

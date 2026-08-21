@@ -21,6 +21,7 @@ from providers.types import (
     OHLCBar,
     OptionQuote,
     TranscriptDocument,
+    UnderlyingQuote,
     UpcomingEarningsCalendarEntry,
 )
 
@@ -89,6 +90,21 @@ class OptionsDataProvider(ABC):
         quotes = self.get_option_chain(ticker, datetime.now(UTC), reference_date=after)
         expirations = sorted({q.expiration_date for q in quotes if q.expiration_date > after})
         return expirations[:max_candidates]
+
+    def get_underlying_quote(self, ticker: str) -> UnderlyingQuote | None:
+        """A real, live quote for the underlying itself, fetched fresh at
+        call time -- never a daily close, and never derived from
+        OptionQuote.underlying_price (a distinct, reconstruction-only
+        concept; see its docstring in providers/types.py).
+
+        Default: unsupported (``None``). A provider with no live
+        underlying capability reports unavailability honestly here;
+        callers (Phase 4.4's official benchmark entry capture, see
+        services/benchmark_entry_capture.py) must never substitute a
+        stale price in its place. Overridden by providers that actually
+        expose this -- see providers/ibkr_options.py.
+        """
+        return None
 
 
 class EarningsDataProvider(ABC):
