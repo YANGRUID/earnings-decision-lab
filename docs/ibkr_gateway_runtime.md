@@ -103,6 +103,22 @@ Secure Login System, and record the base32 secret it gives you (looks like `JBSW
 not verified against your specific account — confirm it there directly before assuming `PYOTP` will
 work end-to-end.
 
+### In-app connection ("Connect IBKR" button)
+
+Settings → Interactive Brokers now has a **Connect IBKR** button, so you never need to know or
+type a Gateway URL yourself. It calls `GET /api/v1/ibkr/connect`, which does nothing but return
+`{"url": "https://localhost:<IBKR_GATEWAY_PORT>"}` (`api/routers/ibkr.py`) — no password field, no
+session handling, no proxying. The frontend opens that URL in a new tab; you log in there, on the
+Gateway's own real page, exactly as in the original manual workflow, just without having to look up
+the address. This backend never sees your username, password, or 2FA code either way. Click
+**Refresh Status** afterward to see the real, live result.
+
+This is independent of, and works alongside, IBeam's own automated login above: if
+`IBKR_ACCOUNT`/`IBKR_PASSWORD` are set, IBeam may already be authenticated by the time you look —
+in which case the new tab just shows an already-logged-in Gateway, harmlessly. If they're blank (or
+2FA needs a manual tap IBeam can't automate), this button *is* how you log in, targeting the
+containerized Gateway instead of a manually-started host process.
+
 ### Session maintenance
 
 Once authenticated, IBeam periodically re-validates the session and restarts the underlying Gateway
@@ -147,6 +163,12 @@ Settings → Interactive Brokers page (`frontend/src/pages/Settings/Ibkr.tsx`), 
 by the scheduler's keep-alive job (§ above) so the two can never disagree about what "connected"
 means.
 
+The Settings page's top-level summary collapses these four values into the three-icon form the
+in-app workflow asks for — 🟢 Connected / 🔴 Authentication Required / ⚪ Gateway Offline
+(`COMPETING_SESSION` folds into the same red "Authentication Required" bucket, still shown
+verbatim as `IBKR: COMPETING_SESSION` in the detail line underneath, never hidden) — while the API
+itself keeps reporting the more precise four-value `status_label` for anything that wants it.
+
 ## Reliability
 
 - **Container restart policy is deliberately `restart: "no"`, not `unless-stopped`.** This follows
@@ -190,11 +212,14 @@ means.
   `ibkr-gateway` container's environment can log into your live IBKR account — a materially
   different blast radius than a leaked read-only market-data API key. Treat `.env` accordingly on
   any machine this runs on.
-- **Optional extra layer**: `IBKR_PASSWORD_KEY` lets IBeam decrypt an encrypted `IBKR_PASSWORD`
-  (Fernet) instead of holding it in plaintext in `.env` — see IBeam's own "Advanced secrets" docs.
-  Unrelated to this project's own `SECRET_STORE_MASTER_KEY` (`services/secret_store/`), which is
-  not used here — see the architecture review §7.1 for why extending that encrypted-at-rest store
-  to cover a username+password pair was scoped out of this phase.
+- **`IBKR_ACCOUNT`/`IBKR_PASSWORD` are held in plain text in `.env`.** An encrypted-password option
+  (`IBEAM_KEY`/Fernet, IBeam's own "Advanced secrets" feature) exists upstream but is deliberately
+  **not** wired into `docker-compose.yml` — a real bug was found live during setup (setting that
+  variable at all, even empty, breaks plain-text login outright; see Troubleshooting) and fixing it
+  properly needs a custom entrypoint, out of scope here. Unrelated to this project's own
+  `SECRET_STORE_MASTER_KEY` (`services/secret_store/`), which is not used for IBKR at all — see the
+  architecture review §7.1 for why extending that encrypted-at-rest store to a username+password
+  pair was scoped out of this phase too.
 - **Verify container logs never print the password.** Run `docker compose logs ibkr-gateway` after
   a fresh start and confirm `IBKR_PASSWORD`'s real value never appears — a known failure mode in
   this class of tool, checked here rather than assumed safe because the tool is reputable.
@@ -211,7 +236,15 @@ docker compose logs -f ibkr-gateway   # watch for a successful first login
 docker compose up -d backend frontend
 ```
 
+If this fails with `Ports are not available... 0.0.0.0:5000`, something else on your machine
+already has that port (on macOS, `ControlCenter`/AirPlay Receiver, real and common — see
+Troubleshooting) — set `IBKR_GATEWAY_PORT`/`IBKR_GATEWAY_HEALTH_PORT` in `.env` to unused ports
+instead, and update `IBKR_BASE_URL` to match.
+
 ## How to verify the IBKR connection
+
+Ports below assume the defaults (5000/5001) — substitute your own `IBKR_GATEWAY_PORT`/
+`IBKR_GATEWAY_HEALTH_PORT` if you remapped them.
 
 1. **Container health**: `docker compose ps ibkr-gateway` should show `healthy` once authenticated
    (allow up to ~90 seconds on a cold start for the Gateway process itself to boot).
@@ -229,20 +262,44 @@ docker compose up -d backend frontend
    curl http://localhost:8000/api/v1/system-status | python3 -c "import json,sys; print(json.load(sys.stdin)['ibkr'])"
    ```
    Expect `status_label` to be `"CONNECTED"`.
-5. **In the app**: Settings → Interactive Brokers now shows `IBKR: CONNECTED` (or the relevant
-   non-connected label) alongside the existing gateway/session detail fields.
+5. **In the app**: open Settings → Interactive Brokers, click **Connect IBKR** (opens the Gateway's
+   real login page in a new tab — log in there), then **Refresh Status**. The page now shows
+   🟢 Connected / `IBKR: CONNECTED` alongside the existing gateway/session detail fields.
 6. **A real, read-only data call** (once `OPTIONS_PROVIDER=ibkr`): any existing research flow that
    fetches an option chain now sources it from the automated container instead of a manually-run
    Gateway — no code path changed, only where the Gateway lives.
 
 ## Troubleshooting
 
+- **`docker compose up -d ibkr-gateway` fails with "Ports are not available... 0.0.0.0:5000"**:
+  real, live-observed on macOS — `ControlCenter` (AirPlay Receiver) binds port 5000 by default on
+  every current macOS install, and if you already run the manual Gateway workflow, its `java
+  ...GatewayStart` process is likely already on port 5001 too (`lsof -nP -iTCP:5000 -iTCP:5001
+  -sTCP:LISTEN` to check). Either disable AirPlay Receiver (System Settings → General → AirDrop &
+  Handoff), or simply pick different host ports in `.env`:
+  ```
+  IBKR_GATEWAY_PORT=5002
+  IBKR_GATEWAY_HEALTH_PORT=5003
+  ```
+  and update `IBKR_BASE_URL` to match (`https://host.docker.internal:5002/v1/api`) — the whole
+  stack (backend, `/ibkr/connect`, the healthcheck) reads these from config, nothing is hard-coded,
+  so remapping is a `.env`-only change.
+- **Login always fails with `Fernet key must be 32 url-safe base64-encoded bytes` in
+  `docker compose logs ibkr-gateway`, even with a correct plain-text password**: a real bug found
+  and fixed during initial setup, not a credential problem. IBeam treats `IBEAM_KEY` (the optional
+  encrypted-password decryption key) as "decrypt the password" the moment the variable is merely
+  *present* in its environment — including present-but-empty, which Compose's `environment:` map
+  form always produces when `IBKR_PASSWORD_KEY` is unset. `docker-compose.yml`'s `ibkr-gateway`
+  service no longer sets `IBEAM_KEY` at all for this reason; encrypted-password support isn't wired
+  up in this compose file (would need a custom entrypoint that only exports it conditionally — a
+  separate, later enhancement). If you pulled this repo before this fix, update
+  `docker-compose.yml` to match.
 - **Stuck at `AUTH_REQUIRED` with `IBKR_TWO_FA_HANDLER` blank**: expected — a fresh login is
   waiting on a manual 2FA approval. Check `docker compose logs ibkr-gateway` for the prompt.
 - **Repeated failed logins**: stop (`docker compose stop ibkr-gateway`), verify
   `IBKR_ACCOUNT`/`IBKR_PASSWORD` in `.env`, and check IBKR Account Management for any account-side
   lock triggered by the failed attempts before restarting — do not just restart in a loop.
 - **`GATEWAY_UNREACHABLE` from the backend but the container looks healthy**: confirm
-  `IBKR_BASE_URL` in `.env` points at `host.docker.internal:5000` (the container's published port),
-  not `:5001` (that's the old manual-Gateway default / IBeam's own health-server port, not its
-  Gateway REST port).
+  `IBKR_BASE_URL` in `.env` points at `host.docker.internal:5000` (the container's published port,
+  or whatever you remapped `IBKR_GATEWAY_PORT` to), not `:5001` (that's the old manual-Gateway
+  default / IBeam's own health-server port, not its Gateway REST port).

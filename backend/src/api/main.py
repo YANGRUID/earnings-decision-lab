@@ -21,6 +21,7 @@ from api.routers import (
     earnings_calendar,
     evaluations,
     health,
+    ibkr,
     options,
     portfolio,
     provider_settings,
@@ -125,6 +126,7 @@ def create_app() -> FastAPI:
     app.include_router(companies.router, prefix="/api/v1")
     app.include_router(earnings.router, prefix="/api/v1")
     app.include_router(earnings_calendar.router, prefix="/api/v1")
+    app.include_router(ibkr.router, prefix="/api/v1")
     app.include_router(decision_snapshots.router, prefix="/api/v1")
     app.include_router(benchmark_entries.router, prefix="/api/v1")
     app.include_router(benchmark_track_record.router, prefix="/api/v1")

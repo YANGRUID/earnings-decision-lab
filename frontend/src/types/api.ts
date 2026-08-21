@@ -322,6 +322,10 @@ export interface IbkrStatus {
   status_label: string;
 }
 
+export interface IbkrConnectResponse {
+  url: string;
+}
+
 export interface ProviderCapabilities {
   prices: boolean;
   earnings_estimates: boolean;

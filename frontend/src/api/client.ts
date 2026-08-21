@@ -17,6 +17,7 @@ import type {
   EvaluationStatusResponse,
   ExpirationSelectionResult,
   FilingSearchResponse,
+  IbkrConnectResponse,
   ImpliedMoveRequest,
   ImpliedMoveResponse,
   PendingDecisions,
@@ -161,6 +162,7 @@ export const api = {
   getReplaySummary: () => request<ReplaySummary>("/replay"),
 
   getSystemStatus: () => request<SystemStatus>("/system-status"),
+  getIbkrConnectUrl: () => request<IbkrConnectResponse>("/ibkr/connect"),
 
   getProviderDashboard: () => request<ProviderDashboard>("/settings/providers"),
   updateProviderSettings: (update: ProviderSettingsUpdate) =>

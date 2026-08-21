@@ -44,6 +44,16 @@ class Settings(BaseSettings):
     # no order-execution endpoint is ever called against this URL.
     ibkr_base_url: str = "https://localhost:5001/v1/api"
 
+    # Phase 4.8A -- the ibkr-gateway container's host-published port (see
+    # docker-compose.yml's ibkr-gateway service and .env.example's
+    # IBKR_GATEWAY_PORT). Used only by GET /ibkr/connect to construct the
+    # browser-facing login URL (api/routers/ibkr.py) -- distinct from
+    # ibkr_base_url above, which is the BACKEND CONTAINER's own path to
+    # the same Gateway via host.docker.internal. A browser running on the
+    # operator's own machine must use localhost; host.docker.internal only
+    # resolves inside another container.
+    ibkr_gateway_port: int = 5000
+
     # --- LLM provider (provider-agnostic — see docs/llm_providers.md) ---
     llm_provider: str = "deepseek"
 

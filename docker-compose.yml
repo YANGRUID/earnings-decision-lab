@@ -60,10 +60,22 @@ services:
     image: voyz/ibeam:0.5.12
     env_file:
       - .env
+    # IBEAM_KEY is deliberately NOT set here, even conditionally -- real,
+    # live-verified finding (2026-08-21): IBeam checks for this variable's
+    # mere PRESENCE, not its truthiness. Setting it to an empty string
+    # (which `IBEAM_KEY: ${IBKR_PASSWORD_KEY:-}` would do whenever
+    # IBKR_PASSWORD_KEY is unset -- Compose's `environment:` map form
+    # always creates the key) makes IBeam attempt `Fernet("").decrypt(...)`
+    # on every login, which always raises `ValueError: Fernet key must be
+    # 32 url-safe base64-encoded bytes` and fails authentication outright
+    # -- even for a correct, plain-text IBKR_PASSWORD. Encrypted-password
+    # support (IBKR_PASSWORD_KEY in .env.example) is consequently not
+    # wired up in this compose file yet -- it needs a custom entrypoint
+    # that only exports IBEAM_KEY when a real key is present, which is a
+    # separate, later enhancement, not built here.
     environment:
       IBEAM_ACCOUNT: ${IBKR_ACCOUNT:-}
       IBEAM_PASSWORD: ${IBKR_PASSWORD:-}
-      IBEAM_KEY: ${IBKR_PASSWORD_KEY:-}
       IBEAM_TWO_FA_HANDLER: ${IBKR_TWO_FA_HANDLER:-}
       IBEAM_PYOTP_SECRET: ${IBKR_PYOTP_SECRET:-}
     network_mode: bridge

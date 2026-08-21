@@ -13,10 +13,28 @@ function overallState(ibkr: IbkrStatus): { label: string; tone: "positive" | "ne
   return { label: "Gateway running and authenticated", tone: "positive" };
 }
 
+// Phase 4.8A -- the three-icon summary the in-app "Connect IBKR" workflow
+// asks for. Collapses status_label's four precise values (see
+// services/system_status.py::ibkr_status_label) down to three glanceable
+// buckets: COMPETING_SESSION is folded into the same red/negative bucket
+// as AUTH_REQUIRED (a real, distinct cause -- still shown verbatim in the
+// "IBKR: ..." line and the detail stats below, never hidden) since both
+// mean "not currently usable, needs your attention", while GATEWAY_
+// UNREACHABLE gets its own neutral "offline" treatment (the container/
+// process isn't even up, not a session problem).
+function emojiStatus(ibkr: IbkrStatus): { emoji: string; label: string } {
+  if (ibkr.status_label === "CONNECTED") return { emoji: "🟢", label: "Connected" };
+  if (ibkr.status_label === "GATEWAY_UNREACHABLE") return { emoji: "⚪", label: "Gateway Offline" };
+  if (ibkr.status_label === "COMPETING_SESSION") return { emoji: "🔴", label: "Competing Session" };
+  return { emoji: "🔴", label: "Authentication Required" };
+}
+
 export function Ibkr() {
   const status = useAsync(() => api.getSystemStatus(), []);
   const [testing, setTesting] = useState(false);
   const [result, setResult] = useState<string | null>(null);
+  const [connecting, setConnecting] = useState(false);
+  const [connectError, setConnectError] = useState<string | null>(null);
 
   if (status.loading && !status.data) return <LoadingState label="Checking IBKR Gateway status…" />;
   if (status.error && !status.data) return <ErrorState message={status.error} />;
@@ -24,6 +42,7 @@ export function Ibkr() {
 
   const { ibkr } = status.data;
   const state = overallState(ibkr);
+  const emoji = emojiStatus(ibkr);
   const optionsDomain = status.data.providers.domains.find((d) => d.domain === "options");
   const ibkrProvider = optionsDomain?.providers.find((p) => p.provider === "ibkr");
 
@@ -45,6 +64,43 @@ export function Ibkr() {
     }
   };
 
+  // Phase 4.8A -- "Connect IBKR": the backend hands back nothing but a
+  // URL (GET /ibkr/connect never sees or asks for a password); the real
+  // login -- username/password, IBKR Mobile 2FA approval -- happens on
+  // IBKR's own Gateway page, in this new tab, entirely outside this app.
+  const connectIbkr = async () => {
+    setConnecting(true);
+    setConnectError(null);
+    // Opened synchronously, inside this click handler's own call stack --
+    // browsers can silently block window.open() once a click's "user
+    // gesture" has expired, which the await below (a real network round
+    // trip) risks doing. Deliberately no noopener/noreferrer: this tab's
+    // destination is a fixed, trusted URL this app controls, never user
+    // input, so the reverse-tabnabbing risk those flags guard against
+    // doesn't apply -- and dropping them is what keeps `popup` a live
+    // handle this can still navigate once the real URL is known, instead
+    // of window.open() returning null.
+    const popup = window.open("", "_blank");
+    try {
+      const { url } = await api.getIbkrConnectUrl();
+      if (popup) {
+        popup.location.href = url;
+      } else {
+        setConnectError("Your browser blocked the new tab — allow pop-ups for this site and try again.");
+      }
+    } catch (err) {
+      popup?.close();
+      setConnectError(err instanceof ApiError ? err.message : "Could not reach the backend.");
+    } finally {
+      setConnecting(false);
+    }
+  };
+
+  const refreshStatus = () => {
+    setConnectError(null);
+    status.reload();
+  };
+
   return (
     <div>
       <div className="page-header">
@@ -61,8 +117,39 @@ export function Ibkr() {
         </p>
       </div>
       <div className="card" style={{ marginBottom: 20, maxWidth: 640 }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
-          <strong>Gateway session</strong>
+        <strong>Status</strong>
+        <div style={{ fontSize: "1.5rem", fontWeight: 600, marginTop: 6, marginBottom: 16 }}>
+          {emoji.emoji} {emoji.label}
+        </div>
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+          <button className="btn" onClick={connectIbkr} disabled={connecting}>
+            {connecting ? "Opening…" : "Connect IBKR"}
+          </button>
+          <button className="btn-secondary" onClick={refreshStatus} disabled={status.loading}>
+            {status.loading ? "Refreshing…" : "Refresh Status"}
+          </button>
+        </div>
+        {connectError && (
+          <div className="notice" style={{ marginTop: 14, marginBottom: 0 }}>
+            {connectError}
+          </div>
+        )}
+        <p className="text-sm text-muted" style={{ marginTop: 14, marginBottom: 0 }}>
+          "Connect IBKR" opens the Gateway's own login page in a new tab — enter your IBKR
+          username/password and approve the IBKR Mobile 2FA prompt there. This application never
+          sees any of that; it only opens the page and, afterward, reads the Gateway's real session
+          status back via "Refresh Status".
+        </p>
+
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "flex-start",
+            marginTop: 22,
+          }}
+        >
+          <strong>Gateway session detail</strong>
           <span className={`pill pill-${state.tone}`}>{state.label}</span>
         </div>
         <p className="mono text-sm" style={{ marginTop: 6, marginBottom: 0 }}>
@@ -93,15 +180,17 @@ export function Ibkr() {
         )}
         {!ibkr.gateway_reachable && (
           <p className="text-sm text-muted" style={{ marginTop: 14, marginBottom: 0 }}>
-            How to reconnect: start the IBKR Client Portal Gateway on this machine, open{" "}
-            <span className="mono">https://localhost:5001</span> in a browser and log in there, then
-            retry below.
+            How to reconnect: no Gateway process is reachable at all yet — this is a step before
+            "Connect IBKR" can help. If you're using the automated container, run{" "}
+            <span className="mono">docker compose up -d ibkr-gateway</span> (see
+            docs/ibkr_gateway_runtime.md); if you're running the Gateway manually, start it on this
+            machine. Then use "Refresh Status" above.
           </p>
         )}
         {ibkr.gateway_reachable && !ibkr.authenticated && !ibkr.competing && (
           <p className="text-sm text-muted" style={{ marginTop: 14, marginBottom: 0 }}>
             How to reconnect: the Gateway is running but your session has expired or was never
-            logged in — open <span className="mono">https://localhost:5001</span> and log in again.
+            logged in — click "Connect IBKR" above, log in, then "Refresh Status".
           </p>
         )}
       </div>

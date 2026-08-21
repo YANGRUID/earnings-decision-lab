@@ -540,6 +540,13 @@ class IbkrStatusResponse(BaseModel):
     status_label: str
 
 
+class IbkrConnectResponse(BaseModel):
+    """Phase 4.8A -- GET /ibkr/connect's only response shape: a browser-
+    facing URL, nothing else. See api/routers/ibkr.py."""
+
+    url: str
+
+
 class ProviderCapabilitiesResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
