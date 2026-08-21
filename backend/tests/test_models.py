@@ -10,6 +10,7 @@ from models.decision_snapshot import DecisionSnapshot
 from models.earnings_calendar_event import EarningsCalendarEvent
 from models.earnings_event import EarningsEvent
 from models.earnings_result import EarningsResult
+from models.entry_capture_attempt import EntryCaptureAttempt
 from models.entry_snapshot import EntrySnapshot
 from models.enums import (
     AnnouncementTime,
@@ -18,8 +19,12 @@ from models.enums import (
     DecisionSnapshotStatus,
     EarningsCalendarEventStatus,
     EarningsTiming,
+    EntryPolicy,
+    ExitPolicy,
+    ExpirationMode,
     OptionAction,
     OptionType,
+    RiskProfile,
 )
 from models.settlement_snapshot import SettlementSnapshot
 
@@ -177,9 +182,19 @@ def test_entry_snapshot_links_correctly(db_session):
     db_session.add(decision)
     db_session.flush()
 
+    attempt = EntryCaptureAttempt(
+        decision_snapshot_id=decision.id,
+        benchmark_portfolio_id=portfolio.id,
+        status=CaptureStatus.CAPTURED,
+    )
+    db_session.add(attempt)
+    db_session.flush()
+
     captured_at = datetime(2026, 8, 20, 15, 55, tzinfo=UTC)
     leg_buy = EntrySnapshot(
         decision_id=decision.id,
+        capture_attempt_id=attempt.id,
+        leg_index=0,
         status=CaptureStatus.CAPTURED,
         captured_at=captured_at,
         strike=Decimal("100.00"),
@@ -192,6 +207,8 @@ def test_entry_snapshot_links_correctly(db_session):
     )
     leg_sell = EntrySnapshot(
         decision_id=decision.id,
+        capture_attempt_id=attempt.id,
+        leg_index=1,
         status=CaptureStatus.CAPTURED,
         captured_at=captured_at,
         strike=Decimal("110.00"),
@@ -293,8 +310,19 @@ def test_entry_snapshot_rejects_update(db_session):
     db_session.add(decision)
     db_session.flush()
 
+    attempt = EntryCaptureAttempt(
+        decision_snapshot_id=decision.id,
+        benchmark_portfolio_id=portfolio.id,
+        status=CaptureStatus.FAILED,
+        capture_error="test: simulated IBKR failure",
+    )
+    db_session.add(attempt)
+    db_session.flush()
+
     entry = EntrySnapshot(
         decision_id=decision.id,
+        capture_attempt_id=attempt.id,
+        leg_index=0,
         status=CaptureStatus.FAILED,
         capture_error="test: simulated IBKR failure",
     )
@@ -324,4 +352,152 @@ def test_benchmark_portfolio_name_must_be_unique(db_session):
         )
     )
     with pytest.raises(IntegrityError):
+        db_session.flush()
+
+
+def test_benchmark_portfolio_policy_defaults(db_session):
+    """Phase 4.4 sec 0B/1: constructing a row without explicitly setting
+    the policy fields still gets the official benchmark's real defaults
+    -- $2,000 capital is asserted by the caller (no column default for a
+    dollar figure), but risk_profile/expiration_mode/entry_policy/
+    exit_policy/is_active all come from the model's own real defaults
+    once flushed (SQLAlchemy column defaults resolve at flush time, not
+    at plain Python construction)."""
+    portfolio = BenchmarkPortfolio(
+        name="Policy Defaults Test",
+        initial_capital=Decimal("2000.00"),
+        cash_balance=Decimal("2000.00"),
+    )
+    db_session.add(portfolio)
+    db_session.flush()
+    assert portfolio.initial_capital == Decimal("2000.00")
+    assert portfolio.risk_profile == RiskProfile.MODERATE
+    assert portfolio.expiration_mode == ExpirationMode.AUTO
+    assert portfolio.entry_policy == EntryPolicy.PRE_EARNINGS_15_55_ET
+    assert portfolio.exit_policy == ExitPolicy.FIRST_POST_EARNINGS_TRADING_DAY_CLOSE
+    assert portfolio.is_active is True
+
+
+def test_official_ai_earnings_benchmark_seed_row_persisted(db_session):
+    """The real, migrated seed row (641899980b94, renamed from Phase
+    4.3's 'Default Benchmark Portfolio') -- not a fixture, the actual
+    official benchmark this whole phase's capture logic reads."""
+    official = (
+        db_session.query(BenchmarkPortfolio).filter_by(name="AI Earnings Benchmark").one()
+    )
+    assert official.initial_capital == Decimal("2000.00")
+    assert official.risk_profile == RiskProfile.MODERATE
+    assert official.expiration_mode == ExpirationMode.AUTO
+    assert official.entry_policy == EntryPolicy.PRE_EARNINGS_15_55_ET
+    assert official.exit_policy == ExitPolicy.FIRST_POST_EARNINGS_TRADING_DAY_CLOSE
+    assert official.is_active is True
+
+
+def _seed_event_portfolio_decision_for_attempt(db_session, symbol: str = "TESTEC44"):
+    event = EarningsCalendarEvent(
+        symbol=symbol,
+        company_name="Entry Capture Attempt Test Co",
+        earnings_date=date(2026, 9, 16),
+        earnings_time=EarningsTiming.AMC,
+    )
+    portfolio = BenchmarkPortfolio(
+        name=f"EC Attempt Test Portfolio {symbol}",
+        initial_capital=Decimal("2000.00"),
+        cash_balance=Decimal("2000.00"),
+    )
+    db_session.add_all([event, portfolio])
+    db_session.flush()
+    decision = DecisionSnapshot(
+        earnings_calendar_event_id=event.id,
+        benchmark_portfolio_id=portfolio.id,
+        ticker=symbol,
+        company_name=event.company_name,
+        strategy_direction=DecisionDirection.BULLISH,
+        strategy_type="long_call",
+        generated_at=datetime(2026, 9, 16, 15, 55, tzinfo=UTC),
+        status=DecisionSnapshotStatus.PENDING_ENTRY,
+        engine_version="options-decision-engine-v3",
+        prompt_version="v1",
+        expiration_source="v3_auto_resolver",
+    )
+    db_session.add(decision)
+    db_session.flush()
+    return event, portfolio, decision
+
+
+def test_entry_capture_attempt_rejects_a_second_captured_attempt(db_session):
+    """The real, DB-level idempotency guarantee (Phase 4.4 sec 15): a
+    partial unique index on (decision_snapshot_id, benchmark_portfolio_id)
+    WHERE status='CAPTURED' rejects a second successful attempt outright
+    -- not just a service-layer convention."""
+    _event, portfolio, decision = _seed_event_portfolio_decision_for_attempt(db_session)
+
+    db_session.add(
+        EntryCaptureAttempt(
+            decision_snapshot_id=decision.id,
+            benchmark_portfolio_id=portfolio.id,
+            status=CaptureStatus.CAPTURED,
+        )
+    )
+    db_session.flush()
+
+    db_session.add(
+        EntryCaptureAttempt(
+            decision_snapshot_id=decision.id,
+            benchmark_portfolio_id=portfolio.id,
+            status=CaptureStatus.CAPTURED,
+        )
+    )
+    with pytest.raises(IntegrityError):
+        db_session.flush()
+
+
+def test_entry_capture_attempt_allows_multiple_failed_attempts(db_session):
+    """FAILED/PENDING rows are unrestricted -- only CAPTURED is unique --
+    so retries after a real failure are never blocked at the DB level."""
+    _event, portfolio, decision = _seed_event_portfolio_decision_for_attempt(
+        db_session, symbol="TESTEC44B"
+    )
+
+    db_session.add(
+        EntryCaptureAttempt(
+            decision_snapshot_id=decision.id,
+            benchmark_portfolio_id=portfolio.id,
+            status=CaptureStatus.FAILED,
+            capture_error="first failure",
+        )
+    )
+    db_session.add(
+        EntryCaptureAttempt(
+            decision_snapshot_id=decision.id,
+            benchmark_portfolio_id=portfolio.id,
+            status=CaptureStatus.FAILED,
+            capture_error="second failure",
+        )
+    )
+    db_session.flush()
+
+    count = (
+        db_session.query(EntryCaptureAttempt)
+        .filter_by(decision_snapshot_id=decision.id, benchmark_portfolio_id=portfolio.id)
+        .count()
+    )
+    assert count == 2
+
+
+def test_entry_capture_attempt_rejects_update(db_session):
+    _event, portfolio, decision = _seed_event_portfolio_decision_for_attempt(
+        db_session, symbol="TESTEC44C"
+    )
+    attempt = EntryCaptureAttempt(
+        decision_snapshot_id=decision.id,
+        benchmark_portfolio_id=portfolio.id,
+        status=CaptureStatus.FAILED,
+        capture_error="test failure",
+    )
+    db_session.add(attempt)
+    db_session.flush()
+
+    attempt.status = CaptureStatus.CAPTURED
+    with pytest.raises(ProgrammingError, match="insert-only"):
         db_session.flush()

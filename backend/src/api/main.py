@@ -13,6 +13,7 @@ from api.exceptions import register_exception_handlers
 from api.middleware import RequestContextMiddleware, SecurityHeadersMiddleware
 from api.rate_limit import SlidingWindowRateLimiter
 from api.routers import (
+    benchmark_entries,
     companies,
     decision_snapshots,
     earnings,
@@ -76,7 +77,7 @@ async def lifespan(app: FastAPI):
     # take the whole API down with it -- every other endpoint is
     # unaffected by the earnings calendar sync being unavailable.
     try:
-        app.state.scheduler = build_scheduler()
+        app.state.scheduler = build_scheduler(embedder=app.state.embedder)
         app.state.scheduler.start()
     except Exception:
         log.warning("Scheduler failed to start; earnings calendar sync disabled", exc_info=True)
@@ -123,6 +124,7 @@ def create_app() -> FastAPI:
     app.include_router(earnings.router, prefix="/api/v1")
     app.include_router(earnings_calendar.router, prefix="/api/v1")
     app.include_router(decision_snapshots.router, prefix="/api/v1")
+    app.include_router(benchmark_entries.router, prefix="/api/v1")
     app.include_router(options.router, prefix="/api/v1")
     app.include_router(research.router, prefix="/api/v1")
     app.include_router(evaluations.router, prefix="/api/v1")

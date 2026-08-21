@@ -12,6 +12,7 @@ from models.earnings_estimate_snapshot import EarningsEstimateSnapshot
 from models.earnings_event import EarningsEvent
 from models.earnings_expectation_snapshot import EarningsExpectationSnapshot
 from models.earnings_result import EarningsResult
+from models.entry_capture_attempt import EntryCaptureAttempt
 from models.entry_snapshot import EntrySnapshot
 from models.filing import Filing
 from models.options_snapshot import OptionsSnapshot
@@ -41,6 +42,7 @@ __all__ = [
     "EarningsEvent",
     "EarningsExpectationSnapshot",
     "EarningsResult",
+    "EntryCaptureAttempt",
     "EntrySnapshot",
     "Filing",
     "OptionsSnapshot",

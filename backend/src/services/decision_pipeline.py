@@ -29,7 +29,7 @@ from models.benchmark_portfolio import BenchmarkPortfolio
 from models.company import Company
 from models.decision_snapshot import DecisionSnapshot
 from models.earnings_calendar_event import EarningsCalendarEvent
-from models.enums import AnnouncementTime, EarningsTiming, RiskProfile
+from models.enums import AnnouncementTime, EarningsTiming
 from providers.base import OptionsDataProvider
 from rag.embeddings import EmbeddingProvider
 from services.decision_engine import generate_decision
@@ -38,12 +38,6 @@ from services.earnings_eligibility import check_eligibility
 from services.llm.base import LLMProvider
 
 log = logging.getLogger("services.decision_pipeline")
-
-# benchmark_portfolio has no risk_profile column yet -- not part of this
-# phase's migration scope (see 201cc8a16cb0's own note). Every decision
-# this pipeline generates uses this fixed default until a later
-# migration adds a real per-portfolio setting.
-DEFAULT_RISK_PROFILE = RiskProfile.MODERATE
 
 # How long past the scheduled entry_timestamp a generation attempt is
 # still considered safe -- see PHASE4.3_ARCHITECTURE_REVIEW.md sec 3.
@@ -173,9 +167,10 @@ def run_decision_pipeline_for_event(
         )
 
     try:
-        result = generate_decision(
-            db, llm, embedder, company, risk_profile=DEFAULT_RISK_PROFILE
-        )
+        # Phase 4.4 sec 0B: the portfolio's own stored policy, not a
+        # hardcoded constant (that gap was flagged in the Phase 4.3
+        # report and is resolved here).
+        result = generate_decision(db, llm, embedder, company, risk_profile=portfolio.risk_profile)
         snapshot = freeze_decision_snapshot(
             db,
             calendar_event=calendar_event,

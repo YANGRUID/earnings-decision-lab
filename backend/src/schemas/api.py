@@ -85,6 +85,81 @@ class DecisionSnapshotResponse(BaseModel):
     created_at: datetime
 
 
+class EntrySnapshotResponse(BaseModel):
+    """Phase 4.4 -- one captured (or failed) leg of an official
+    benchmark entry attempt. Read-only, insert-only at the DB level --
+    see api/routers/decision_snapshots.py."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    capture_attempt_id: int
+    leg_index: int
+    status: str
+    captured_at: datetime | None
+
+    external_contract_id: str | None
+    expiration: date | None
+    strike: Decimal | None
+    option_type: str | None
+    action: str | None
+    quantity: int | None
+    multiplier: Decimal | None
+
+    bid: Decimal | None
+    ask: Decimal | None
+    mid: Decimal | None
+    last_price: Decimal | None
+    implied_volatility: Decimal | None
+    delta: Decimal | None
+    gamma: Decimal | None
+    theta: Decimal | None
+    vega: Decimal | None
+    market_data_quality: str | None
+    pricing_source: str | None
+
+    benchmark_entry_price: Decimal | None
+    pricing_assumption: str | None
+
+    capture_error: str | None
+    source_provider: str | None
+    created_at: datetime
+
+
+class EntryCaptureAttemptResponse(BaseModel):
+    """Phase 4.4 -- one official benchmark entry capture attempt,
+    including every leg it covers. A decision_snapshot only becomes an
+    "entered" benchmark observation when a row here has status=CAPTURED
+    (see services/decision_lifecycle.py) -- a FAILED attempt is still a
+    real, permanent, honest record, never hidden."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    decision_snapshot_id: int
+    benchmark_portfolio_id: int
+    status: str
+    capture_error: str | None
+
+    underlying_price: Decimal | None
+    underlying_bid: Decimal | None
+    underlying_ask: Decimal | None
+    underlying_timestamp: datetime | None
+    option_market_timestamp: datetime | None
+
+    net_entry_price_per_share: Decimal | None
+    net_entry_cash: Decimal | None
+    contracts: int | None
+    initial_max_risk: Decimal | None
+    capital_utilization: Decimal | None
+
+    source_provider: str | None
+    captured_at: datetime | None
+    created_at: datetime
+
+    legs: list[EntrySnapshotResponse] = []
+
+
 class EarningsCalendarEventResponse(BaseModel):
     """Phase 4.2 -- one row from the forward-looking, Finnhub-sourced
     earnings_calendar_event table. Deliberately a distinct schema from

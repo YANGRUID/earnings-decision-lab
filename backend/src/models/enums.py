@@ -293,3 +293,36 @@ class RiskProfile(enum.StrEnum):
     CONSERVATIVE = "conservative"
     MODERATE = "moderate"
     AGGRESSIVE = "aggressive"
+
+
+class ExpirationMode(enum.StrEnum):
+    """Phase 4.4 -- a benchmark_portfolio's stored expiration-selection
+    policy. AUTO is the only member today, matching Phase 4.3 decision
+    #3 (V3's current internal Auto-mode resolver is used as-is, not
+    refactored to the separate scored Expiration Engine) -- this column
+    records the policy explicitly rather than leaving it an unstated
+    assumption in service code, so a future MANUAL/scored-engine policy
+    is a real, auditable per-portfolio choice, not a silent behavior
+    change."""
+
+    AUTO = "auto"
+
+
+class EntryPolicy(enum.StrEnum):
+    """Phase 4.4 -- a benchmark_portfolio's stored entry-timing policy.
+    PRE_EARNINGS_15_55_ET describes exactly what
+    analytics/earnings_timing.py::compute_entry_exit_schedule already
+    computes (see that module for the real BMO/AMC/DMH/UNKNOWN rule) --
+    this column documents the policy as data, not new behavior."""
+
+    PRE_EARNINGS_15_55_ET = "pre_earnings_15_55_et"
+
+
+class ExitPolicy(enum.StrEnum):
+    """Phase 4.4 -- a benchmark_portfolio's stored exit-timing policy.
+    Recorded now for completeness even though Phase 4.4 only implements
+    entry capture (Phase 4.5 will be the first thing that actually acts
+    on it) -- also exactly what compute_entry_exit_schedule already
+    computes (its ``exit_timestamp``)."""
+
+    FIRST_POST_EARNINGS_TRADING_DAY_CLOSE = "first_post_earnings_trading_day_close"
