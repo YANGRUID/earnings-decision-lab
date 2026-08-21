@@ -29,7 +29,10 @@ def _settings(**overrides) -> Settings:
 
 
 class TestGetProviderDashboard:
-    def test_default_price_history_resolution_has_tiingo_primary_and_av_fallback(self, db_session):
+    def test_default_price_history_resolution_has_tiingo_primary_and_av_fallback(
+        self, clean_provider_state
+    ):
+        db_session = clean_provider_state
         domains = get_provider_dashboard(db_session, _settings())
         price_history = next(d for d in domains if d.domain == "price_history")
         assert price_history.primary == "tiingo"
@@ -122,7 +125,10 @@ class TestGetProviderDashboard:
         tiingo = next(p for p in price_history.providers if p.provider == "tiingo")
         assert tiingo.entitlement_note is None
 
-    def test_last_success_at_for_price_history_comes_from_a_real_price_bar_row(self, db_session):
+    def test_last_success_at_for_price_history_comes_from_a_real_price_bar_row(
+        self, clean_provider_state
+    ):
+        db_session = clean_provider_state
         company = Company(ticker="ZZPSTAT1", name="ZZ Provider Status Co", cik="0009999801")
         db_session.add(company)
         db_session.flush()
@@ -148,7 +154,10 @@ class TestGetProviderDashboard:
         tiingo = next(p for p in price_history.providers if p.provider == "tiingo")
         assert tiingo.last_success_at == retrieved_at
 
-    def test_last_success_at_is_none_when_nothing_has_ever_been_ingested(self, db_session):
+    def test_last_success_at_is_none_when_nothing_has_ever_been_ingested(
+        self, clean_provider_state
+    ):
+        db_session = clean_provider_state
         domains = get_provider_dashboard(db_session, _settings())
         options = next(d for d in domains if d.domain == "options")
         ibkr = next(p for p in options.providers if p.provider == "ibkr")
@@ -201,7 +210,10 @@ class TestGetProviderDashboard:
         assert tiingo.last_error_status == "auth_failed"
         assert tiingo.last_error_detail == "401 unauthorized"
 
-    def test_options_snapshot_last_success_uses_the_options_snapshot_table(self, db_session):
+    def test_options_snapshot_last_success_uses_the_options_snapshot_table(
+        self, clean_provider_state
+    ):
+        db_session = clean_provider_state
         company = Company(ticker="ZZPSTAT2", name="ZZ Provider Status Co 2", cik="0009999802")
         db_session.add(company)
         db_session.flush()

@@ -6,9 +6,14 @@ from services.symbol_resolution import normalize_ticker, resolve_symbol
 
 _TICKERS_URL_PATTERN = re.compile(r"https://www\.sec\.gov/files/company_tickers\.json")
 
-# Real-shaped response per SEC's own company_tickers.json format.
+# Real-shaped response per SEC's own company_tickers.json format. "ZZQNEW"
+# (not a real ticker) rather than a real one on purpose: this project's
+# shared dev database can carry real, already-researched Company rows for
+# real tickers (accumulated by the live backend/scheduler, not by this
+# test suite), which would make a "ticker the DB has never seen before"
+# test flaky against whatever real companies happen to already exist.
 REAL_TICKERS_RESPONSE = {
-    "0": {"cik_str": 320193, "ticker": "AAPL", "title": "Apple Inc."},
+    "0": {"cik_str": 320193, "ticker": "ZZQNEW", "title": "ZZ New Ticker Test Co"},
     "1": {"cik_str": 1045810, "ticker": "NVDA", "title": "NVIDIA CORP"},
 }
 
@@ -55,7 +60,7 @@ def test_already_researched_ticker_reuses_existing_company_without_a_sec_call(
 def test_new_real_ticker_resolves_via_sec_lookup(db_session, httpx_mock):
     httpx_mock.add_response(url=_TICKERS_URL_PATTERN, json=REAL_TICKERS_RESPONSE)
 
-    result = resolve_symbol(db_session, _edgar(), "AAPL")
+    result = resolve_symbol(db_session, _edgar(), "ZZQNEW")
 
     assert result.supported is True
     assert result.existing_company is None

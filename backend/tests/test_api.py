@@ -259,7 +259,8 @@ def test_get_earnings_event_historical_moves_null_with_no_other_events(client, d
     assert response.json()["historical_moves"] is None
 
 
-def test_replay_summary_empty_options_data_still_lists_companies(client, db_session):
+def test_replay_summary_empty_options_data_still_lists_companies(client, clean_provider_state):
+    db_session = clean_provider_state
     company, _event = _seed_company_with_earnings(db_session)
 
     response = client.get("/api/v1/replay")

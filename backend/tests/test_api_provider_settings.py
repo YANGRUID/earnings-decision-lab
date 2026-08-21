@@ -85,7 +85,9 @@ class TestUpdateSettings:
         )
         assert price_history["primary"] == "alpha_vantage"
 
-    def test_unknown_provider_name_is_rejected_with_422_and_not_persisted(self, client):
+    def test_unknown_provider_name_is_rejected_with_422_and_not_persisted(
+        self, client, clean_provider_state
+    ):
         response = client.put(
             "/api/v1/settings/providers", json={"price_history_primary": "made_up_provider"}
         )
@@ -122,8 +124,9 @@ class TestTestConnection:
         assert response.status_code == 404
 
     def test_successful_check_returns_connected_and_records_a_health_event(
-        self, client, db_session, monkeypatch
+        self, client, clean_provider_state, monkeypatch
     ):
+        db_session = clean_provider_state
         monkeypatch.setattr(
             provider_settings_router,
             "test_connection",

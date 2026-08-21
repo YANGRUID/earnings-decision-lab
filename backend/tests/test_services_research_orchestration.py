@@ -223,12 +223,18 @@ def _providers(
 
 
 def test_unsupported_symbol_raises_before_creating_any_job(db_session):
+    # A delta, not an absolute count: this shared dev DB can carry real
+    # ResearchPreparationJob rows committed by something other than this
+    # test (e.g. the live backend/scheduler), which an absolute
+    # `count() == 0` would wrongly fail against. The delta is exactly what
+    # this test means to prove -- no *new* job was created by this call.
+    before = db_session.query(ResearchPreparationJob).count()
     try:
         prepare_company_research(db_session, "not a ticker!!!", _providers(), now=NOW)
         raise AssertionError("expected UnsupportedSymbolError")
     except UnsupportedSymbolError:
         pass
-    assert db_session.query(ResearchPreparationJob).count() == 0
+    assert db_session.query(ResearchPreparationJob).count() == before
 
 
 def test_new_ticker_creates_company_and_completes_required_steps(db_session):

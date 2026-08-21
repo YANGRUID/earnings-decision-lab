@@ -10,7 +10,8 @@ from services.provider_settings import (
 
 
 class TestGetAppProviderSettings:
-    def test_creates_all_null_singleton_row_on_a_fresh_database(self, db_session):
+    def test_creates_all_null_singleton_row_on_a_fresh_database(self, clean_provider_state):
+        db_session = clean_provider_state
         row = get_app_provider_settings(db_session)
         assert row.id == 1
         assert row.price_history_primary is None
@@ -34,7 +35,8 @@ class TestUpdateAppProviderSettings:
         )
         assert row.price_history_primary == "alpha_vantage"
 
-    def test_rejects_an_unknown_price_history_provider(self, db_session):
+    def test_rejects_an_unknown_price_history_provider(self, clean_provider_state):
+        db_session = clean_provider_state
         with pytest.raises(UnknownProviderSelectionError):
             update_app_provider_settings(
                 db_session, ProviderSettingsUpdate(price_history_primary="made_up_provider")
