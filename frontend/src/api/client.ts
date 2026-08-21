@@ -2,6 +2,8 @@ import type {
   AIDecisionVersion,
   AIResearchHistoryItem,
   AIThesisVersion,
+  BenchmarkCalibration,
+  BenchmarkTrackRecord,
   Company,
   DecisionDirection,
   DecisionVolatilityView,
@@ -240,5 +242,36 @@ export const api = {
     if (params.window) qs.set("window", params.window);
     const suffix = qs.toString() ? `?${qs.toString()}` : "";
     return request<TrackRecord>(`/research/track-record${suffix}`);
+  },
+
+  // Phase 4.6 -- AI Earnings Analyst Track Record, over the Benchmark
+  // Portfolio's real, settled forward-test decisions. Distinct from
+  // getTrackRecord above (a different system, over the legacy AI
+  // Options Decision journal).
+  getBenchmarkTrackRecord: (
+    params: {
+      portfolioId?: number;
+      strategy?: string;
+      confidenceBucket?: string;
+      dteBucket?: string;
+      riskProfile?: RiskProfile;
+      ivRegime?: string;
+    } = {}
+  ) => {
+    const qs = new URLSearchParams();
+    if (params.portfolioId) qs.set("portfolio_id", String(params.portfolioId));
+    if (params.strategy) qs.set("strategy", params.strategy);
+    if (params.confidenceBucket) qs.set("confidence_bucket", params.confidenceBucket);
+    if (params.dteBucket) qs.set("dte_bucket", params.dteBucket);
+    if (params.riskProfile) qs.set("risk_profile", params.riskProfile);
+    if (params.ivRegime) qs.set("iv_regime", params.ivRegime);
+    const suffix = qs.toString() ? `?${qs.toString()}` : "";
+    return request<BenchmarkTrackRecord>(`/benchmark/track-record${suffix}`);
+  },
+  getBenchmarkCalibration: (params: { portfolioId?: number } = {}) => {
+    const qs = new URLSearchParams();
+    if (params.portfolioId) qs.set("portfolio_id", String(params.portfolioId));
+    const suffix = qs.toString() ? `?${qs.toString()}` : "";
+    return request<BenchmarkCalibration>(`/benchmark/calibration${suffix}`);
   },
 };

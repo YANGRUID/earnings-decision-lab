@@ -163,7 +163,10 @@ class TestGetProviderDashboard:
         ibkr = next(p for p in options.providers if p.provider == "ibkr")
         assert ibkr.last_success_at is None
 
-    def test_llm_last_success_at_comes_only_from_a_connected_health_event(self, db_session):
+    def test_llm_last_success_at_comes_only_from_a_connected_health_event(
+        self, clean_provider_state
+    ):
+        db_session = clean_provider_state
         occurred_at = datetime(2026, 3, 1, 9, 0, tzinfo=UTC)
         record_health_event(
             db_session, "deepseek", "llm", ProviderHealthStatus.CONNECTED, None, occurred_at
@@ -173,7 +176,8 @@ class TestGetProviderDashboard:
         deepseek = next(p for p in llm.providers if p.provider == "deepseek")
         assert deepseek.last_success_at == occurred_at
 
-    def test_llm_last_success_at_ignores_a_failed_health_event(self, db_session):
+    def test_llm_last_success_at_ignores_a_failed_health_event(self, clean_provider_state):
+        db_session = clean_provider_state
         record_health_event(
             db_session,
             "deepseek",

@@ -825,3 +825,39 @@ export interface TrackRecord {
   strategy_win_rate_available: boolean;
   confidence_calibration: ConfidenceBucket[];
 }
+
+// Phase 4.6 -- AI Earnings Analyst Track Record, over the real, settled
+// Benchmark Portfolio forward-test decisions (DecisionSnapshot +
+// SettlementCaptureAttempt). Deliberately a separate shape from
+// TrackRecord above -- that one grades the legacy AI Options Decision
+// journal; this one grades whether a real $2,000 benchmark following the
+// AI would actually have made money. See docs/PHASE4_6_TRACK_RECORD_
+// ARCHITECTURE_REVIEW.md.
+export interface BenchmarkTrackRecord {
+  portfolio_id: number;
+  total_decisions: number;
+  settled_decisions: number;
+  win_rate: Rate;
+  average_r: string | null;
+  median_r: string | null;
+  expectancy: string | null;
+  profit_factor: string | null;
+  max_drawdown: string | null;
+  max_drawdown_pct: string | null;
+  directional_accuracy: Rate;
+  breakeven_accuracy: Rate;
+  range_accuracy: Rate;
+}
+
+export interface BenchmarkCalibrationBucket {
+  label: string;
+  lower: number | null;
+  upper: number | null;
+  rate: Rate;
+}
+
+export interface BenchmarkCalibration {
+  portfolio_id: number;
+  settled_decisions: number;
+  buckets: BenchmarkCalibrationBucket[];
+}

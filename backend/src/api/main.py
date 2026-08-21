@@ -14,6 +14,7 @@ from api.middleware import RequestContextMiddleware, SecurityHeadersMiddleware
 from api.rate_limit import SlidingWindowRateLimiter
 from api.routers import (
     benchmark_entries,
+    benchmark_track_record,
     companies,
     decision_snapshots,
     earnings,
@@ -126,6 +127,7 @@ def create_app() -> FastAPI:
     app.include_router(earnings_calendar.router, prefix="/api/v1")
     app.include_router(decision_snapshots.router, prefix="/api/v1")
     app.include_router(benchmark_entries.router, prefix="/api/v1")
+    app.include_router(benchmark_track_record.router, prefix="/api/v1")
     app.include_router(settlements.router, prefix="/api/v1")
     app.include_router(options.router, prefix="/api/v1")
     app.include_router(research.router, prefix="/api/v1")

@@ -1162,6 +1162,53 @@ class TrackRecordResponse(BaseModel):
     confidence_calibration: list[ConfidenceBucketResponse]
 
 
+class BenchmarkTrackRecordResponse(BaseModel):
+    """Phase 4.6 -- Verified AI Forward-Test Performance Analytics over
+    the real, immutable Phase 4 tables (DecisionSnapshot + EntrySnapshot
+    + EntryCaptureAttempt + SettlementCaptureAttempt/ExitSnapshot) --
+    never the legacy AIDecisionVersion/TrackRecordResponse above, a
+    different system over a different table. Every rate is a
+    RateResponse whose ``pct`` is ``null`` when its ``total`` is 0; every
+    plain numeric metric is ``null`` under the same condition
+    (``settled_decisions == 0``) -- this API never fabricates a metric
+    from an empty sample. See services/benchmark_track_record.py.
+    """
+
+    portfolio_id: int
+    total_decisions: int
+    settled_decisions: int
+    win_rate: RateResponse
+    average_r: Decimal | None
+    median_r: Decimal | None
+    expectancy: Decimal | None
+    profit_factor: Decimal | None
+    max_drawdown: Decimal | None
+    max_drawdown_pct: Decimal | None
+    directional_accuracy: RateResponse
+    breakeven_accuracy: RateResponse
+    range_accuracy: RateResponse
+
+
+class BenchmarkCalibrationBucketResponse(BaseModel):
+    label: str
+    lower: int | None
+    upper: int | None
+    rate: RateResponse
+
+
+class BenchmarkCalibrationResponse(BaseModel):
+    """Phase 4.6 -- predicted DecisionSnapshot.estimated_probability vs.
+    real SettlementCaptureAttempt.is_win, bucketed into five ranges
+    (<60%, 60-70%, 70-80%, 80-90%, 90%+). ``settled_decisions`` is every
+    real settlement on record (matching BenchmarkTrackRecordResponse's
+    own definition); a bucket's own ``rate.total`` only reflects the
+    subset that also had a gradable probability estimate."""
+
+    portfolio_id: int
+    settled_decisions: int
+    buckets: list[BenchmarkCalibrationBucketResponse]
+
+
 class ProviderSettingsUpdateRequest(BaseModel):
     """Every field optional -- only supplied fields are changed. Setting a
     field to null explicitly is not the same as omitting it; use the
