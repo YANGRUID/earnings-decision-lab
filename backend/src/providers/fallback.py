@@ -16,7 +16,7 @@ from datetime import date, datetime
 
 from observability.redact import redact
 from providers.base import MarketDataProvider, OptionsDataProvider
-from providers.types import OHLCBar, OptionQuote, UnderlyingQuote
+from providers.types import KnownContract, OHLCBar, OptionQuote, UnderlyingQuote
 
 log = logging.getLogger(__name__)
 
@@ -130,3 +130,30 @@ class OptionsProviderChain(OptionsDataProvider):
                 self.last_fallback_reason = None
             return quote
         return None
+
+    def get_quotes_for_known_contracts(
+        self, ticker: str, contracts: list[KnownContract], expiration: date, as_of: datetime
+    ) -> list[OptionQuote]:
+        """Same primary-then-fallback shape as get_option_chain above --
+        an empty list is a legitimate, honestly reported result (matching
+        get_option_chain's own precedent), so only a real exception falls
+        through to the next provider, never an empty-but-successful
+        response."""
+        self.last_requested_provider = self._providers[0][0]
+        errors: list[tuple[str, Exception]] = []
+        for name, provider in self._providers:
+            try:
+                quotes = provider.get_quotes_for_known_contracts(
+                    ticker, contracts, expiration, as_of
+                )
+                self.last_actual_provider = name
+                if errors:
+                    failed_name, failed_exc = errors[-1]
+                    self.last_fallback_reason = f"{failed_name} failed: {redact(str(failed_exc))}"
+                else:
+                    self.last_fallback_reason = None
+                return quotes
+            except Exception as exc:  # noqa: BLE001 — same rationale as get_option_chain
+                log.warning("provider %s failed for %s: %s", name, ticker, redact(str(exc)))
+                errors.append((name, exc))
+        raise AllProvidersFailedError(errors)

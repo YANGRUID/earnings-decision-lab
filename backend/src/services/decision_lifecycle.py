@@ -14,15 +14,23 @@ itself:
                             far failed -- see EntryCaptureAttempt rows
                             directly for the honest reason why)
                 |
-                +-- (Phase 4.5) SettlementSnapshot with status=CAPTURED
-                    exists too? -> SETTLED
+                +-- (Phase 4.5) SettlementCaptureAttempt with
+                    status=CAPTURED exists too? -> SETTLED
 
 A genuinely mutable "workflow/execution state" table was considered for
 this (Phase 4.3's own report raised it as a possibility) and rejected as
 unnecessary: every fact this module needs is already a real, queryable,
-append-only row (EntryCaptureAttempt, SettlementSnapshot) -- there is no
-information here that isn't already durably recorded somewhere immutable.
-This module is pure read-side derivation, nothing else; it never writes.
+append-only row (EntryCaptureAttempt, SettlementCaptureAttempt) -- there
+is no information here that isn't already durably recorded somewhere
+immutable. This module is pure read-side derivation, nothing else; it
+never writes.
+
+Phase 4.5 note: SETTLED is derived from ``settlement_capture_attempt``
+(new table, mirrors entry_capture_attempt exactly -- see
+models/settlement_capture_attempt.py), not the older ``settlement_
+snapshot`` (a Phase 4.1 scaffold, since superseded and never written to
+-- see PHASE4_5_SETTLEMENT_ARCHITECTURE_REVIEW.md's 2026-08-21
+addendum). ``settlement_snapshot`` is deliberately left untouched.
 """
 
 from enum import StrEnum
@@ -31,7 +39,7 @@ from sqlalchemy.orm import Session
 
 from models.entry_capture_attempt import EntryCaptureAttempt
 from models.enums import CaptureStatus
-from models.settlement_snapshot import SettlementSnapshot
+from models.settlement_capture_attempt import SettlementCaptureAttempt
 
 
 class DecisionLifecycleStage(StrEnum):
@@ -56,14 +64,18 @@ def has_official_entry(db: Session, decision_snapshot_id: int, portfolio_id: int
     )
 
 
-def has_settlement(db: Session, decision_snapshot_id: int) -> bool:
-    """Phase 4.5 concern -- SettlementSnapshot exists as of Phase 4.1,
-    but nothing writes a CAPTURED row to it yet. Included now so this
-    module's own lifecycle derivation doesn't need a second migration
-    later."""
+def has_settlement(db: Session, decision_snapshot_id: int, portfolio_id: int) -> bool:
+    """True only when a complete, coherent settlement (exit) capture
+    exists -- mirrors has_official_entry's own all-or-nothing rule and
+    portfolio scoping exactly (Phase 4.5: no partial multi-leg exit
+    counts as a real, closed benchmark position)."""
     return (
-        db.query(SettlementSnapshot)
-        .filter_by(decision_id=decision_snapshot_id, status=CaptureStatus.CAPTURED)
+        db.query(SettlementCaptureAttempt)
+        .filter_by(
+            decision_snapshot_id=decision_snapshot_id,
+            benchmark_portfolio_id=portfolio_id,
+            status=CaptureStatus.CAPTURED,
+        )
         .first()
         is not None
     )
@@ -72,7 +84,7 @@ def has_settlement(db: Session, decision_snapshot_id: int) -> bool:
 def decision_lifecycle_stage(
     db: Session, decision_snapshot_id: int, portfolio_id: int
 ) -> DecisionLifecycleStage:
-    if has_settlement(db, decision_snapshot_id):
+    if has_settlement(db, decision_snapshot_id, portfolio_id):
         return DecisionLifecycleStage.SETTLED
     if has_official_entry(db, decision_snapshot_id, portfolio_id):
         return DecisionLifecycleStage.ENTERED

@@ -33,15 +33,23 @@ from datetime import UTC, datetime
 from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
+from analytics.earnings_timing import compute_entry_exit_schedule
+from analytics.market_session import EASTERN
 from core.config import get_settings
 from db.session import SessionLocal, engine
 from models.benchmark_portfolio import BenchmarkPortfolio
 from models.decision_snapshot import DecisionSnapshot
 from models.earnings_calendar_event import EarningsCalendarEvent
-from models.enums import EarningsCalendarEventStatus
+from models.entry_capture_attempt import EntryCaptureAttempt
+from models.enums import CaptureStatus, EarningsCalendarEventStatus
+from models.settlement_capture_attempt import SettlementCaptureAttempt
 from providers.factory import build_earnings_calendar_provider, build_options_provider_chain
 from rag.embeddings import EmbeddingProvider
 from services.benchmark_entry_capture import capture_benchmark_entry
+from services.benchmark_exit_capture import (
+    _map_timing,  # noqa: PLC2701 -- shared private helper, same BMO/AMC/DMH mapping as the exit service itself
+    capture_benchmark_exit,
+)
 from services.decision_pipeline import run_decision_pipeline_for_event
 from services.earnings_calendar_sync import sync_earnings_calendar
 from services.llm.factory import get_llm_provider
@@ -50,12 +58,16 @@ log = logging.getLogger("services.scheduler")
 
 CALENDAR_SYNC_JOB_ID = "earnings_calendar_sync"
 DECISION_AND_ENTRY_CAPTURE_JOB_ID = "decision_and_entry_capture"
+EXIT_CAPTURE_JOB_ID = "exit_capture"
 
 # The real, fixed wall-clock trigger every eligible event's entry_
 # timestamp resolves to (analytics/earnings_timing.py::ENTRY_EXIT_TIME)
 # -- only the *date* varies per event, never the time, so one daily cron
 # job in America/New_York (not the scheduler's default UTC) is
-# sufficient; no continuous polling needed.
+# sufficient; no continuous polling needed. The exit job shares this
+# exact same wall-clock time, since ENTRY_EXIT_TIME is also
+# compute_entry_exit_schedule()'s exit_timestamp -- see EXIT_CAPTURE_
+# JOB_ID's own registration below for why it's still a separate job.
 _ENTRY_HOUR_ET = 15
 _ENTRY_MINUTE_ET = 55
 
@@ -175,6 +187,92 @@ def run_decision_and_entry_capture_job() -> None:
         db.close()
 
 
+def run_exit_capture_job() -> None:
+    """Phase 4.5 approved decision 5: a job of its own, not folded into
+    run_decision_and_entry_capture_job -- the two scan disjoint decision
+    sets ("just entered, nothing to exit yet" vs. "already entered, due
+    for exit"), so a missed or slow entry run should never block or
+    delay the unrelated exit run for a different day's decisions.
+
+    Scans every decision with a real CAPTURED entry but no CAPTURED
+    settlement yet, computes each one's real exit_date via
+    compute_entry_exit_schedule() (never a naive "T+1 from entry"
+    assumption -- BMO and AMC resolve differently, see analytics/
+    earnings_timing.py), and only attempts capture_benchmark_exit for
+    the ones actually due today. This pre-filter (rather than calling
+    capture_benchmark_exit for every entered-but-unsettled decision
+    every day) matters: without it, every decision not yet due for exit
+    would grow a spurious FAILED settlement attempt row on every single
+    day it isn't due, since capture_benchmark_exit's own no-lookahead
+    check would reject it anyway -- honest, but noisy and wasteful.
+
+    Needs no embedder/LLM at all -- settlement never calls generate_
+    decision() or any AI path, only real market data via the options
+    provider.
+    """
+    db = SessionLocal()
+    try:
+        settings = get_settings()
+        options_provider = build_options_provider_chain(settings, db=db)
+        if options_provider is None:
+            log.warning("exit capture run skipped: no options provider configured")
+            return
+
+        portfolio = (
+            db.query(BenchmarkPortfolio)
+            .filter_by(is_active=True)
+            .order_by(BenchmarkPortfolio.id)
+            .first()
+        )
+        if portfolio is None:
+            log.warning("exit capture run skipped: no active benchmark_portfolio")
+            return
+
+        now = datetime.now(UTC)
+        today_et = now.astimezone(EASTERN).date()
+
+        entered_ids = db.query(EntryCaptureAttempt.decision_snapshot_id).filter(
+            EntryCaptureAttempt.benchmark_portfolio_id == portfolio.id,
+            EntryCaptureAttempt.status == CaptureStatus.CAPTURED,
+        )
+        settled_ids = db.query(SettlementCaptureAttempt.decision_snapshot_id).filter(
+            SettlementCaptureAttempt.benchmark_portfolio_id == portfolio.id,
+            SettlementCaptureAttempt.status == CaptureStatus.CAPTURED,
+        )
+        candidates = (
+            db.query(DecisionSnapshot)
+            .filter(DecisionSnapshot.id.in_(entered_ids))
+            .filter(DecisionSnapshot.id.notin_(settled_ids))
+            .all()
+        )
+
+        for decision_snapshot in candidates:
+            calendar_event = decision_snapshot.earnings_calendar_event
+            schedule = compute_entry_exit_schedule(
+                calendar_event.earnings_date, _map_timing(calendar_event.earnings_time)
+            )
+            if schedule.exit_date != today_et:
+                continue
+            try:
+                capture_benchmark_exit(
+                    db,
+                    decision_snapshot=decision_snapshot,
+                    portfolio=portfolio,
+                    options_provider=options_provider,
+                    now=now,
+                )
+                db.commit()
+            except Exception:
+                db.rollback()
+                log.error(
+                    "exit capture failed for decision_snapshot_id=%s",
+                    decision_snapshot.id,
+                    exc_info=True,
+                )
+    finally:
+        db.close()
+
+
 def build_scheduler(embedder: EmbeddingProvider | None = None) -> AsyncIOScheduler:
     """Constructs (but does not start) the scheduler -- see
     api/main.py::lifespan for the actual start/shutdown lifecycle.
@@ -203,6 +301,15 @@ def build_scheduler(embedder: EmbeddingProvider | None = None) -> AsyncIOSchedul
         minute=_ENTRY_MINUTE_ET,
         timezone="America/New_York",
         id=DECISION_AND_ENTRY_CAPTURE_JOB_ID,
+        replace_existing=True,
+    )
+    scheduler.add_job(
+        run_exit_capture_job,
+        trigger="cron",
+        hour=_ENTRY_HOUR_ET,
+        minute=_ENTRY_MINUTE_ET,
+        timezone="America/New_York",
+        id=EXIT_CAPTURE_JOB_ID,
         replace_existing=True,
     )
     return scheduler

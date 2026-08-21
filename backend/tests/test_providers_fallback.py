@@ -9,7 +9,7 @@ from providers.fallback import (
     MarketDataProviderChain,
     OptionsProviderChain,
 )
-from providers.types import OHLCBar, OptionQuote, UnderlyingQuote
+from providers.types import KnownContract, OHLCBar, OptionQuote, UnderlyingQuote
 
 
 class _FailingProvider(MarketDataProvider):
@@ -127,6 +127,22 @@ class _WorkingOptionsProvider(OptionsDataProvider):
             retrieved_at=datetime(2026, 1, 1, tzinfo=UTC),
         )
 
+    def get_quotes_for_known_contracts(self, ticker, contracts, expiration, as_of):
+        return [
+            OptionQuote(
+                ticker=ticker,
+                snapshot_timestamp=as_of,
+                expiration_date=expiration,
+                strike=Decimal("100"),
+                option_type="call",
+                bid=Decimal("1.90"),
+                ask=Decimal("2.10"),
+                external_contract_id="12345",
+                source_provider="working",
+                retrieved_at=as_of,
+            )
+        ]
+
 
 class _RaisingUnderlyingOptionsProvider(OptionsDataProvider):
     """Has a working option chain but a live underlying fetch that raises
@@ -141,6 +157,21 @@ class _RaisingUnderlyingOptionsProvider(OptionsDataProvider):
 
     def get_underlying_quote(self, ticker):
         raise RuntimeError("simulated underlying quote failure")
+
+
+class _RaisingKnownContractsOptionsProvider(OptionsDataProvider):
+    """Has a working option chain but a get_quotes_for_known_contracts
+    that raises -- distinct from a provider that simply doesn't override
+    it at all (which honestly returns [], the OptionsDataProvider
+    default, not an exception)."""
+
+    def get_option_chain(
+        self, ticker, as_of, expiration=None, reference_date=None, earnings_anchored=True
+    ):
+        return []
+
+    def get_quotes_for_known_contracts(self, ticker, contracts, expiration, as_of):
+        raise RuntimeError("simulated known-contracts quote failure")
 
 
 class TestOptionsProviderChain:
@@ -228,3 +259,72 @@ class TestOptionsProviderChainUnderlyingQuote:
         )
         quote = chain.get_underlying_quote("NVDA")
         assert quote is None
+
+
+class TestOptionsProviderChainKnownContracts:
+    """Phase 4.5 -- get_quotes_for_known_contracts must fall through the
+    chain the same way get_option_chain does, so official benchmark exit
+    capture (services/benchmark_exit_capture.py) gets a real live
+    provider's quotes through the same primary-then-fallback
+    configuration used everywhere else. Unlike get_underlying_quote, an
+    empty result is a legitimate, honestly reported outcome (matching
+    get_option_chain's own precedent) -- only a real exception falls
+    through, and every provider failing raises AllProvidersFailedError,
+    never a silent empty list."""
+
+    _CONTRACTS = [
+        KnownContract(strike=Decimal("100"), option_type="call", external_contract_id="12345")
+    ]
+
+    def test_uses_primary_when_it_works(self):
+        chain = OptionsProviderChain(
+            [("primary", _WorkingOptionsProvider()), ("fallback", _FailingOptionsProvider())]
+        )
+        quotes = chain.get_quotes_for_known_contracts(
+            "NVDA", self._CONTRACTS, date(2026, 1, 16), datetime.now(UTC)
+        )
+        assert quotes[0].source_provider == "working"
+        assert chain.last_actual_provider == "primary"
+        assert chain.last_fallback_reason is None
+
+    def test_falls_through_to_next_provider_on_failure(self):
+        chain = OptionsProviderChain(
+            [
+                ("primary", _RaisingKnownContractsOptionsProvider()),
+                ("fallback", _WorkingOptionsProvider()),
+            ]
+        )
+        quotes = chain.get_quotes_for_known_contracts(
+            "NVDA", self._CONTRACTS, date(2026, 1, 16), datetime.now(UTC)
+        )
+        assert quotes[0].source_provider == "working"
+        assert chain.last_actual_provider == "fallback"
+        assert "simulated known-contracts quote failure" in chain.last_fallback_reason
+
+    def test_empty_result_from_primary_is_not_treated_as_a_failure(self):
+        """A provider with no override (the ABC default, []) is a
+        legitimate final answer, not a trigger to fall through -- mirrors
+        get_option_chain's own "empty is a real result" precedent."""
+        chain = OptionsProviderChain(
+            [("primary", _FailingOptionsProvider()), ("fallback", _WorkingOptionsProvider())]
+        )
+        # _FailingOptionsProvider doesn't override get_quotes_for_known_
+        # contracts, so it returns the ABC default ([]) rather than
+        # raising -- the chain must accept that as primary's real answer.
+        quotes = chain.get_quotes_for_known_contracts(
+            "NVDA", self._CONTRACTS, date(2026, 1, 16), datetime.now(UTC)
+        )
+        assert quotes == []
+        assert chain.last_actual_provider == "primary"
+
+    def test_raises_when_all_providers_fail(self):
+        chain = OptionsProviderChain(
+            [
+                ("primary", _RaisingKnownContractsOptionsProvider()),
+                ("fallback", _RaisingKnownContractsOptionsProvider()),
+            ]
+        )
+        with pytest.raises(AllProvidersFailedError):
+            chain.get_quotes_for_known_contracts(
+                "NVDA", self._CONTRACTS, date(2026, 1, 16), datetime.now(UTC)
+            )

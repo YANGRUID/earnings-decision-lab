@@ -1,12 +1,13 @@
-"""Phase 4.2/4.4 -- tests for services/scheduler.py: both jobs are
-registered correctly, and api/main.py's real lifespan starts/stops them
-gracefully."""
+"""Phase 4.2/4.4/4.5 -- tests for services/scheduler.py: all three jobs
+are registered correctly, and api/main.py's real lifespan starts/stops
+them gracefully."""
 
 from fastapi.testclient import TestClient
 
 from services.scheduler import (
     CALENDAR_SYNC_JOB_ID,
     DECISION_AND_ENTRY_CAPTURE_JOB_ID,
+    EXIT_CAPTURE_JOB_ID,
     build_scheduler,
 )
 
@@ -47,6 +48,24 @@ def test_decision_and_entry_capture_job_registered_correctly():
     assert str(job.trigger.timezone) == "America/New_York"
 
 
+def test_exit_capture_job_registered_correctly():
+    """Phase 4.5 approved decision 5: its own job, at the same 15:55 ET
+    daily trigger the entry job uses (compute_entry_exit_schedule's
+    exit_timestamp shares ENTRY_EXIT_TIME with entry_timestamp -- only
+    the date differs per event)."""
+    scheduler = build_scheduler()
+
+    job = scheduler.get_job(EXIT_CAPTURE_JOB_ID)
+    assert job is not None
+    assert job.func.__name__ == "run_exit_capture_job"
+    assert job.args == ()
+
+    field_by_name = {field.name: field for field in job.trigger.fields}
+    assert str(field_by_name["hour"]) == "15"
+    assert str(field_by_name["minute"]) == "55"
+    assert str(job.trigger.timezone) == "America/New_York"
+
+
 def test_job_persists_across_app_restart_without_duplicating():
     """SQLAlchemyJobStore persists the job registrations to the database;
     a second, independent app instance (simulating a process restart)
@@ -61,14 +80,15 @@ def test_job_persists_across_app_restart_without_duplicating():
 
     app1 = main_module.create_app()
     with TestClient(app1):
-        assert len(app1.state.scheduler.get_jobs()) == 2
+        assert len(app1.state.scheduler.get_jobs()) == 3
 
     app2 = main_module.create_app()
     with TestClient(app2):
         jobs = app2.state.scheduler.get_jobs()
-        assert len(jobs) == 2
+        assert len(jobs) == 3
         assert app2.state.scheduler.get_job(CALENDAR_SYNC_JOB_ID) is not None
         assert app2.state.scheduler.get_job(DECISION_AND_ENTRY_CAPTURE_JOB_ID) is not None
+        assert app2.state.scheduler.get_job(EXIT_CAPTURE_JOB_ID) is not None
 
 
 def test_scheduler_starts_and_shuts_down_gracefully_with_the_app():
@@ -80,5 +100,6 @@ def test_scheduler_starts_and_shuts_down_gracefully_with_the_app():
         assert app.state.scheduler.running is True
         assert app.state.scheduler.get_job(CALENDAR_SYNC_JOB_ID) is not None
         assert app.state.scheduler.get_job(DECISION_AND_ENTRY_CAPTURE_JOB_ID) is not None
+        assert app.state.scheduler.get_job(EXIT_CAPTURE_JOB_ID) is not None
 
     assert app.state.scheduler.running is False

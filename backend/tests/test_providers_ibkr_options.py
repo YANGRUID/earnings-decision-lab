@@ -15,6 +15,7 @@ from providers.ibkr_options import (
     _parse_percent,
     _parse_volume,
 )
+from providers.types import KnownContract
 
 BASE_URL = "https://localhost:5001/v1/api"
 AS_OF = datetime(2026, 8, 17, 20, 0, tzinfo=UTC)
@@ -397,3 +398,79 @@ class TestListAvailableExpirations:
         provider = _make_provider(transport=httpx.MockTransport(route))
 
         assert provider.list_available_expirations("NVDA", after=date(2026, 8, 17)) == []
+
+
+class TestGetQuotesForKnownContracts:
+    """Phase 4.5 -- re-quoting already-identified contracts by conid,
+    skipping strike/ATM discovery entirely (unlike get_option_chain).
+    Reuses the exact same real-captured snapshot fixtures as
+    TestGetOptionChainFullFlow, since it's the same underlying /iserver/
+    marketdata/snapshot mechanism -- only the discovery step differs."""
+
+    def _route(self, request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        params = dict(httpx.QueryParams(request.url.query))
+        if path == "/v1/api/iserver/auth/status":
+            return httpx.Response(200, json=REAL_AUTH_STATUS)
+        if path == "/v1/api/iserver/marketdata/snapshot":
+            conids = params["conids"].split(",")
+            rows = []
+            for conid_str in conids:
+                if int(conid_str) == 907866760:
+                    rows.append(REAL_225_CALL_SNAPSHOT)
+                elif int(conid_str) == 907867812:
+                    rows.append(REAL_225_PUT_SNAPSHOT)
+                else:
+                    rows.append({"conid": int(conid_str), "conidEx": conid_str})
+            return httpx.Response(200, json=rows)
+        raise AssertionError(f"unexpected request in test: {request.url}")
+
+    def _provider(self) -> IBKROptionsProvider:
+        return _make_provider(transport=httpx.MockTransport(self._route))
+
+    def test_requotes_by_known_conid_never_rediscovers_strikes(self):
+        """No secdef/search, secdef/strikes, or secdef/info request is
+        routed in this test's transport at all -- if the implementation
+        ever fell back to discovery, this test would fail with an
+        unrouted-request AssertionError, not silently pass."""
+        provider = self._provider()
+        contracts = [
+            KnownContract(
+                strike=Decimal("225.0"), option_type="call", external_contract_id="907866760"
+            ),
+            KnownContract(
+                strike=Decimal("225.0"), option_type="put", external_contract_id="907867812"
+            ),
+        ]
+
+        quotes = provider.get_quotes_for_known_contracts(
+            "NVDA", contracts, date(2026, 8, 19), AS_OF
+        )
+
+        assert len(quotes) == 2
+        call = next(q for q in quotes if q.option_type == "call")
+        assert call.bid == Decimal("2.41")
+        assert call.ask == Decimal("2.44")
+        assert call.external_contract_id == "907866760"
+        assert call.strike == Decimal("225.0")
+        put = next(q for q in quotes if q.option_type == "put")
+        assert put.bid == Decimal("1.88")
+        assert put.ask == Decimal("1.89")
+
+    def test_malformed_contract_id_is_skipped_not_raised(self):
+        provider = self._provider()
+        contracts = [
+            KnownContract(
+                strike=Decimal("225.0"), option_type="call", external_contract_id="not-a-number"
+            ),
+        ]
+
+        assert (
+            provider.get_quotes_for_known_contracts("NVDA", contracts, date(2026, 8, 19), AS_OF)
+            == []
+        )
+
+    def test_empty_contract_list_returns_empty(self):
+        provider = self._provider()
+
+        assert provider.get_quotes_for_known_contracts("NVDA", [], date(2026, 8, 19), AS_OF) == []

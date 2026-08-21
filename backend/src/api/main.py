@@ -25,6 +25,7 @@ from api.routers import (
     provider_settings,
     replay,
     research,
+    settlements,
     system_status,
     usage,
 )
@@ -125,6 +126,7 @@ def create_app() -> FastAPI:
     app.include_router(earnings_calendar.router, prefix="/api/v1")
     app.include_router(decision_snapshots.router, prefix="/api/v1")
     app.include_router(benchmark_entries.router, prefix="/api/v1")
+    app.include_router(settlements.router, prefix="/api/v1")
     app.include_router(options.router, prefix="/api/v1")
     app.include_router(research.router, prefix="/api/v1")
     app.include_router(evaluations.router, prefix="/api/v1")

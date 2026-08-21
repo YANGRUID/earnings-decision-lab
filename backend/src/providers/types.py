@@ -166,6 +166,23 @@ class OptionQuote(ProvenancedModel):
     underlying_timestamp: datetime | None = None
 
 
+class KnownContract(BaseModel):
+    """One already-identified option contract to re-quote at settlement
+    (Phase 4.5) -- never re-discovered via strike/ATM selection the way
+    a fresh get_option_chain() call would, since the underlying may have
+    moved since entry and re-selecting strikes could silently target a
+    different contract than the one actually held.
+    ``external_contract_id`` is the provider's own stable identifier
+    (e.g. IBKR's conid), already captured on EntrySnapshot at entry time
+    -- this is an input to a quote request, not a provider response, so
+    unlike OptionQuote it is a plain model, not a ProvenancedModel.
+    """
+
+    strike: Decimal
+    option_type: str  # "call" | "put"
+    external_contract_id: str
+
+
 class UnderlyingQuote(ProvenancedModel):
     """A real, live quote for the underlying itself, fetched fresh at call
     time -- distinct from OptionQuote.underlying_price above, which is

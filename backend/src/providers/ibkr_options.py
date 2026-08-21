@@ -37,7 +37,7 @@ from decimal import Decimal, InvalidOperation
 from analytics.options.implied_move import select_expiration_after, select_nearest_listed_expiration
 from providers.base import OptionsDataProvider
 from providers.ibkr_client import IBKRClient, IBKRError, decode_market_data_quality
-from providers.types import OptionQuote, UnderlyingQuote
+from providers.types import KnownContract, OptionQuote, UnderlyingQuote
 
 _MONTH_ABBR = [
     "JAN", "FEB", "MAR", "APR", "MAY", "JUN",
@@ -217,6 +217,37 @@ class IBKROptionsProvider(OptionsDataProvider):
             return []
 
         return self._fetch_snapshots(ticker, contracts, target_expiration, as_of)
+
+    def get_quotes_for_known_contracts(
+        self, ticker: str, contracts: list[KnownContract], expiration: date, as_of: datetime
+    ) -> list[OptionQuote]:
+        """Phase 4.5 -- re-quotes contracts already identified by conid
+        (``EntrySnapshot.external_contract_id``), skipping strike/ATM
+        discovery entirely (see this method's own docstring on
+        providers/base.py for why: the underlying may have moved since
+        entry, and re-discovering strikes risks silently targeting a
+        different contract than the one actually held). Malformed
+        contract identity (a non-numeric external_contract_id, which
+        should never happen for a contract this same provider captured
+        at entry) is skipped rather than raising, matching this
+        project's "real connectivity failures raise, malformed/missing
+        data is honestly reported as absent" convention.
+        """
+        self._client.ensure_authenticated()
+        right_by_type = {"call": "C", "put": "P"}
+        resolved: list[tuple[Decimal, str, int]] = []
+        for contract in contracts:
+            right = right_by_type.get(contract.option_type)
+            if right is None:
+                continue
+            try:
+                conid = int(contract.external_contract_id)
+            except ValueError:
+                continue
+            resolved.append((contract.strike, right, conid))
+        if not resolved:
+            return []
+        return self._fetch_snapshots(ticker, resolved, expiration, as_of)
 
     def resolve_expiration_for_reconstruction(
         self, ticker: str, reference_date: date, earnings_date: date | None

@@ -160,6 +160,85 @@ class EntryCaptureAttemptResponse(BaseModel):
     legs: list[EntrySnapshotResponse] = []
 
 
+class ExitSnapshotResponse(BaseModel):
+    """Phase 4.5 -- one captured (or failed) leg of an official
+    benchmark exit attempt. Read-only, insert-only at the DB level --
+    see api/routers/settlements.py."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    settlement_attempt_id: int
+    entry_snapshot_id: int
+    leg_index: int
+    status: str
+    captured_at: datetime | None
+
+    external_contract_id: str | None
+    expiration: date | None
+    strike: Decimal | None
+    option_type: str | None
+    action: str | None
+    quantity: int | None
+    multiplier: Decimal | None
+
+    bid: Decimal | None
+    ask: Decimal | None
+    mid: Decimal | None
+    last_price: Decimal | None
+    implied_volatility: Decimal | None
+    delta: Decimal | None
+    gamma: Decimal | None
+    theta: Decimal | None
+    vega: Decimal | None
+    market_data_quality: str | None
+    pricing_source: str | None
+
+    benchmark_exit_price: Decimal | None
+    pricing_assumption: str | None
+    realized_pnl_per_share: Decimal | None
+
+    capture_error: str | None
+    source_provider: str | None
+    created_at: datetime
+
+
+class SettlementCaptureAttemptResponse(BaseModel):
+    """Phase 4.5 -- one official benchmark settlement (exit) capture
+    attempt, including every leg it covers. A decision_snapshot only
+    becomes a "settled" benchmark observation when a row here has
+    status=CAPTURED (see services/decision_lifecycle.py) -- a FAILED
+    attempt is still a real, permanent, honest record, never hidden."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    decision_snapshot_id: int
+    benchmark_portfolio_id: int
+    entry_capture_attempt_id: int | None
+    status: str
+    capture_error: str | None
+
+    underlying_price: Decimal | None
+    underlying_bid: Decimal | None
+    underlying_ask: Decimal | None
+    underlying_timestamp: datetime | None
+    exit_market_timestamp: datetime | None
+
+    net_exit_price_per_share: Decimal | None
+    net_exit_cash: Decimal | None
+    realized_pnl: Decimal | None
+    return_pct: Decimal | None
+    r_multiple: Decimal | None
+    is_win: bool | None
+
+    source_provider: str | None
+    captured_at: datetime | None
+    created_at: datetime
+
+    legs: list[ExitSnapshotResponse] = []
+
+
 class EarningsCalendarEventResponse(BaseModel):
     """Phase 4.2 -- one row from the forward-looking, Finnhub-sourced
     earnings_calendar_event table. Deliberately a distinct schema from

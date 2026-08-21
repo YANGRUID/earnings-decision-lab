@@ -18,6 +18,7 @@ from providers.types import (
     FilingMetadata,
     FinnhubCalendarEntry,
     FinnhubCompanyProfile,
+    KnownContract,
     OHLCBar,
     OptionQuote,
     TranscriptDocument,
@@ -105,6 +106,32 @@ class OptionsDataProvider(ABC):
         expose this -- see providers/ibkr_options.py.
         """
         return None
+
+    def get_quotes_for_known_contracts(
+        self, ticker: str, contracts: list[KnownContract], expiration: date, as_of: datetime
+    ) -> list[OptionQuote]:
+        """Real, live quotes for contracts *already identified* (Phase
+        4.5 settlement) -- deliberately not routed through get_option_
+        chain()'s own strike/ATM discovery, which centers a bounded
+        window on the underlying's *current* price. The underlying may
+        have moved materially since these contracts were entered, and a
+        fresh discovery pass could silently miss a leg that's now well
+        outside that window, or -- worse -- match a different, similarly-
+        struck contract instead of the exact one actually held.
+        ``contracts`` are always exactly what was captured on EntrySnapshot
+        at entry time; this method re-quotes those same contracts, never
+        rediscovers new ones.
+
+        Default: unsupported (empty list). A provider with no stable
+        per-contract identifier to re-quote by (e.g. one with no conid-
+        equivalent concept) reports this honestly as "no quotes" rather
+        than guessing via a fresh discovery pass; callers must never
+        silently fall back to get_option_chain() in its place, since that
+        would reintroduce exactly the strike-drift risk this method
+        exists to avoid. Overridden by providers that actually expose a
+        stable per-contract identifier -- see providers/ibkr_options.py.
+        """
+        return []
 
 
 class EarningsDataProvider(ABC):

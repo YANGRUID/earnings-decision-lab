@@ -26,6 +26,8 @@ from models.enums import (
     OptionType,
     RiskProfile,
 )
+from models.exit_snapshot import ExitSnapshot
+from models.settlement_capture_attempt import SettlementCaptureAttempt
 from models.settlement_snapshot import SettlementSnapshot
 
 
@@ -499,5 +501,287 @@ def test_entry_capture_attempt_rejects_update(db_session):
     db_session.flush()
 
     attempt.status = CaptureStatus.CAPTURED
+    with pytest.raises(ProgrammingError, match="insert-only"):
+        db_session.flush()
+
+
+def _seed_entered_decision_with_leg(db_session, symbol: str = "TESTSC45"):
+    """A decision with a real, CAPTURED EntryCaptureAttempt and one
+    EntrySnapshot leg -- the minimum a settlement_capture_attempt/
+    exit_snapshot row needs to link against (Phase 4.5)."""
+    event = EarningsCalendarEvent(
+        symbol=symbol,
+        company_name="Settlement Capture Attempt Test Co",
+        earnings_date=date(2026, 9, 16),
+        earnings_time=EarningsTiming.AMC,
+    )
+    portfolio = BenchmarkPortfolio(
+        name=f"SC Attempt Test Portfolio {symbol}",
+        initial_capital=Decimal("2000.00"),
+        cash_balance=Decimal("2000.00"),
+    )
+    db_session.add_all([event, portfolio])
+    db_session.flush()
+    decision = DecisionSnapshot(
+        earnings_calendar_event_id=event.id,
+        benchmark_portfolio_id=portfolio.id,
+        ticker=symbol,
+        company_name=event.company_name,
+        strategy_direction=DecisionDirection.BULLISH,
+        strategy_type="long_call",
+        generated_at=datetime(2026, 9, 16, 15, 55, tzinfo=UTC),
+        status=DecisionSnapshotStatus.PENDING_ENTRY,
+        engine_version="options-decision-engine-v3",
+        prompt_version="v1",
+        expiration_source="v3_auto_resolver",
+    )
+    db_session.add(decision)
+    db_session.flush()
+    entry_attempt = EntryCaptureAttempt(
+        decision_snapshot_id=decision.id,
+        benchmark_portfolio_id=portfolio.id,
+        status=CaptureStatus.CAPTURED,
+        net_entry_cash=Decimal("200.00"),
+        contracts=1,
+        initial_max_risk=Decimal("200.00"),
+        captured_at=datetime(2026, 9, 16, 15, 55, tzinfo=UTC),
+    )
+    db_session.add(entry_attempt)
+    db_session.flush()
+    entry_leg = EntrySnapshot(
+        decision_id=decision.id,
+        capture_attempt_id=entry_attempt.id,
+        leg_index=0,
+        status=CaptureStatus.CAPTURED,
+        strike=Decimal("100.00"),
+        option_type=OptionType.CALL,
+        action=OptionAction.BUY,
+        quantity=1,
+        multiplier=Decimal("100"),
+        bid=Decimal("1.90"),
+        ask=Decimal("2.10"),
+        benchmark_entry_price=Decimal("2.10"),
+        pricing_assumption="BUY_TO_OPEN_AT_ASK",
+    )
+    db_session.add(entry_leg)
+    db_session.flush()
+    return portfolio, decision, entry_attempt, entry_leg
+
+
+def test_settlement_capture_attempt_rejects_a_second_captured_attempt(db_session):
+    """The real, DB-level idempotency guarantee, mirroring
+    entry_capture_attempt's own exactly: a partial unique index on
+    (decision_snapshot_id, benchmark_portfolio_id) WHERE
+    status='CAPTURED' rejects a second successful settlement outright."""
+    portfolio, decision, entry_attempt, _leg = _seed_entered_decision_with_leg(db_session)
+
+    db_session.add(
+        SettlementCaptureAttempt(
+            decision_snapshot_id=decision.id,
+            benchmark_portfolio_id=portfolio.id,
+            entry_capture_attempt_id=entry_attempt.id,
+            status=CaptureStatus.CAPTURED,
+        )
+    )
+    db_session.flush()
+
+    db_session.add(
+        SettlementCaptureAttempt(
+            decision_snapshot_id=decision.id,
+            benchmark_portfolio_id=portfolio.id,
+            entry_capture_attempt_id=entry_attempt.id,
+            status=CaptureStatus.CAPTURED,
+        )
+    )
+    with pytest.raises(IntegrityError):
+        db_session.flush()
+
+
+def test_settlement_capture_attempt_allows_multiple_failed_attempts(db_session):
+    """FAILED/PENDING rows are unrestricted -- only CAPTURED is unique --
+    so retries after a real exit-capture failure are never blocked at
+    the DB level."""
+    portfolio, decision, entry_attempt, _leg = _seed_entered_decision_with_leg(
+        db_session, symbol="TESTSC45B"
+    )
+
+    db_session.add(
+        SettlementCaptureAttempt(
+            decision_snapshot_id=decision.id,
+            benchmark_portfolio_id=portfolio.id,
+            entry_capture_attempt_id=entry_attempt.id,
+            status=CaptureStatus.FAILED,
+            capture_error="first failure",
+        )
+    )
+    db_session.add(
+        SettlementCaptureAttempt(
+            decision_snapshot_id=decision.id,
+            benchmark_portfolio_id=portfolio.id,
+            entry_capture_attempt_id=entry_attempt.id,
+            status=CaptureStatus.FAILED,
+            capture_error="second failure",
+        )
+    )
+    db_session.flush()
+
+    count = (
+        db_session.query(SettlementCaptureAttempt)
+        .filter_by(decision_snapshot_id=decision.id, benchmark_portfolio_id=portfolio.id)
+        .count()
+    )
+    assert count == 2
+
+
+def test_settlement_capture_attempt_rejects_update(db_session):
+    portfolio, decision, entry_attempt, _leg = _seed_entered_decision_with_leg(
+        db_session, symbol="TESTSC45C"
+    )
+    attempt = SettlementCaptureAttempt(
+        decision_snapshot_id=decision.id,
+        benchmark_portfolio_id=portfolio.id,
+        entry_capture_attempt_id=entry_attempt.id,
+        status=CaptureStatus.FAILED,
+        capture_error="test failure",
+    )
+    db_session.add(attempt)
+    db_session.flush()
+
+    attempt.status = CaptureStatus.CAPTURED
+    with pytest.raises(ProgrammingError, match="insert-only"):
+        db_session.flush()
+
+
+def test_settlement_capture_attempt_allows_missing_entry_attempt(db_session):
+    """entry_capture_attempt_id is nullable only for the one defensive
+    case services/benchmark_exit_capture.py writes when asked to settle
+    a decision with no real, CAPTURED entry at all -- confirmed here at
+    the model/DB level, not just assumed from the service's own logic."""
+    portfolio, decision, _entry_attempt, _leg = _seed_entered_decision_with_leg(
+        db_session, symbol="TESTSC45D"
+    )
+    attempt = SettlementCaptureAttempt(
+        decision_snapshot_id=decision.id,
+        benchmark_portfolio_id=portfolio.id,
+        entry_capture_attempt_id=None,
+        status=CaptureStatus.FAILED,
+        capture_error="no official entry exists",
+    )
+    db_session.add(attempt)
+    db_session.flush()
+    db_session.refresh(attempt)
+    assert attempt.entry_capture_attempt_id is None
+
+
+def test_exit_snapshot_links_correctly(db_session):
+    """A multi-leg exit capture: two ExitSnapshot rows share one
+    settlement_attempt_id (one per leg), and each traces back to both
+    its own decision_snapshot and the specific entry_snapshot leg it
+    closes -- matching this table's per-leg grain, mirroring
+    entry_snapshot's own."""
+    portfolio, decision, entry_attempt, entry_leg = _seed_entered_decision_with_leg(
+        db_session, symbol="TESTSC45E"
+    )
+    second_entry_leg = EntrySnapshot(
+        decision_id=decision.id,
+        capture_attempt_id=entry_attempt.id,
+        leg_index=1,
+        status=CaptureStatus.CAPTURED,
+        strike=Decimal("110.00"),
+        option_type=OptionType.CALL,
+        action=OptionAction.SELL,
+        quantity=1,
+        multiplier=Decimal("100"),
+        bid=Decimal("0.60"),
+        ask=Decimal("0.70"),
+        benchmark_entry_price=Decimal("0.60"),
+        pricing_assumption="SELL_TO_OPEN_AT_BID",
+    )
+    db_session.add(second_entry_leg)
+    db_session.flush()
+
+    settlement_attempt = SettlementCaptureAttempt(
+        decision_snapshot_id=decision.id,
+        benchmark_portfolio_id=portfolio.id,
+        entry_capture_attempt_id=entry_attempt.id,
+        status=CaptureStatus.CAPTURED,
+    )
+    db_session.add(settlement_attempt)
+    db_session.flush()
+
+    captured_at = datetime(2026, 9, 17, 15, 55, tzinfo=UTC)
+    exit_buy = ExitSnapshot(
+        decision_id=decision.id,
+        settlement_attempt_id=settlement_attempt.id,
+        entry_snapshot_id=entry_leg.id,
+        leg_index=0,
+        status=CaptureStatus.CAPTURED,
+        captured_at=captured_at,
+        strike=entry_leg.strike,
+        option_type=entry_leg.option_type,
+        action=entry_leg.action,
+        bid=Decimal("2.90"),
+        ask=Decimal("3.10"),
+        mid=Decimal("3.00"),
+        benchmark_exit_price=Decimal("2.90"),
+        pricing_assumption="SELL_TO_CLOSE_AT_BID",
+        source_provider="ibkr",
+    )
+    exit_sell = ExitSnapshot(
+        decision_id=decision.id,
+        settlement_attempt_id=settlement_attempt.id,
+        entry_snapshot_id=second_entry_leg.id,
+        leg_index=1,
+        status=CaptureStatus.CAPTURED,
+        captured_at=captured_at,
+        strike=second_entry_leg.strike,
+        option_type=second_entry_leg.option_type,
+        action=second_entry_leg.action,
+        bid=Decimal("0.20"),
+        ask=Decimal("0.30"),
+        mid=Decimal("0.25"),
+        benchmark_exit_price=Decimal("0.30"),
+        pricing_assumption="BUY_TO_CLOSE_AT_ASK",
+        source_provider="ibkr",
+    )
+    db_session.add_all([exit_buy, exit_sell])
+    db_session.flush()
+
+    db_session.refresh(settlement_attempt)
+    assert {leg.id for leg in settlement_attempt.legs} == {exit_buy.id, exit_sell.id}
+    assert exit_buy.decision_snapshot.ticker == "TESTSC45E"
+    assert exit_buy.entry_snapshot.id == entry_leg.id
+    assert exit_sell.entry_snapshot.id == second_entry_leg.id
+
+
+def test_exit_snapshot_rejects_update(db_session):
+    """The same reject_snapshot_update() trigger every other Phase 4
+    snapshot table uses -- a retry after a failed exit capture must
+    INSERT a new row."""
+    portfolio, decision, entry_attempt, entry_leg = _seed_entered_decision_with_leg(
+        db_session, symbol="TESTSC45F"
+    )
+    settlement_attempt = SettlementCaptureAttempt(
+        decision_snapshot_id=decision.id,
+        benchmark_portfolio_id=portfolio.id,
+        entry_capture_attempt_id=entry_attempt.id,
+        status=CaptureStatus.FAILED,
+        capture_error="test failure",
+    )
+    db_session.add(settlement_attempt)
+    db_session.flush()
+
+    leg = ExitSnapshot(
+        decision_id=decision.id,
+        settlement_attempt_id=settlement_attempt.id,
+        entry_snapshot_id=entry_leg.id,
+        leg_index=0,
+        status=CaptureStatus.FAILED,
+        capture_error="no quote found for this contract",
+    )
+    db_session.add(leg)
+    db_session.flush()
+
+    leg.status = CaptureStatus.CAPTURED
     with pytest.raises(ProgrammingError, match="insert-only"):
         db_session.flush()
