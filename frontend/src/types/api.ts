@@ -861,3 +861,193 @@ export interface BenchmarkCalibration {
   settled_decisions: number;
   buckets: BenchmarkCalibrationBucket[];
 }
+
+// --- AI Earnings Analyst Dashboard (product frontend layer) --------------
+// Reads the same immutable Phase 4 tables the Track Record analytics
+// above already read (DecisionSnapshot/EntrySnapshot/EntryCaptureAttempt/
+// SettlementCaptureAttempt/ExitSnapshot), never the legacy AIDecisionVersion
+// journal.
+
+export interface EarningsCalendarEvent {
+  id: number;
+  symbol: string;
+  company_name: string;
+  logo_url: string | null;
+  earnings_date: string;
+  earnings_time: "bmo" | "amc" | "dmh" | "unknown";
+  eps_estimate: string | null;
+  revenue_estimate: string | null;
+  market_cap: string | null;
+  source: string;
+}
+
+export interface DecisionSnapshot {
+  id: number;
+  earnings_calendar_event_id: number;
+  benchmark_portfolio_id: number;
+  ticker: string;
+  company_name: string;
+  strategy_direction: DecisionDirection;
+  strategy_type: string | null;
+  ai_thesis_version_id: number | null;
+  generated_at: string;
+  status: string;
+
+  underlying_price: string | null;
+  implied_volatility: string | null;
+  volatility_regime: string | null;
+  option_snapshot_reference: number | null;
+
+  strategy_score: number | null;
+  score_breakdown: Record<string, number> | null;
+  selected_expiration: string | null;
+  legs: OptionLeg[] | null;
+
+  estimated_probability: string | null;
+  confidence_interval: { lower: string; upper: string } | null;
+  historical_sample_size: number | null;
+  historical_compatibility: Record<string, unknown> | null;
+
+  why_this_strategy: string[] | null;
+  why_this_expiration: string[] | null;
+  why_these_strikes: string[] | null;
+  why_not_alternatives: string[] | null;
+
+  engine_version: string;
+  prompt_version: string;
+  expiration_source: string;
+  created_at: string;
+}
+
+export interface EntrySnapshot {
+  id: number;
+  capture_attempt_id: number;
+  leg_index: number;
+  status: string;
+  captured_at: string | null;
+
+  external_contract_id: string | null;
+  expiration: string | null;
+  strike: string | null;
+  option_type: "call" | "put" | null;
+  action: "buy" | "sell" | null;
+  quantity: number | null;
+  multiplier: string | null;
+
+  bid: string | null;
+  ask: string | null;
+  mid: string | null;
+  last_price: string | null;
+  implied_volatility: string | null;
+  delta: string | null;
+  gamma: string | null;
+  theta: string | null;
+  vega: string | null;
+  market_data_quality: string | null;
+  pricing_source: string | null;
+
+  benchmark_entry_price: string | null;
+  pricing_assumption: string | null;
+
+  capture_error: string | null;
+  source_provider: string | null;
+  created_at: string;
+}
+
+export interface EntryCaptureAttempt {
+  id: number;
+  decision_snapshot_id: number;
+  benchmark_portfolio_id: number;
+  status: string;
+  capture_error: string | null;
+
+  underlying_price: string | null;
+  underlying_bid: string | null;
+  underlying_ask: string | null;
+  underlying_timestamp: string | null;
+  option_market_timestamp: string | null;
+
+  net_entry_price_per_share: string | null;
+  net_entry_cash: string | null;
+  contracts: number | null;
+  initial_max_risk: string | null;
+  capital_utilization: string | null;
+
+  source_provider: string | null;
+  captured_at: string | null;
+  created_at: string;
+
+  legs: EntrySnapshot[];
+}
+
+export interface ExitSnapshot {
+  id: number;
+  settlement_attempt_id: number;
+  entry_snapshot_id: number;
+  leg_index: number;
+  status: string;
+  captured_at: string | null;
+
+  external_contract_id: string | null;
+  expiration: string | null;
+  strike: string | null;
+  option_type: "call" | "put" | null;
+  action: "buy" | "sell" | null;
+  quantity: number | null;
+  multiplier: string | null;
+
+  bid: string | null;
+  ask: string | null;
+  mid: string | null;
+  last_price: string | null;
+  implied_volatility: string | null;
+  delta: string | null;
+  gamma: string | null;
+  theta: string | null;
+  vega: string | null;
+  market_data_quality: string | null;
+  pricing_source: string | null;
+
+  benchmark_exit_price: string | null;
+  pricing_assumption: string | null;
+  realized_pnl_per_share: string | null;
+
+  capture_error: string | null;
+  source_provider: string | null;
+  created_at: string;
+}
+
+export interface SettlementCaptureAttempt {
+  id: number;
+  decision_snapshot_id: number;
+  benchmark_portfolio_id: number;
+  entry_capture_attempt_id: number | null;
+  status: string;
+  capture_error: string | null;
+
+  underlying_price: string | null;
+  underlying_bid: string | null;
+  underlying_ask: string | null;
+  underlying_timestamp: string | null;
+  exit_market_timestamp: string | null;
+
+  net_exit_price_per_share: string | null;
+  net_exit_cash: string | null;
+  realized_pnl: string | null;
+  return_pct: string | null;
+  r_multiple: string | null;
+  is_win: boolean | null;
+
+  source_provider: string | null;
+  captured_at: string | null;
+  created_at: string;
+
+  legs: ExitSnapshot[];
+}
+
+/** Derived, client-side only -- never returned by any endpoint as a
+ * literal field. Mirrors backend services/decision_lifecycle.py's own
+ * three stages exactly, computed here from the same real facts (a
+ * CAPTURED EntryCaptureAttempt / SettlementCaptureAttempt existing for
+ * the decision) rather than duplicating any calculation. */
+export type DecisionLifecycleStage = "pending_entry" | "entered" | "settled";

@@ -1,4 +1,5 @@
-"""Phase 4.5 -- GET /settlements/{decision_id}. No mutation endpoint
+"""Phase 4.5 -- GET /settlements/{decision_id}. Phase 4.6 (product
+dashboard) -- GET /settlements (system-wide list). No mutation endpoint
 exists -- see api/routers/settlements.py's own docstring.
 """
 
@@ -215,3 +216,27 @@ def test_settlements_returns_empty_list_for_a_decision_never_settled(client, db_
     response = client.get(f"/api/v1/settlements/{decision.id}")
     assert response.status_code == 200
     assert response.json() == []
+
+
+def test_list_all_settlements_endpoint(client, db_session):
+    decision, attempt, _leg = _seed_full_settlement(db_session, symbol="TESTAPI45D")
+
+    response = client.get("/api/v1/settlements")
+    assert response.status_code == 200
+    body = response.json()
+    ids = {row["id"] for row in body}
+    assert attempt.id in ids
+
+
+def test_list_all_settlements_filters_by_status(client, db_session):
+    decision, attempt, _leg = _seed_full_settlement(db_session, symbol="TESTAPI45E")
+
+    response = client.get("/api/v1/settlements", params={"status": "captured"})
+    assert response.status_code == 200
+    body = response.json()
+    assert all(row["status"] == "captured" for row in body)
+    assert attempt.id in {row["id"] for row in body}
+
+    response2 = client.get("/api/v1/settlements", params={"status": "failed"})
+    assert response2.status_code == 200
+    assert attempt.id not in {row["id"] for row in response2.json()}

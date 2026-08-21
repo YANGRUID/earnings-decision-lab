@@ -8,7 +8,12 @@ const THEME_OPTIONS: { value: ThemePreference; label: string }[] = [
 ];
 
 const NAV_ITEMS = [
-  { to: "/", label: "Search", end: true },
+  // The homepage -- points at the real index route "/" (not "/dashboard")
+  // so this link shows "active" for whichever of the two equivalent URLs
+  // the user is actually on; "/dashboard" is still a real, directly
+  // addressable route (see App.tsx), just not the one this nav link uses.
+  { to: "/", label: "Dashboard", end: true },
+  { to: "/search", label: "Search", end: true },
   { to: "/research", label: "AI Research" },
   { to: "/historical-replay", label: "Cross-Company Replay" },
   { to: "/track-record", label: "AI Track Record" },

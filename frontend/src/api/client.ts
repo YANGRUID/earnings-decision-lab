@@ -6,11 +6,14 @@ import type {
   BenchmarkTrackRecord,
   Company,
   DecisionDirection,
+  DecisionSnapshot,
   DecisionVolatilityView,
+  EarningsCalendarEvent,
   EarningsEstimate,
   EarningsEventDetail,
   EarningsEventSummary,
   EarningsThesis,
+  EntryCaptureAttempt,
   EvaluationStatusResponse,
   ExpirationSelectionResult,
   FilingSearchResponse,
@@ -27,6 +30,7 @@ import type {
   ResearchQueryResponse,
   RiskProfile,
   SettlementAttemptResult,
+  SettlementCaptureAttempt,
   StrategyLab,
   StrategyPayoffRequest,
   StrategyPayoffResponse,
@@ -273,5 +277,49 @@ export const api = {
     if (params.portfolioId) qs.set("portfolio_id", String(params.portfolioId));
     const suffix = qs.toString() ? `?${qs.toString()}` : "";
     return request<BenchmarkCalibration>(`/benchmark/calibration${suffix}`);
+  },
+
+  // AI Earnings Analyst Dashboard -- reads the same immutable Phase 4
+  // tables the benchmark track record above already reads.
+  listUpcomingEarnings: (params: { limit?: number; offset?: number } = {}) => {
+    const qs = new URLSearchParams();
+    if (params.limit) qs.set("limit", String(params.limit));
+    if (params.offset) qs.set("offset", String(params.offset));
+    const suffix = qs.toString() ? `?${qs.toString()}` : "";
+    return request<EarningsCalendarEvent[]>(`/earnings-calendar${suffix}`);
+  },
+  getSymbolEarningsCalendar: (symbol: string) =>
+    request<EarningsCalendarEvent[]>(`/earnings-calendar/${symbol}`),
+
+  listDecisionSnapshots: (params: { ticker?: string; limit?: number; offset?: number } = {}) => {
+    const qs = new URLSearchParams();
+    if (params.ticker) qs.set("ticker", params.ticker);
+    if (params.limit) qs.set("limit", String(params.limit));
+    if (params.offset) qs.set("offset", String(params.offset));
+    const suffix = qs.toString() ? `?${qs.toString()}` : "";
+    return request<DecisionSnapshot[]>(`/decision-snapshots${suffix}`);
+  },
+  getDecisionSnapshot: (id: number) => request<DecisionSnapshot>(`/decision-snapshots/${id}`),
+  getDecisionSnapshotEntries: (id: number) =>
+    request<EntryCaptureAttempt[]>(`/decision-snapshots/${id}/entries`),
+
+  listBenchmarkEntries: (params: { status?: string; limit?: number; offset?: number } = {}) => {
+    const qs = new URLSearchParams();
+    if (params.status) qs.set("status", params.status);
+    if (params.limit) qs.set("limit", String(params.limit));
+    if (params.offset) qs.set("offset", String(params.offset));
+    const suffix = qs.toString() ? `?${qs.toString()}` : "";
+    return request<EntryCaptureAttempt[]>(`/benchmark/entries${suffix}`);
+  },
+
+  getSettlements: (decisionId: number) =>
+    request<SettlementCaptureAttempt[]>(`/settlements/${decisionId}`),
+  listAllSettlements: (params: { status?: string; limit?: number; offset?: number } = {}) => {
+    const qs = new URLSearchParams();
+    if (params.status) qs.set("status", params.status);
+    if (params.limit) qs.set("limit", String(params.limit));
+    if (params.offset) qs.set("offset", String(params.offset));
+    const suffix = qs.toString() ? `?${qs.toString()}` : "";
+    return request<SettlementCaptureAttempt[]>(`/settlements${suffix}`);
   },
 };
