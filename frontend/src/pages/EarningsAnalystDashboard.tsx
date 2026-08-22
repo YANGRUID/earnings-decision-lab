@@ -3,6 +3,7 @@ import { api } from "../api/client";
 import { useAsync } from "../hooks/useAsync";
 import { ErrorState, LoadingState } from "../components/StatusStates";
 import { MovePill } from "../components/MovePill";
+import { EarningsCalendarGrid } from "../components/EarningsCalendarGrid";
 import {
   deriveLifecycleStage,
   earningsCountdownLabel,
@@ -373,6 +374,13 @@ export function EarningsAnalystDashboard() {
           how the real $2,000 benchmark portfolio has performed. Nothing here is estimated or
           back-filled.
         </p>
+      </div>
+
+      <h2 style={{ fontSize: 15, textTransform: "uppercase", letterSpacing: "0.03em" }}>
+        Earnings Calendar
+      </h2>
+      <div style={{ marginBottom: 24 }}>
+        <EarningsCalendarGrid />
       </div>
 
       <h2 style={{ fontSize: 15, textTransform: "uppercase", letterSpacing: "0.03em" }}>

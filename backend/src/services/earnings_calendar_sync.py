@@ -98,9 +98,20 @@ def sync_earnings_calendar(
     provider: EarningsCalendarProvider,
     *,
     today: date | None = None,
+    from_date: date | None = None,
 ) -> EarningsCalendarSyncResult:
-    """Fetches the next ``SYNC_HORIZON_DAYS`` of events and upserts each
-    one. Each unique symbol's company profile (logo_url/market_cap/
+    """Fetches events from ``from_date`` (default: ``today``) through
+    ``today + SYNC_HORIZON_DAYS`` and upserts each one. ``from_date`` lets
+    a caller widen the window backward (e.g. an on-demand admin sync
+    covering "since the start of this year", not just forward-looking --
+    see api/routers/admin.py) without changing the daily scheduled job's
+    own behavior at all, since that job never passes it (stays exactly
+    "today forward ``SYNC_HORIZON_DAYS`` days", its original Phase 4.2
+    design). The end of the window is never widened by ``from_date`` --
+    Finnhub only ever returns real, actually-scheduled events for any
+    range queried, so asking further back never fabricates anything, and
+    the forward end already reflects everything Finnhub currently commits
+    to. Each unique symbol's company profile (logo_url/market_cap/
     country) is fetched at most once per run -- a profile fetch failure is
     logged and skipped for that symbol only (its calendar row is still
     created/updated from the calendar entry alone), never aborts the run,
@@ -108,9 +119,11 @@ def sync_earnings_calendar(
     services/decision_engine.py's per-step failure containment).
     """
     today = today or date.today()
+    window_start = from_date or today
     result = EarningsCalendarSyncResult()
 
-    entries = provider.get_earnings_calendar(today, today + timedelta(days=SYNC_HORIZON_DAYS))
+    window_end = today + timedelta(days=SYNC_HORIZON_DAYS)
+    entries = provider.get_earnings_calendar(window_start, window_end)
     result.fetched = len(entries)
 
     profile_cache: dict[str, FinnhubCompanyProfile | None] = {}

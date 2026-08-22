@@ -28,8 +28,10 @@ and this project's other standalone background work already use.
 """
 
 import logging
-from datetime import UTC, datetime
+from dataclasses import dataclass
+from datetime import UTC, date, datetime
 
+from apscheduler.events import EVENT_JOB_ERROR, EVENT_JOB_EXECUTED, JobExecutionEvent
 from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
@@ -93,13 +95,72 @@ _ENTRY_MINUTE_ET = 55
 # fresh by the job function at call time, never gets pickled at all.
 _shared_embedder: EmbeddingProvider | None = None
 
+# Phase 4.9 -- APScheduler's own Job object exposes next_run_time
+# natively, but not "when did this last actually run" -- tracked here via
+# a listener instead (see _record_job_execution/build_scheduler below).
+# Deliberately in-memory, not a new DB table: this project already
+# accepts "not observed since this process started" as an honest reset
+# on restart for comparable live-state facts (e.g. IBKR auth status is
+# never persisted either, see services/system_status.py) rather than
+# building new persistence for a status-page-only concern. Reset to
+# empty by build_scheduler() itself so tests/multiple app instances in
+# the same process never see a stale run from an earlier instance.
+_last_run_at: dict[str, datetime] = {}
+_last_run_status: dict[str, str] = {}
 
-def run_earnings_calendar_sync_job() -> None:
+
+def _record_job_execution(event: JobExecutionEvent) -> None:
+    _last_run_at[event.job_id] = datetime.now(UTC)
+    _last_run_status[event.job_id] = "error" if event.exception else "success"
+
+
+@dataclass(frozen=True)
+class SchedulerJobStatus:
+    job_id: str
+    next_run_time: datetime | None
+    last_run_at: datetime | None
+    last_run_status: str | None
+
+
+@dataclass(frozen=True)
+class SchedulerStatus:
+    running: bool
+    jobs: list[SchedulerJobStatus]
+
+
+def get_scheduler_status(scheduler: AsyncIOScheduler | None) -> SchedulerStatus:
+    """Real, live introspection of the actual running scheduler -- never
+    assumed. ``scheduler`` is None when startup failed (see api/main.py's
+    own lifespan() try/except), reported honestly as running=False with
+    no jobs, not an error."""
+    if scheduler is None:
+        return SchedulerStatus(running=False, jobs=[])
+    jobs = [
+        SchedulerJobStatus(
+            job_id=job.id,
+            next_run_time=job.next_run_time,
+            last_run_at=_last_run_at.get(job.id),
+            last_run_status=_last_run_status.get(job.id),
+        )
+        for job in scheduler.get_jobs()
+    ]
+    return SchedulerStatus(running=scheduler.running, jobs=jobs)
+
+
+def run_earnings_calendar_sync_job(from_date: date | None = None) -> None:
     """The actual job body -- registered under a fixed id
     (CALENDAR_SYNC_JOB_ID, ``replace_existing=True``) so a restart that
     re-registers it never ends up with two competing schedules. A sync
     provider is unconfigured is logged and skipped, not a crash -- Finnhub
-    being unconfigured shouldn't take the scheduler itself down."""
+    being unconfigured shouldn't take the scheduler itself down.
+
+    ``from_date`` (Phase 4.9): the scheduled cron trigger never passes
+    this (stays exactly today-forward, the original Phase 4.2 behavior);
+    it exists so an on-demand admin call (api/routers/admin.py) can widen
+    the sync backward -- see services/earnings_calendar_sync.py::sync_
+    earnings_calendar's own docstring for why the forward end is never
+    affected by it.
+    """
     db = SessionLocal()
     try:
         settings = get_settings()
@@ -110,7 +171,7 @@ def run_earnings_calendar_sync_job() -> None:
                 "(set FINNHUB_API_KEY)"
             )
             return
-        sync_earnings_calendar(db, provider)
+        sync_earnings_calendar(db, provider, from_date=from_date)
         db.commit()
     except Exception:
         db.rollback()
@@ -342,11 +403,18 @@ def build_scheduler(embedder: EmbeddingProvider | None = None) -> AsyncIOSchedul
     capture_job's own docstring for why that broke job persistence)."""
     global _shared_embedder
     _shared_embedder = embedder
+    # Fresh per build_scheduler() call -- a new app instance (e.g. a
+    # second TestClient app in the same test process, see test_services_
+    # scheduler.py) must not see stale "last run" data from an earlier
+    # instance's jobs.
+    _last_run_at.clear()
+    _last_run_status.clear()
 
     scheduler = AsyncIOScheduler(
         jobstores={"default": SQLAlchemyJobStore(engine=engine)},
         timezone="UTC",
     )
+    scheduler.add_listener(_record_job_execution, EVENT_JOB_EXECUTED | EVENT_JOB_ERROR)
     scheduler.add_job(
         run_earnings_calendar_sync_job,
         trigger="cron",

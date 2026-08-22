@@ -1,6 +1,7 @@
 from collections.abc import Generator
 from typing import Annotated
 
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from fastapi import Depends, Request
 from sqlalchemy.orm import Session
 
@@ -57,8 +58,18 @@ def get_embedder(request: Request) -> EmbeddingProvider:
     return embedder
 
 
+def get_scheduler(request: Request) -> AsyncIOScheduler | None:
+    """Phase 4.9 -- unlike get_embedder above, this never raises: a
+    scheduler that failed to start (see api/main.py's lifespan()) is
+    real, reportable status for GET /system-status
+    (services/scheduler.py::get_scheduler_status already handles a None
+    scheduler honestly), not a request failure."""
+    return request.app.state.scheduler
+
+
 LLM = Annotated[LLMProvider, Depends(get_llm)]
 Embedder = Annotated[EmbeddingProvider, Depends(get_embedder)]
+Scheduler = Annotated[AsyncIOScheduler | None, Depends(get_scheduler)]
 
 
 def get_orchestrator(db: DbSession, llm: LLM, embedder: Embedder) -> AgentOrchestrator:

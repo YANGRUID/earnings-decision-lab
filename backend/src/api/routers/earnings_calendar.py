@@ -13,9 +13,13 @@ itself is scheduler-only (services/scheduler.py), not exposed over HTTP
 yet.
 """
 
+import calendar as _calendar_module
+from datetime import date
+
 from fastapi import APIRouter, Query
 
 from api.deps import DbSession
+from api.exceptions import InvalidRequestError
 from models.earnings_calendar_event import EarningsCalendarEvent
 from models.enums import EarningsCalendarEventStatus
 from schemas.api import EarningsCalendarEventResponse
@@ -35,6 +39,39 @@ def list_upcoming_earnings(
         .order_by(EarningsCalendarEvent.earnings_date.asc())
         .offset(offset)
         .limit(limit)
+        .all()
+    )
+
+
+# Registered BEFORE "/{symbol}" below on purpose -- FastAPI matches routes
+# in registration order within a router, and "/{symbol}" is a catch-all
+# single-segment path parameter that would otherwise swallow "by-month"
+# as if it were a real ticker.
+@router.get("/by-month", response_model=list[EarningsCalendarEventResponse])
+def list_earnings_by_month(
+    db: DbSession, year: int, month: int = Query(ge=1, le=12)
+) -> list[EarningsCalendarEvent]:
+    """Phase 4.9 -- every real calendar entry (any status -- past,
+    reported, or upcoming, unlike the bare list above which is UPCOMING-
+    only) whose earnings_date falls in the given real calendar month, for
+    a month-grid calendar UI. Never fabricates a month with no real data
+    -- an empty list for a month nothing was ever synced into, not a 404
+    or an error, matching this project's other list-style endpoints.
+    """
+    try:
+        start = date(year, month, 1)
+    except ValueError as exc:
+        raise InvalidRequestError(f"invalid year/month: {exc}") from exc
+    last_day = _calendar_module.monthrange(year, month)[1]
+    end = date(year, month, last_day)
+
+    return (
+        db.query(EarningsCalendarEvent)
+        .filter(
+            EarningsCalendarEvent.earnings_date >= start,
+            EarningsCalendarEvent.earnings_date <= end,
+        )
+        .order_by(EarningsCalendarEvent.earnings_date.asc())
         .all()
     )
 

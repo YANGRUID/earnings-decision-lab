@@ -292,6 +292,8 @@ export const api = {
   },
   getSymbolEarningsCalendar: (symbol: string) =>
     request<EarningsCalendarEvent[]>(`/earnings-calendar/${symbol}`),
+  listEarningsByMonth: (year: number, month: number) =>
+    request<EarningsCalendarEvent[]>(`/earnings-calendar/by-month?year=${year}&month=${month}`),
 
   listDecisionSnapshots: (params: { ticker?: string; limit?: number; offset?: number } = {}) => {
     const qs = new URLSearchParams();

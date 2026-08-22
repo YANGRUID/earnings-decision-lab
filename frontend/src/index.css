@@ -407,6 +407,139 @@ label {
   margin: 4px 0 2px;
 }
 
+/* Phase 4.9 -- month-grid earnings calendar (EarningsCalendarGrid). */
+.calendar-nav {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 14px;
+  gap: 10px;
+}
+.calendar-nav-title {
+  font-size: 16px;
+  font-weight: 700;
+  min-width: 140px;
+  text-align: center;
+}
+.calendar-nav-controls {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.calendar-nav-btn {
+  background: transparent;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  color: var(--color-text);
+  cursor: pointer;
+  font-size: 16px;
+  line-height: 1;
+  padding: 5px 10px;
+}
+.calendar-nav-btn:hover {
+  border-color: var(--color-accent);
+  color: var(--color-accent);
+}
+.calendar-grid-weekdays,
+.calendar-grid-body {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 1px;
+  background: var(--color-border);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+.calendar-grid-weekdays {
+  border-radius: var(--radius) var(--radius) 0 0;
+}
+.calendar-grid-body {
+  border-top: none;
+  border-radius: 0 0 var(--radius) var(--radius);
+}
+.calendar-weekday {
+  background: var(--color-bg);
+  color: var(--color-text-faint);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  padding: 8px 10px;
+  text-align: left;
+}
+.calendar-cell {
+  background: var(--color-surface);
+  min-height: 88px;
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.calendar-cell-empty {
+  background: var(--color-bg);
+}
+.calendar-cell-today {
+  background: color-mix(in srgb, var(--color-accent) 8%, var(--color-surface));
+}
+.calendar-cell-date {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--color-text-muted);
+}
+.calendar-cell-today .calendar-cell-date {
+  color: var(--color-accent);
+}
+.calendar-cell-tickers {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  overflow: hidden;
+}
+.calendar-ticker-chip {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--color-text);
+  padding: 2px 4px;
+  border-radius: 4px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.calendar-ticker-chip:hover {
+  background: var(--color-bg);
+}
+.calendar-ticker-dot {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  color: #fff;
+  font-size: 9px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.calendar-cell-more {
+  font-size: 10px;
+  color: var(--color-text-faint);
+  padding: 0 4px;
+}
+
+@media (max-width: 720px) {
+  .calendar-cell {
+    min-height: 56px;
+  }
+  .calendar-weekday {
+    padding: 6px 4px;
+    font-size: 9px;
+  }
+}
+
 /* --- Preparation progress --- */
 .progress-list {
   list-style: none;

@@ -35,7 +35,18 @@ def client(test_client, db_session) -> Iterator[TestClient]:
 
 
 class TestIbkrConnectEndpoint:
-    def test_returns_the_default_gateway_url(self, client):
+    def test_returns_the_configured_gateway_url(self, client, monkeypatch):
+        # Pinned via monkeypatch, not the ambient .env -- this must stay
+        # deterministic regardless of what IBKR_GATEWAY_PORT a real local
+        # .env happens to have (e.g. remapped away from the 5000 default
+        # to work around a port conflict, see docs/ibkr_gateway_runtime.md's
+        # Troubleshooting section).
+        import api.routers.ibkr as ibkr_module
+
+        monkeypatch.setattr(
+            ibkr_module, "get_settings", lambda: Settings(ibkr_gateway_port=5000, _env_file=None)
+        )
+
         response = client.get("/api/v1/ibkr/connect")
 
         assert response.status_code == 200
@@ -52,10 +63,18 @@ class TestIbkrConnectEndpoint:
 
         assert response.json() == {"url": "https://localhost:6100"}
 
-    def test_response_contains_only_a_url_never_credentials_or_a_session(self, client):
+    def test_response_contains_only_a_url_never_credentials_or_a_session(
+        self, client, monkeypatch
+    ):
         # Explicit, deliberate regression guard matching this endpoint's
         # own docstring: it hands back a URL and nothing else -- no
         # password field, no token, no account identifier.
+        import api.routers.ibkr as ibkr_module
+
+        monkeypatch.setattr(
+            ibkr_module, "get_settings", lambda: Settings(ibkr_gateway_port=5000, _env_file=None)
+        )
+
         response = client.get("/api/v1/ibkr/connect")
 
         assert set(response.json().keys()) == {"url"}

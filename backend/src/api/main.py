@@ -13,6 +13,7 @@ from api.exceptions import register_exception_handlers
 from api.middleware import RequestContextMiddleware, SecurityHeadersMiddleware
 from api.rate_limit import SlidingWindowRateLimiter
 from api.routers import (
+    admin,
     benchmark_entries,
     benchmark_track_record,
     companies,
@@ -93,6 +94,7 @@ async def lifespan(app: FastAPI):
 
 
 def create_app() -> FastAPI:
+    settings = get_settings()
     app = FastAPI(
         title="Earnings Decision Lab API",
         description=(
@@ -139,6 +141,14 @@ def create_app() -> FastAPI:
     app.include_router(portfolio.router, prefix="/api/v1")
     app.include_router(provider_settings.router, prefix="/api/v1")
     app.include_router(usage.router, prefix="/api/v1")
+    # Phase 4.9 -- developer-only, on-demand triggers for the real
+    # earnings pipeline jobs (see api/routers/admin.py). Registered at
+    # all only outside production, so a production deployment doesn't
+    # even list these routes in /docs -- not merely 404 them at call
+    # time (admin.py's own _ensure_enabled() is a second, redundant
+    # check, kept as defense in depth).
+    if settings.app_env.lower() != "production":
+        app.include_router(admin.router, prefix="/api/v1")
 
     return app
 

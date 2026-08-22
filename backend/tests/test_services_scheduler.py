@@ -1,9 +1,11 @@
-"""Phase 4.2/4.4/4.5/4.8A -- tests for services/scheduler.py: all four
-jobs are registered correctly, and api/main.py's real lifespan
-starts/stops them gracefully."""
+"""Phase 4.2/4.4/4.5/4.8A/4.9 -- tests for services/scheduler.py: all
+four jobs are registered correctly, api/main.py's real lifespan
+starts/stops them gracefully, and GET /system-status's scheduler field
+(Phase 4.9) reflects real, live scheduler state -- never assumed."""
 
 import logging
 
+from apscheduler.events import EVENT_JOB_ERROR, EVENT_JOB_EXECUTED, JobExecutionEvent
 from fastapi.testclient import TestClient
 
 from core.config import Settings
@@ -13,6 +15,7 @@ from services.scheduler import (
     EXIT_CAPTURE_JOB_ID,
     IBKR_GATEWAY_HEALTHCHECK_JOB_ID,
     build_scheduler,
+    get_scheduler_status,
     run_ibkr_gateway_healthcheck_job,
 )
 
@@ -198,3 +201,98 @@ class TestIbkrGatewayHealthcheckJob:
 
         assert "GATEWAY_UNREACHABLE" in caplog.text
         assert any(record.levelno == logging.WARNING for record in caplog.records)
+
+
+class TestGetSchedulerStatus:
+    """Phase 4.9 -- GET /system-status's scheduler field. Driven through
+    the real app + TestClient, not a bare build_scheduler(), because
+    AsyncIOScheduler.start() needs a running asyncio event loop (see
+    test_scheduler_starts_and_shuts_down_gracefully_with_the_app above
+    for the same constraint)."""
+
+    def test_none_scheduler_reports_not_running_honestly(self):
+        # api/main.py's lifespan() sets app.state.scheduler = None when
+        # startup itself failed -- this must be reported as real status,
+        # never raise.
+        status = get_scheduler_status(None)
+
+        assert status.running is False
+        assert status.jobs == []
+
+    def test_real_scheduler_reports_running_and_all_jobs_with_next_run_time(self):
+        import api.main as main_module
+
+        app = main_module.create_app()
+        with TestClient(app):
+            status = get_scheduler_status(app.state.scheduler)
+
+            assert status.running is True
+            job_ids = {job.job_id for job in status.jobs}
+            assert job_ids == {
+                CALENDAR_SYNC_JOB_ID,
+                DECISION_AND_ENTRY_CAPTURE_JOB_ID,
+                EXIT_CAPTURE_JOB_ID,
+                IBKR_GATEWAY_HEALTHCHECK_JOB_ID,
+            }
+            # Every job has a real cron/interval trigger -- next_run_time
+            # must always be populated once the scheduler is running,
+            # never left None/unknown.
+            assert all(job.next_run_time is not None for job in status.jobs)
+
+    def test_stopped_scheduler_reports_running_false(self):
+        import api.main as main_module
+
+        app = main_module.create_app()
+        with TestClient(app):
+            scheduler = app.state.scheduler
+
+        # Outside the `with` block -- TestClient's __exit__ has already
+        # driven the app's shutdown, which shuts the scheduler down too.
+        status = get_scheduler_status(scheduler)
+
+        assert status.running is False
+
+    def test_job_execution_updates_last_run_at_and_status(self):
+        import api.main as main_module
+
+        app = main_module.create_app()
+        with TestClient(app):
+            scheduler = app.state.scheduler
+            before = get_scheduler_status(scheduler)
+            assert before.jobs[0].last_run_at is None  # nothing has run yet
+
+            event = JobExecutionEvent(
+                code=EVENT_JOB_EXECUTED,
+                job_id=CALENDAR_SYNC_JOB_ID,
+                jobstore="default",
+                scheduled_run_time=None,
+            )
+            # The real, documented way APScheduler itself uses to invoke
+            # its listeners -- there is no public equivalent, and waiting
+            # for a real cron/interval trigger to fire isn't practical in
+            # a unit test.
+            scheduler._dispatch_event(event)  # noqa: SLF001
+
+            after = get_scheduler_status(scheduler)
+            calendar_job = next(j for j in after.jobs if j.job_id == CALENDAR_SYNC_JOB_ID)
+            assert calendar_job.last_run_at is not None
+            assert calendar_job.last_run_status == "success"
+
+    def test_job_execution_error_recorded_as_error_status(self):
+        import api.main as main_module
+
+        app = main_module.create_app()
+        with TestClient(app):
+            scheduler = app.state.scheduler
+            event = JobExecutionEvent(
+                code=EVENT_JOB_ERROR,
+                job_id=EXIT_CAPTURE_JOB_ID,
+                jobstore="default",
+                scheduled_run_time=None,
+                exception=RuntimeError("boom"),
+            )
+            scheduler._dispatch_event(event)  # noqa: SLF001
+
+            status = get_scheduler_status(scheduler)
+            exit_job = next(j for j in status.jobs if j.job_id == EXIT_CAPTURE_JOB_ID)
+            assert exit_job.last_run_status == "error"

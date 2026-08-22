@@ -630,6 +630,26 @@ class ProviderCredentialUpdateRequest(BaseModel):
     model: str | None = None
 
 
+class SchedulerJobStatusResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    job_id: str
+    next_run_time: datetime | None
+    last_run_at: datetime | None
+    last_run_status: str | None
+
+
+class SchedulerStatusResponse(BaseModel):
+    """Phase 4.9 -- real, live introspection of the actual running
+    scheduler (services/scheduler.py::get_scheduler_status) -- never
+    assumed running just because the process is up."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    running: bool
+    jobs: list[SchedulerJobStatusResponse]
+
+
 class SystemStatusResponse(BaseModel):
     counts: DataCountsResponse
     freshness: DataFreshnessResponse
@@ -637,6 +657,7 @@ class SystemStatusResponse(BaseModel):
     embedding_model: str
     evaluation: EvaluationStatusResponse
     ibkr: IbkrStatusResponse
+    scheduler: SchedulerStatusResponse
     market_session: str
     providers: ProviderDashboardResponse
 
@@ -1244,3 +1265,33 @@ class TestConnectionResponse(BaseModel):
     status: str
     detail: str | None
     tested_at: datetime
+
+
+class AdminRunEarningsSyncResponse(BaseModel):
+    """Phase 4.9 -- POST /admin/run-earnings-sync. Real before/after
+    counts from a real, immediate run of run_earnings_calendar_sync_job
+    (services/scheduler.py) against the real, configured Finnhub
+    provider -- never a fabricated or estimated number."""
+
+    earnings_calendar_events_before: int
+    earnings_calendar_events_after: int
+
+
+class AdminRunDecisionGenerationResponse(BaseModel):
+    """Phase 4.9 -- POST /admin/run-decision-generation. Real before/
+    after counts from a real, immediate run of run_decision_and_entry_
+    capture_job (decision generation + entry capture together, matching
+    that job's own Phase 4.4 design -- see its docstring)."""
+
+    decision_snapshots_before: int
+    decision_snapshots_after: int
+    entry_capture_attempts_before: int
+    entry_capture_attempts_after: int
+
+
+class AdminRunSettlementCaptureResponse(BaseModel):
+    """Phase 4.9 -- POST /admin/run-settlement-capture. Real before/
+    after counts from a real, immediate run of run_exit_capture_job."""
+
+    settlement_capture_attempts_before: int
+    settlement_capture_attempts_after: int
