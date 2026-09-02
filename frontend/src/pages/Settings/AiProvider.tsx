@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { useAsync } from "../../hooks/useAsync";
+import { DecisionModelCard } from "../../components/v4/DecisionModelCard";
 import { api, ApiError } from "../../api/client";
 import { LoadingState, ErrorState } from "../../components/StatusStates";
 import { ProviderCredentialForm } from "../../components/settings/ProviderCredentialForm";
@@ -155,6 +156,7 @@ export function AiProvider() {
           key back, only a masked suffix once it's saved.
         </p>
       </div>
+      <DecisionModelCard />
       {error && <div className="notice">{error}</div>}
       <div className="card" style={{ marginBottom: 20, maxWidth: 480 }}>
         <div className="field">
