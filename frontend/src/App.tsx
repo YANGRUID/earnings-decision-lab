@@ -46,7 +46,6 @@ export default function App() {
           <Route path="operations" element={<Operations />} />
           {/* V4.5 -- EXPERIMENTAL shadow cohort. Separate routes from the
               official AI Decision / Benchmark Track Record surfaces. */}
-          <Route path="v4-shadow-lab" element={<V4DecisionLab />} />
           <Route path="v4-decision-lab" element={<V4DecisionLab />} />
           <Route path="v4-decision-lab/:id" element={<V4DecisionLab />} />
           <Route path="candidate-explorer" element={<V4DecisionLab mode="explorer" />} />
