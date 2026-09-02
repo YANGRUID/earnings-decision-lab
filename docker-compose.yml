@@ -132,6 +132,61 @@ services:
       start_period: 15s
       retries: 5
 
+  # Pre-live hardening (2026-08-25) -- the dedicated research-preparation
+  # worker (backend/src/workers/research_preparation_worker.py). Same
+  # image/build context as `backend` (identical codebase, just a
+  # different entrypoint command), but its own separate container/
+  # process: a `backend` restart has zero effect on it, and vice versa
+  # -- see that module's own docstring for why this separation is the
+  # whole point of this architecture. No published port (it serves no
+  # HTTP traffic) and no Docker socket/Docker-control access of any kind
+  # -- it only ever needs the database and the same real provider/API
+  # config `backend` already uses.
+  research-worker:
+    build:
+      context: ./backend
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-change_me}@db:5432/${POSTGRES_DB:-earnings_decision_lab}
+      # IBKR TWS Migration -- real client-ID collision risk found during
+      # Phase 2 parity testing: `backend` and `research-worker` both read
+      # the same .env, so both would construct an IBKRTWSProvider with
+      # the identical IBKR_TWS_CLIENT_ID (Section 11's own deterministic-
+      # client-id rule already warned about this in core/config.py's
+      # comment, but no per-service override existed until now). IB
+      # Gateway/TWS rejects a second connection reusing an already-active
+      # client id (error 326) -- whichever process connected second would
+      # fail. This override gives research-worker its own distinct,
+      # deterministic id; `backend` keeps the shared .env default
+      # (IBKR_TWS_CLIENT_ID, currently 101). Inert today: only reachable
+      # at all when OPTIONS_PROVIDER=ibkr AND IBKR_PROVIDER=tws, and
+      # official config keeps IBKR_PROVIDER=web (see providers/factory.py
+      # ::_build_ibkr_transport) -- this is Phase-3 preparation, not a
+      # behavior change.
+      IBKR_TWS_CLIENT_ID: ${IBKR_TWS_RESEARCH_WORKER_CLIENT_ID:-102}
+    command: ["python", "-m", "workers.research_preparation_worker"]
+    # Same reason as `backend`'s own identical entry -- an options
+    # provider chain entry here can be IBKR (see providers/factory.py::
+    # build_options_provider_chain), which resolves host.docker.internal
+    # the same way `backend` does.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    # The backend image's own Dockerfile bakes in a HEALTHCHECK that
+    # curls localhost:8000/health -- correct for `backend`, meaningless
+    # here (this process serves no HTTP at all, by design). Left as
+    # inherited, it would report "unhealthy" forever regardless of the
+    # worker's real state -- a false negative, worse than no healthcheck
+    # at all. Disabled explicitly rather than silently misleading.
+    healthcheck:
+      disable: true
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
   frontend:
     build:
       context: ./frontend

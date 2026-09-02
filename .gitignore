@@ -46,6 +46,18 @@ secrets/
 
 # Large or licensed source documents (filings/transcripts) are not committed.
 /backend/src/rag/store/
+
+# --- IBKR TWS API official source (IBKR TWS Migration Phase 1.1) ---
+# The IB API Non-Commercial License explicitly prohibits redistribution
+# ("You agree not to publish, disseminate, or redistribute the API Code
+# to any third party") -- this repository is PUBLIC on GitHub, so the
+# official source itself is fetched and SHA256-verified at setup/build
+# time (backend/scripts/fetch_ibapi_official.sh) instead of being
+# committed. Only PROVENANCE.md (metadata: URL/version/hash, not the
+# licensed code itself) is tracked -- see that file for the exact
+# version and checksum.
+/backend/vendor/ibapi_official/pythonclient/
+/backend/vendor/ibapi_official/*.zip
 /evaluation/results/*.json
 !/evaluation/results/.gitkeep
 

@@ -30,6 +30,12 @@ jobs:
 
     env:
       DATABASE_URL: postgresql+psycopg://postgres:change_me@localhost:5432/earnings_decision_lab
+      # pytest's own conftest.py now refuses to run against DATABASE_URL
+      # directly (see tests/conftest.py's module-level safety guard) --
+      # in CI both variables point at this job's own disposable, already-
+      # isolated `postgres` service above, so this is a same-value
+      # aliasing, not a second database.
+      TEST_DATABASE_URL: postgresql+psycopg://postgres:change_me@localhost:5432/earnings_decision_lab
       SEC_EDGAR_USER_AGENT: "Earnings Decision Lab CI ci@example.com"
 
     steps:

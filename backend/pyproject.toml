@@ -18,7 +18,25 @@ dependencies = [
     "beautifulsoup4>=4.15.0",
     "fastembed>=0.8.0",
     "cryptography>=43.0",
+    # IBKR TWS Migration Phase 1.1 -- the REAL official Interactive
+    # Brokers TWS API Python client (EClient/EWrapper), version 10.45.01,
+    # resolved via [tool.uv.sources] below to a local path fetched and
+    # SHA256-verified by scripts/fetch_ibapi_official.py -- never PyPI.
+    # Phase 1 originally depended on PyPI's `ibapi==9.81.1.post1` and
+    # called it "official"; that was wrong (third-party-published,
+    # 9 minor versions stale) -- see vendor/ibapi_official/PROVENANCE.md
+    # for the full correction record and why this is a local path
+    # dependency rather than a vendored/committed one (this repo is
+    # public; the IB API Non-Commercial License prohibits redistribution).
+    "ibapi",
+    # A real, new transitive dependency of the official 10.45 client's
+    # own setup.py (`install_requires=["protobuf==5.29.5"]`) -- the old
+    # 9.81 PyPI package had no such requirement. Pinned to match exactly.
+    "protobuf==5.29.5",
 ]
+
+[tool.uv.sources]
+ibapi = { path = "vendor/ibapi_official/pythonclient" }
 
 [dependency-groups]
 dev = [
@@ -74,4 +92,5 @@ packages = [
     "src/rag",
     "src/schemas",
     "src/services",
+    "src/workers",
 ]

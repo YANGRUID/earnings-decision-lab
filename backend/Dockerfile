@@ -19,6 +19,17 @@ ENV UV_COMPILE_BYTECODE=1 \
 
 WORKDIR /app
 
+# IBKR TWS Migration Phase 1.1 -- `ibapi` is a local-path dependency
+# (pyproject.toml's [tool.uv.sources]) resolved from the OFFICIAL
+# Interactive Brokers TWS API source, never PyPI (see vendor/
+# ibapi_official/PROVENANCE.md for why). It must exist on disk before
+# `uv sync` can resolve it below, so this fetch-and-SHA256-verify step
+# (stdlib-only: no curl/unzip apt packages needed) runs first. The
+# script is idempotent and network-bound only to interactivebrokers.
+# github.io's own documented download URL -- never PyPI, never a mirror.
+COPY scripts/fetch_ibapi_official.py scripts/fetch_ibapi_official.py
+RUN python3 scripts/fetch_ibapi_official.py
+
 RUN --mount=type=cache,target=/root/.cache/uv \
     --mount=type=bind,source=uv.lock,target=uv.lock \
     --mount=type=bind,source=pyproject.toml,target=pyproject.toml \
@@ -38,6 +49,15 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 # startup fails with a permission error, not just "slow."
 ENV HF_HOME=/app/.cache/huggingface
 RUN .venv/bin/python -c "from rag.embeddings import FastEmbedProvider; FastEmbedProvider()"
+
+# Phase 4 RAG hardening (2026-08-26), Section 25 -- the OPTIONAL local
+# reranker (rag/reranking.py's FastEmbedReranker) is not called by any
+# default code path yet (opt-in only, via hybrid_search's own
+# ``reranker`` parameter), but pre-warms here anyway: the exact same
+# no-writable-HOME failure mode documented above for the embedding model
+# would otherwise hit whoever first enables it in the running container.
+# Small (0.08GB), same HF_HOME cache, same build-time-not-startup reasoning.
+RUN .venv/bin/python -c "from rag.reranking import FastEmbedReranker; FastEmbedReranker()"
 
 FROM python:3.12-slim
 RUN groupadd --system app && useradd --system --gid app app
