@@ -19,6 +19,7 @@ silent gap.
 """
 
 import json
+import time
 from collections.abc import Iterator
 
 import httpx
@@ -62,10 +63,16 @@ class _OpenAICompatibleTransport(LLMProvider):
 
     def _extra_payload_fields(self) -> dict:
         """Vendor-specific fields merged into every request. Empty by
-        default; e.g. DeepSeekProvider uses this to disable thinking mode so
-        ``generate()`` is fast/deterministic by default instead of silently
-        spending the token budget on hidden reasoning — see that class."""
+        default; DeepSeekProvider uses this to send its explicit thinking
+        configuration — see that class."""
         return {}
+
+    def _sampling_fields(self, temperature: float) -> dict:
+        """Sampling parameters for a request. A vendor mode that rejects
+        them (DeepSeek thinking mode does not accept temperature/top_p)
+        overrides this to omit them rather than send a field the API
+        documents as unsupported."""
+        return {"temperature": temperature}
 
     @staticmethod
     def _to_wire_messages(messages: list[ChatMessage]) -> list[dict]:
@@ -109,9 +116,16 @@ class _OpenAICompatibleTransport(LLMProvider):
             raise LLMRequestError(f"{self.name} returned {response.status_code}: {response.text}")
         return response.json()
 
-    def _parse_response(self, data: dict) -> GenerateResult:
+    def _post_timed(self, payload: dict) -> tuple[dict, int]:
+        """``_post`` plus wall-clock latency over all retry attempts."""
+        start = time.monotonic()
+        data = self._post(payload)
+        return data, int((time.monotonic() - start) * 1000)
+
+    def _parse_response(self, data: dict, latency_ms: int | None = None) -> GenerateResult:
         choice = data["choices"][0]
         message = choice["message"]
+        reasoning = message.get("reasoning_content")
         tool_calls = [
             ToolCall(
                 id=tc["id"],
@@ -122,9 +136,16 @@ class _OpenAICompatibleTransport(LLMProvider):
         ]
         usage = None
         if "usage" in data:
+            u = data["usage"]
+            details = u.get("completion_tokens_details") or {}
             usage = TokenUsage(
-                input_tokens=data["usage"]["prompt_tokens"],
-                output_tokens=data["usage"]["completion_tokens"],
+                input_tokens=u["prompt_tokens"],
+                output_tokens=u["completion_tokens"],
+                # Reported by DeepSeek; absent (None) on providers that
+                # don't expose them -- never estimated.
+                reasoning_tokens=details.get("reasoning_tokens"),
+                cache_hit_tokens=u.get("prompt_cache_hit_tokens"),
+                cache_miss_tokens=u.get("prompt_cache_miss_tokens"),
             )
         return GenerateResult(
             content=message.get("content"),
@@ -132,6 +153,11 @@ class _OpenAICompatibleTransport(LLMProvider):
             finish_reason=choice.get("finish_reason"),
             usage=usage,
             model=data.get("model"),
+            latency_ms=latency_ms,
+            # Presence and size only. The hidden reasoning text is dropped
+            # here and never reaches persistence.
+            reasoning_present=bool(reasoning),
+            reasoning_chars=len(reasoning) if isinstance(reasoning, str) else None,
         )
 
     def generate(
@@ -145,14 +171,15 @@ class _OpenAICompatibleTransport(LLMProvider):
         payload = {
             "model": self._model,
             "messages": self._to_wire_messages(messages),
-            "temperature": temperature,
+            **self._sampling_fields(temperature),
             "max_tokens": max_tokens,
             **self._extra_payload_fields(),
         }
         wire_tools = self._to_wire_tools(tools)
         if wire_tools:
             payload["tools"] = wire_tools
-        return self._parse_response(self._post(payload))
+        data, latency_ms = self._post_timed(payload)
+        return self._parse_response(data, latency_ms)
 
     def generate_structured(
         self,
@@ -162,6 +189,24 @@ class _OpenAICompatibleTransport(LLMProvider):
         temperature: float = 0.0,
         max_tokens: int = 1024,
     ) -> SchemaT:
+        parsed, _ = self.generate_structured_result(
+            messages, schema, temperature=temperature, max_tokens=max_tokens
+        )
+        return parsed
+
+    def generate_structured_result(
+        self,
+        messages: list[ChatMessage],
+        schema: type[SchemaT],
+        *,
+        temperature: float = 0.0,
+        max_tokens: int = 1024,
+    ) -> tuple[SchemaT, GenerateResult]:
+        """Structured generation returning the parsed object AND the
+        response metadata (returned model, usage incl. reasoning/cache
+        tokens, latency, finish reason) for provenance. A response that
+        does not parse against ``schema`` raises StructuredOutputError --
+        prose is never accepted, and no other model is tried."""
         schema_instruction = ChatMessage(
             role="system",
             content=(
@@ -173,20 +218,30 @@ class _OpenAICompatibleTransport(LLMProvider):
         payload = {
             "model": self._model,
             "messages": self._to_wire_messages([schema_instruction, *messages]),
-            "temperature": temperature,
+            **self._sampling_fields(temperature),
             "max_tokens": max_tokens,
             "response_format": {"type": "json_object"},
             **self._extra_payload_fields(),
         }
-        result = self._parse_response(self._post(payload))
-        if result.content is None:
-            raise StructuredOutputError(f"{self.name} returned no content for structured request")
+        data, latency_ms = self._post_timed(payload)
+        result = self._parse_response(data, latency_ms)
+        truncated = (
+            f" (finish_reason={result.finish_reason}: the answer was cut off at max_tokens="
+            f"{max_tokens}; in thinking mode hidden reasoning counts against this budget)"
+            if result.finish_reason == "length"
+            else ""
+        )
+        if not result.content:
+            raise StructuredOutputError(
+                f"{self.name} returned no content for structured request{truncated}"
+            )
         try:
-            return schema.model_validate(json.loads(result.content))
+            parsed = schema.model_validate(json.loads(result.content))
         except (json.JSONDecodeError, ValidationError) as exc:
             raise StructuredOutputError(
-                f"{self.name} response did not match schema {schema.__name__}: {exc}"
+                f"{self.name} response did not match schema {schema.__name__}{truncated}: {exc}"
             ) from exc
+        return parsed, result
 
     def stream(
         self,
@@ -198,7 +253,7 @@ class _OpenAICompatibleTransport(LLMProvider):
         payload = {
             "model": self._model,
             "messages": self._to_wire_messages(messages),
-            "temperature": temperature,
+            **self._sampling_fields(temperature),
             "max_tokens": max_tokens,
             "stream": True,
             **self._extra_payload_fields(),

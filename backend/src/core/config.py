@@ -1,7 +1,9 @@
 from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
+from typing import Literal
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from models.enums import MarketDataQualityPolicy
@@ -142,7 +144,31 @@ class Settings(BaseSettings):
 
     deepseek_api_key: str | None = None
     deepseek_base_url: str = "https://api.deepseek.com"
+    # The general-purpose DeepSeek model (research preparation, AI Research,
+    # the official V3 decision engine). The V4 DecisionView has its OWN
+    # explicit model/reasoning configuration below and never reads this.
     deepseek_model: str | None = None
+
+    # --- V4 DecisionView model configuration (2026-09-02) ---
+    # The model that produces the V4 shadow cohort's frozen DecisionView.
+    # Deliberately separate from deepseek_model: the official V3 control
+    # cohort keeps its own model, and a forward-test cohort's model must be
+    # an explicit, versioned decision -- never inherited from whatever the
+    # research jobs happen to use. Verified against api-docs.deepseek.com
+    # (2026-09-02): both deepseek-v4-pro and deepseek-v4-flash support
+    # thinking mode (on by default, effort "high" by default); the request
+    # field is thinking={"type": enabled|disabled, "reasoning_effort":
+    # low|high|max}. Thinking mode rejects temperature/top_p, and the
+    # hidden reasoning tokens count against max_tokens, so the budget
+    # must be far larger than the visible JSON answer.
+    #
+    # There is NO fallback: when V4 is enabled and this is unset or invalid,
+    # V4 DecisionView generation fails with a clear configuration error
+    # (recorded as shadow evidence) instead of silently using another model.
+    v4_decision_view_model: str | None = None
+    v4_decision_view_thinking: Literal["enabled", "disabled"] = "enabled"
+    v4_decision_view_reasoning_effort: Literal["low", "high", "max"] = "high"
+    v4_decision_view_max_tokens: int = Field(default=16384, ge=2048, le=131072)
 
     openai_api_key: str | None = None
     openai_model: str | None = None

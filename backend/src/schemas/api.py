@@ -687,9 +687,23 @@ class DomainStatusResponse(BaseModel):
     providers: list[ProviderStatusResponse]
 
 
+class V4DecisionViewModelResponse(BaseModel):
+    """The explicit V4 DecisionView model configuration (2026-09-02) as the
+    Settings page shows it -- read-only here; it is set in the environment."""
+
+    provider: str | None
+    model: str | None
+    thinking: str | None
+    reasoning_effort: str | None
+    max_tokens: int | None
+    config_version: str | None
+    config_error: str | None
+
+
 class ProviderDashboardResponse(BaseModel):
     domains: list[DomainStatusResponse]
     strategy_risk_preference: str = "defined_risk_only"
+    v4_decision_view: V4DecisionViewModelResponse | None = None
 
 
 class ProviderUsageSummaryResponse(BaseModel):
@@ -1634,6 +1648,11 @@ class AiProviderHealthResponse(BaseModel):
     configured: bool
     last_successful_generation_at: datetime | None
     last_error: str | None
+    decision_view_model: str | None = None
+    decision_view_thinking: str | None = None
+    decision_view_reasoning_effort: str | None = None
+    decision_view_max_tokens: int | None = None
+    decision_view_config_error: str | None = None
 
 
 class SchedulerHealthResponse(BaseModel):

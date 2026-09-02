@@ -41,6 +41,14 @@ class ProviderUsageEvent(Base):
     input_tokens: Mapped[int | None] = mapped_column(Integer)
     output_tokens: Mapped[int | None] = mapped_column(Integer)
     total_tokens: Mapped[int | None] = mapped_column(Integer)
+    # Model-aware LLM telemetry (2026-09-02): the model the API reported (or
+    # the configured alias), the reasoning effort requested, and the
+    # provider-reported reasoning / prompt-cache-hit token counts. Null when
+    # the provider does not expose them -- never estimated.
+    model: Mapped[str | None] = mapped_column(String(128))
+    reasoning_effort: Mapped[str | None] = mapped_column(String(16))
+    reasoning_tokens: Mapped[int | None] = mapped_column(Integer)
+    cache_hit_tokens: Mapped[int | None] = mapped_column(Integer)
 
     # Data-API-only -- the provider's own unit of billing/quota (e.g. "1
     # request"), when meaningfully distinct from "one row in this table".

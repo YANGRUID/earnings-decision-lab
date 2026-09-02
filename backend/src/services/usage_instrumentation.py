@@ -62,6 +62,10 @@ def record_usage_event(
     input_tokens: int | None = None,
     output_tokens: int | None = None,
     total_tokens: int | None = None,
+    model: str | None = None,
+    reasoning_effort: str | None = None,
+    reasoning_tokens: int | None = None,
+    cache_hit_tokens: int | None = None,
 ) -> None:
     if db is None:
         return
@@ -79,6 +83,10 @@ def record_usage_event(
                 input_tokens=input_tokens,
                 output_tokens=output_tokens,
                 total_tokens=total_tokens,
+                model=model,
+                reasoning_effort=reasoning_effort,
+                reasoning_tokens=reasoning_tokens,
+                cache_hit_tokens=cache_hit_tokens,
                 provider_units=None,
                 estimated_cost=None,
             )

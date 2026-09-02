@@ -44,10 +44,17 @@ router = APIRouter(prefix="/settings/providers", tags=["provider-settings"])
 
 
 def _dashboard(db: DbSession) -> ProviderDashboardResponse:
-    domains = get_provider_dashboard(db, get_settings())
+    from schemas.api import V4DecisionViewModelResponse  # noqa: PLC0415
+    from services.v4_decision_view_config import (  # noqa: PLC0415
+        describe_v4_decision_view_config,
+    )
+
+    settings = get_settings()
+    domains = get_provider_dashboard(db, settings)
     return ProviderDashboardResponse(
         domains=[DomainStatusResponse.model_validate(d) for d in domains],
         strategy_risk_preference=get_strategy_risk_preference(db).value,
+        v4_decision_view=V4DecisionViewModelResponse(**describe_v4_decision_view_config(settings)),
     )
 
 

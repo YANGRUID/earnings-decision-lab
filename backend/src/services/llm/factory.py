@@ -14,7 +14,7 @@ from core.config import Settings
 from services.llm.anthropic import AnthropicProvider
 from services.llm.base import LLMProvider
 from services.llm.deepseek import DeepSeekProvider
-from services.llm.errors import MissingAPIKeyError, UnknownProviderError
+from services.llm.errors import LLMConfigurationError, MissingAPIKeyError, UnknownProviderError
 from services.llm.openai import OpenAIProvider
 from services.llm.openai_compatible_provider import OpenAICompatibleProvider
 from services.secret_store import resolve_extra, resolve_secret
@@ -27,7 +27,15 @@ def get_llm_provider(
     override_provider: str | None = None,
     override_model: str | None = None,
     db: Session | None = None,
+    *,
+    thinking: str | None = None,
+    reasoning_effort: str | None = None,
 ) -> LLMProvider:
+    """``thinking``/``reasoning_effort`` are an explicit request for the
+    provider's reasoning mode (2026-09-02, V4 DecisionView). They are only
+    meaningful for DeepSeek's documented ``thinking`` request field; asking
+    for them on any other provider raises LLMConfigurationError up front
+    rather than silently sending a request without them."""
     provider = (override_provider or settings.llm_provider).lower()
 
     if provider == "deepseek":
@@ -37,7 +45,22 @@ def get_llm_provider(
             raise MissingAPIKeyError("LLM provider deepseek requires DEEPSEEK_API_KEY")
         if not model:
             raise MissingAPIKeyError("LLM provider deepseek requires DEEPSEEK_MODEL")
-        return DeepSeekProvider(api_key=key, model=model, base_url=settings.deepseek_base_url)
+        try:
+            return DeepSeekProvider(
+                api_key=key,
+                model=model,
+                base_url=settings.deepseek_base_url,
+                thinking=thinking or "disabled",  # type: ignore[arg-type]
+                reasoning_effort=reasoning_effort,  # type: ignore[arg-type]
+            )
+        except ValueError as exc:
+            raise LLMConfigurationError(str(exc)) from exc
+
+    if thinking is not None or reasoning_effort is not None:
+        raise LLMConfigurationError(
+            f"explicit thinking/reasoning configuration is only supported for the deepseek "
+            f"provider; LLM provider is {provider!r}"
+        )
 
     if provider == "openai":
         model = override_model or settings.openai_model

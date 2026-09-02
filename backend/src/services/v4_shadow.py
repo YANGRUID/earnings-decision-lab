@@ -118,6 +118,21 @@ class ShadowDecisionView:
     llm_model: str | None
     prompt_version: str | None
     schema_version: str = DECISION_VIEW_SCHEMA_VERSION
+    # Model/reasoning provenance (2026-09-02). ``llm_model`` above is the
+    # CONFIGURED alias; ``llm_returned_model`` is what the API reported.
+    # Token counts and latency come only from the provider's own response.
+    # The hidden reasoning text is never part of this record.
+    llm_returned_model: str | None = None
+    llm_thinking: str | None = None
+    llm_reasoning_effort: str | None = None
+    llm_max_tokens: int | None = None
+    llm_finish_reason: str | None = None
+    llm_input_tokens: int | None = None
+    llm_output_tokens: int | None = None
+    llm_reasoning_tokens: int | None = None
+    llm_cache_hit_tokens: int | None = None
+    llm_latency_ms: int | None = None
+    llm_config_version: str | None = None
 
 
 @dataclass
@@ -480,6 +495,17 @@ def generate_shadow_decision(
             llm_model=view.llm_model,
             prompt_version=view.prompt_version,
             decision_view_schema_version=view.schema_version,
+            llm_returned_model=view.llm_returned_model,
+            llm_thinking=view.llm_thinking,
+            llm_reasoning_effort=view.llm_reasoning_effort,
+            llm_max_tokens=view.llm_max_tokens,
+            llm_finish_reason=view.llm_finish_reason,
+            llm_input_tokens=view.llm_input_tokens,
+            llm_output_tokens=view.llm_output_tokens,
+            llm_reasoning_tokens=view.llm_reasoning_tokens,
+            llm_cache_hit_tokens=view.llm_cache_hit_tokens,
+            llm_latency_ms=view.llm_latency_ms,
+            llm_config_version=view.llm_config_version,
             underlying_price=underlying_price,
             underlying_quote_at=underlying_quote_at,
             market_data_quality=market_data_quality,

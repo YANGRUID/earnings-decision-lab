@@ -356,6 +356,15 @@ class AiProviderHealth:
     configured: bool
     last_successful_generation_at: datetime | None
     last_error: str | None
+    # The explicit V4 DecisionView model configuration (2026-09-02) --
+    # what the next natural shadow sample will be generated with. A
+    # configuration error here is reported as text, never as a system
+    # failure of the official (V3) pipeline.
+    decision_view_model: str | None = None
+    decision_view_thinking: str | None = None
+    decision_view_reasoning_effort: str | None = None
+    decision_view_max_tokens: int | None = None
+    decision_view_config_error: str | None = None
 
 
 @dataclass(frozen=True)
@@ -712,6 +721,11 @@ def get_system_health(
         ai_state = _HEALTHY if ai_active.configured else _DEGRADED
         if ai_error_event is not None or decision_run_error_summary is not None:
             ai_state = _DEGRADED
+    from services.v4_decision_view_config import (  # noqa: PLC0415
+        describe_v4_decision_view_config,
+    )
+
+    dv = describe_v4_decision_view_config(settings)
     ai_provider = AiProviderHealth(
         state=ai_state,
         provider=ai_provider_name or "unknown",
@@ -719,6 +733,11 @@ def get_system_health(
         last_successful_generation_at=last_decision_generated_at,
         last_error=decision_run_error_summary
         or (ai_error_event.detail if ai_error_event else None),
+        decision_view_model=dv.get("model"),
+        decision_view_thinking=dv.get("thinking"),
+        decision_view_reasoning_effort=dv.get("reasoning_effort"),
+        decision_view_max_tokens=dv.get("max_tokens"),
+        decision_view_config_error=dv.get("config_error"),
     )
 
     scheduler_state = _HEALTHY if scheduler_status.running else _FAILED

@@ -215,6 +215,55 @@ def _test_llm(
     except UnknownProviderError as exc:
         return ProviderHealthStatus.UNAVAILABLE, str(exc)
     try:
+        if provider_name == "deepseek":
+            # 2026-09-02: for DeepSeek, Test Connection validates the ACTUAL
+            # production V4 DecisionView path -- the configured model with its
+            # explicit thinking/reasoning configuration and a structured JSON
+            # reply -- not merely the base URL. A configuration error is
+            # reported as such (fail closed, no other model is tried).
+            from pydantic import BaseModel  # noqa: PLC0415
+
+            from services.v4_decision_view_config import (  # noqa: PLC0415
+                V4DecisionViewConfigError,
+                resolve_v4_decision_view_config,
+            )
+
+            class _Probe(BaseModel):
+                ok: bool
+                model_family: str
+
+            try:
+                cfg = resolve_v4_decision_view_config(settings)
+            except V4DecisionViewConfigError as exc:
+                return ProviderHealthStatus.UNAVAILABLE, f"V4 DecisionView configuration: {exc}"
+            probe = get_llm_provider(
+                settings,
+                override_provider="deepseek",
+                override_model=cfg.model,
+                thinking=cfg.thinking,
+                reasoning_effort=cfg.reasoning_effort,
+                db=db,
+            )
+            _, meta = probe.generate_structured_result(
+                [
+                    ChatMessage(
+                        role="user",
+                        content=(
+                            "Connectivity probe. Reply with JSON {\"ok\": true, "
+                            "\"model_family\": \"<your model family>\"}."
+                        ),
+                    )
+                ],
+                _Probe,
+                max_tokens=min(cfg.max_tokens, 4096),
+            )
+            detail = (
+                f"model={cfg.model} returned={meta.model or '?'} thinking={cfg.thinking}"
+                f"{' effort=' + cfg.reasoning_effort if cfg.reasoning_effort else ''}"
+                f" reasoning_tokens={meta.usage.reasoning_tokens if meta.usage else None}"
+                f" latency_ms={meta.latency_ms}"
+            )
+            return ProviderHealthStatus.CONNECTED, detail
         # Smallest real completion that still proves auth+model+connectivity
         # -- a couple of tokens, not a real research call.
         provider.generate(

@@ -29,6 +29,12 @@ class ToolCall(BaseModel):
 class TokenUsage(BaseModel):
     input_tokens: int
     output_tokens: int
+    # Only ever set from what the provider's own response reports -- never
+    # estimated. DeepSeek: completion_tokens_details.reasoning_tokens,
+    # prompt_cache_hit_tokens, prompt_cache_miss_tokens.
+    reasoning_tokens: int | None = None
+    cache_hit_tokens: int | None = None
+    cache_miss_tokens: int | None = None
 
 
 class GenerateResult(BaseModel):
@@ -36,7 +42,16 @@ class GenerateResult(BaseModel):
     tool_calls: list[ToolCall] = []
     finish_reason: str | None = None
     usage: TokenUsage | None = None
+    #: The model identity the API itself reported for this response (may be
+    #: an alias, may be a dated version -- stored as returned, never invented).
     model: str | None = None
+    #: Wall-clock latency of the HTTP round trip(s), measured by the transport.
+    latency_ms: int | None = None
+    #: Whether the response carried hidden reasoning (DeepSeek
+    #: ``reasoning_content``). Only its presence and size are recorded -- the
+    #: reasoning text itself is never persisted (see docs/llm_providers.md).
+    reasoning_present: bool = False
+    reasoning_chars: int | None = None
 
 
 class Capabilities(BaseModel):

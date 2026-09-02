@@ -386,24 +386,63 @@ def default_view_generator(
     )
 
     from core.config import get_settings  # noqa: PLC0415
+    from services.usage_instrumentation import record_usage_event  # noqa: PLC0415
+    from services.v4_decision_view_config import (  # noqa: PLC0415
+        resolve_v4_decision_view_config,
+    )
 
     settings = get_settings()
+    # Model/reasoning configuration (2026-09-02): explicit, V4-scoped, fail
+    # closed. A configuration error propagates (the orchestration records
+    # it as INTERNAL_ERROR with the message) -- it is never caught below as
+    # if it were a transient model failure, and no other model is tried.
+    cfg = resolve_v4_decision_view_config(settings)
+    llm = get_llm_provider(
+        settings,
+        override_model=cfg.model,
+        thinking=cfg.thinking,
+        reasoning_effort=cfg.reasoning_effort,
+        db=db,
+    )
+    messages = [
+        ChatMessage(role="system", content=SYSTEM_PROMPT),
+        ChatMessage(role="user", content=build_user_prompt(company.ticker, evidence_text)),
+    ]
     try:
-        llm = get_llm_provider(settings, db=db)
-        view = llm.generate_structured(
-            [
-                ChatMessage(role="system", content=SYSTEM_PROMPT),
-                ChatMessage(
-                    role="user", content=build_user_prompt(company.ticker, evidence_text)
-                ),
-            ],
-            DecisionView,
-            temperature=0.0,
-            max_tokens=1200,
+        view, meta = llm.generate_structured_result(
+            messages, DecisionView, temperature=0.0, max_tokens=cfg.max_tokens
         )
-    except (LLMError, Exception):  # noqa: BLE001 -- V4 must never break V3
+    except (LLMError, Exception) as exc:  # noqa: BLE001 -- V4 must never break V3
         log.error("v4 shadow decision view generation failed", exc_info=True)
+        record_usage_event(
+            db,
+            provider=cfg.provider,
+            domain="llm",
+            operation="v4_decision_view",
+            success=False,
+            latency_ms=0,
+            status_code=type(exc).__name__,
+            model=cfg.model,
+            reasoning_effort=cfg.reasoning_effort,
+        )
         return None
+
+    usage = meta.usage
+    record_usage_event(
+        db,
+        provider=cfg.provider,
+        domain="llm",
+        operation="v4_decision_view",
+        success=True,
+        latency_ms=meta.latency_ms or 0,
+        input_tokens=usage.input_tokens if usage else None,
+        output_tokens=usage.output_tokens if usage else None,
+        total_tokens=(usage.input_tokens + usage.output_tokens) if usage else None,
+        model=meta.model or cfg.model,
+        reasoning_effort=cfg.reasoning_effort,
+        reasoning_tokens=usage.reasoning_tokens if usage else None,
+        cache_hit_tokens=usage.cache_hit_tokens if usage else None,
+    )
 
     return ShadowDecisionView(
         direction=view.direction,
@@ -412,13 +451,23 @@ def default_view_generator(
         confidence=None,
         reasoning=view.rationale,
         evidence_refs={"ai_thesis_version_id": thesis.id},
-        llm_provider=settings.llm_provider,
-        # Read off the constructed provider, which knows the model it
-        # actually used -- Settings has no llm_model field, and an
-        # owner override in the Settings UI can change the model
-        # without any env var reflecting it.
-        llm_model=getattr(llm, "model", None),
+        llm_provider=cfg.provider,
+        # The CONFIGURED model alias (what we asked for) ...
+        llm_model=cfg.model,
         prompt_version=PROMPT_VERSION,
+        # ... and, separately, what the API itself reported. Stored as
+        # returned -- if the API only echoes the alias, that is the evidence.
+        llm_returned_model=meta.model,
+        llm_thinking=cfg.thinking,
+        llm_reasoning_effort=cfg.reasoning_effort,
+        llm_max_tokens=cfg.max_tokens,
+        llm_finish_reason=meta.finish_reason,
+        llm_input_tokens=usage.input_tokens if usage else None,
+        llm_output_tokens=usage.output_tokens if usage else None,
+        llm_reasoning_tokens=usage.reasoning_tokens if usage else None,
+        llm_cache_hit_tokens=usage.cache_hit_tokens if usage else None,
+        llm_latency_ms=meta.latency_ms,
+        llm_config_version=cfg.config_version,
     )
 
 

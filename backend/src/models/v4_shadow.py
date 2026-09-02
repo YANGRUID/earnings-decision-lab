@@ -128,6 +128,21 @@ class V4ShadowDecision(Base):
     llm_model: Mapped[str | None] = mapped_column(String(128))
     prompt_version: Mapped[str | None] = mapped_column(String(32))
     decision_view_schema_version: Mapped[str | None] = mapped_column(String(48))
+    # Model/reasoning provenance (migration d2f4b6a81c37, 2026-09-02):
+    # configured alias (llm_model) vs API-reported identity, the explicit
+    # thinking configuration, and provider-reported usage/latency. No
+    # reasoning text is stored anywhere.
+    llm_returned_model: Mapped[str | None] = mapped_column(String(128))
+    llm_thinking: Mapped[str | None] = mapped_column(String(16))
+    llm_reasoning_effort: Mapped[str | None] = mapped_column(String(16))
+    llm_max_tokens: Mapped[int | None] = mapped_column(Integer)
+    llm_finish_reason: Mapped[str | None] = mapped_column(String(32))
+    llm_input_tokens: Mapped[int | None] = mapped_column(Integer)
+    llm_output_tokens: Mapped[int | None] = mapped_column(Integer)
+    llm_reasoning_tokens: Mapped[int | None] = mapped_column(Integer)
+    llm_cache_hit_tokens: Mapped[int | None] = mapped_column(Integer)
+    llm_latency_ms: Mapped[int | None] = mapped_column(Integer)
+    llm_config_version: Mapped[str | None] = mapped_column(String(48))
 
     # --- MARKET CONTEXT (Sections 21, 55) ---
     underlying_price: Mapped[Decimal | None] = mapped_column(Numeric(18, 6))

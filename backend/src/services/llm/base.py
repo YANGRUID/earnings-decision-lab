@@ -46,6 +46,24 @@ class LLMProvider(ABC):
         be validated against ``schema``.
         """
 
+    def generate_structured_result(
+        self,
+        messages: list[ChatMessage],
+        schema: type[SchemaT],
+        *,
+        temperature: float = 0.0,
+        max_tokens: int = 1024,
+    ) -> tuple[SchemaT, GenerateResult]:
+        """Structured generation that also returns the response metadata a
+        caller needs to persist provenance (returned model, usage, latency,
+        finish reason). The default just wraps ``generate_structured`` with
+        the configured model; transports that see the raw response override
+        it with the real metadata."""
+        parsed = self.generate_structured(
+            messages, schema, temperature=temperature, max_tokens=max_tokens
+        )
+        return parsed, GenerateResult(model=self.model)
+
     @abstractmethod
     def stream(
         self,
