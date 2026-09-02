@@ -4,23 +4,29 @@ import { api, ApiError } from "../api/client";
 import { useAsync } from "../hooks/useAsync";
 import { ErrorState, LoadingState } from "../components/StatusStates";
 import { PreparationResult } from "../components/PreparationResult";
-import { OverviewTab } from "../components/workspace/OverviewTab";
-import { UpcomingEarningsTab } from "../components/workspace/UpcomingEarningsTab";
-import { StrategyLabTab } from "../components/workspace/StrategyLabTab";
 import { ThesisTab } from "../components/workspace/ThesisTab";
-import { DecisionTab } from "../components/workspace/DecisionTab";
-import { ExposureTab } from "../components/workspace/ExposureTab";
-import { HistoricalEventsTab } from "../components/workspace/HistoricalEventsTab";
+import { OverviewV4Tab } from "../components/workspace/v4/OverviewV4Tab";
+import { EarningsSetupTab } from "../components/workspace/v4/EarningsSetupTab";
+import { MarketViewTab } from "../components/workspace/v4/MarketViewTab";
+import { V4DecisionTab } from "../components/workspace/v4/V4DecisionTab";
+import { ForwardOutcomeTab } from "../components/workspace/v4/ForwardOutcomeTab";
+import { HistoricalControlTab } from "../components/workspace/v4/HistoricalControlTab";
 import type { ResearchJob, ResearchOverview } from "../types/api";
 
+// V4-first company workflow (V4 consolidation, Section 2): summary ->
+// setup -> research -> AI view -> deterministic decision -> candidates ->
+// forward outcome -> history and legacy tools. The old Strategy Lab, My
+// Exposure and manual AI Decision tabs are not deleted; they live under
+// Historical / Control, labelled as non-evidence tools.
 const TABS = [
   { key: "overview", label: "Overview" },
-  { key: "upcoming", label: "Upcoming Earnings" },
-  { key: "strategy", label: "Strategy Lab" },
-  { key: "thesis", label: "AI Thesis" },
-  { key: "decision", label: "AI Decision" },
-  { key: "exposure", label: "My Exposure" },
-  { key: "historical", label: "Historical Events" },
+  { key: "setup", label: "Earnings Setup" },
+  { key: "research", label: "Research" },
+  { key: "view", label: "Market View" },
+  { key: "decision", label: "V4 Decision" },
+  { key: "candidates", label: "Candidates" },
+  { key: "outcome", label: "Forward Outcome" },
+  { key: "history", label: "Historical / Control" },
 ] as const;
 
 type TabKey = (typeof TABS)[number]["key"];
@@ -208,19 +214,16 @@ export function CompanyWorkspace() {
       </div>
 
       <div className="tab-panel">
-        {tab === "overview" && <OverviewTab overview={data} />}
-        {tab === "upcoming" && (
-          <UpcomingEarningsTab
-            ticker={ticker}
-            overview={data}
-            onOverviewChanged={() => setRefreshKey((k) => k + 1)}
-          />
+        {tab === "overview" && <OverviewV4Tab overview={data} onGo={(k) => setTab(k as TabKey)} />}
+        {tab === "setup" && (
+          <EarningsSetupTab ticker={ticker} overview={data} onOverviewChanged={() => setRefreshKey((k) => k + 1)} />
         )}
-        {tab === "strategy" && <StrategyLabTab ticker={ticker} />}
-        {tab === "thesis" && <ThesisTab ticker={ticker} />}
-        {tab === "decision" && <DecisionTab ticker={ticker} />}
-        {tab === "exposure" && <ExposureTab ticker={ticker} />}
-        {tab === "historical" && <HistoricalEventsTab ticker={ticker} />}
+        {tab === "research" && <ThesisTab ticker={ticker} />}
+        {tab === "view" && <MarketViewTab ticker={ticker} />}
+        {tab === "decision" && <V4DecisionTab ticker={ticker} mode="lab" />}
+        {tab === "candidates" && <V4DecisionTab ticker={ticker} mode="explorer" />}
+        {tab === "outcome" && <ForwardOutcomeTab ticker={ticker} />}
+        {tab === "history" && <HistoricalControlTab ticker={ticker} />}
       </div>
     </div>
   );

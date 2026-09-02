@@ -3,8 +3,10 @@ import { useParams, Link, useNavigate } from "react-router-dom";
 import { api } from "../api/client";
 import { useAsync } from "../hooks/useAsync";
 import { EmptyState, ErrorState, LoadingState } from "../components/StatusStates";
-import { CONFIG_ORDER, humanReasonCode, humanStatus, humanStrategy, money, pct, statusPill } from "../components/v4/shared";
+import { CONFIG_ORDER, fmtIv, fmtStrike, humanReasonCode, humanStatus, humanStrategy, money, pct, statusPill } from "../components/v4/shared";
 import { ExperimentalNotice, MethodologyDetails } from "../components/v4/sharedComponents";
+import { FailureExplanation, LifecyclePill, MarketDataQualityBadge, Metric, SectionHeader, Timestamp } from "../components/v4/ui";
+import type { V4EntryObservation, V4SettlementOutcome } from "../types/api";
 import type {
   V4CandidateSummary, V4ConfigResult, V4ExpectedMove, V4ScenarioCell, V4ShadowCandidate,
   V4ShadowConfigurationsResponse, V4ShadowDecisionSummary,
@@ -202,7 +204,7 @@ function ConfigComparison({ configs, selected, onSelect }: {
         <table>
           <thead>
             <tr>
-              <th>Configuration</th><th>Action</th><th>Strategy</th>
+              <th>Configuration</th><th>Action</th><th>Lifecycle</th><th>Strategy</th>
               <th style={{ textAlign: "right" }}>Capital used</th>
               <th style={{ textAlign: "right" }}>Max risk</th>
               <th style={{ textAlign: "right" }}>Core median</th>
@@ -224,6 +226,7 @@ function ConfigComparison({ configs, selected, onSelect }: {
                   style={{ cursor: "pointer", background: key === selected ? "var(--accent-soft, rgba(90,168,189,.12))" : undefined }}>
                   <td><strong>{c.label}</strong></td>
                   <td><span className={pill.className}>{pill.label}</span></td>
+                  <td><LifecyclePill lifecycle={c.lifecycle} /></td>
                   <td>{t ? humanStrategy(t.strategy) : <span className="text-faint">—</span>}</td>
                   <td className="mono" style={{ textAlign: "right" }}>{money(t?.entry_cash_required)}</td>
                   <td className="mono" style={{ textAlign: "right" }}>{money(c.max_risk_dollars)}</td>
@@ -376,7 +379,7 @@ function ExpectedMoveChart({ em, spot, candidates, highlightId }: {
           return (
             <g key={i}>
               <circle cx={x(s.strike)} cy={90} r={hl ? 6 : 3.5} fill={hl ? "#1f6273" : "currentColor"} opacity={hl ? 1 : .35} />
-              {hl && <text x={x(s.strike)} y={108} fontSize="10" textAnchor="middle" fill="#1f6273">{s.action} {s.right[0]?.toUpperCase()} {s.strike}</text>}
+              {hl && <text x={x(s.strike)} y={108} fontSize="10" textAnchor="middle" fill="#1f6273">{s.action} {s.right[0]?.toUpperCase()} {fmtStrike(s.strike)}</text>}
             </g>
           );
         })}
@@ -520,13 +523,13 @@ function CandidateExplorer({ candidates, cfg, onHighlight }: {
                             {c.legs.map((l) => (
                               <tr key={l.leg_index}>
                                 <td className="mono">{l.leg_index}</td><td>{l.action}</td><td>{l.right}</td>
-                                <td className="mono" style={{ textAlign: "right" }}>{l.strike}</td>
+                                <td className="mono" style={{ textAlign: "right" }}>{fmtStrike(l.strike)}</td>
                                 <td className="mono">{l.external_contract_id ?? "—"}</td>
                                 <td className="mono">{l.required_side?.toUpperCase() ?? "—"}</td>
-                                <td className="mono" style={{ textAlign: "right" }}>{l.required_side_price ?? "—"}</td>
-                                <td className="mono" style={{ textAlign: "right" }}>{l.bid ?? "—"}</td>
-                                <td className="mono" style={{ textAlign: "right" }}>{l.ask ?? "—"}</td>
-                                <td className="mono" style={{ textAlign: "right" }}>{pct(l.implied_volatility, 1)}</td>
+                                <td className="mono" style={{ textAlign: "right" }}>{money(l.required_side_price, 2)}</td>
+                                <td className="mono" style={{ textAlign: "right" }}>{money(l.bid, 2)}</td>
+                                <td className="mono" style={{ textAlign: "right" }}>{money(l.ask, 2)}</td>
+                                <td className="mono" style={{ textAlign: "right" }}>{fmtIv(l.implied_volatility)}</td>
                                 <td><span className={`pill ${l.market_data_quality?.toLowerCase() === "delayed" ? "pill-warning" : "pill-neutral"}`}>{(l.market_data_quality ?? "—").toUpperCase()}</span></td>
                                 <td className="mono">{l.source_provider ?? "—"}</td>
                                 <td className="mono">{l.retrieved_at ? new Date(l.retrieved_at).toLocaleTimeString("en-US", { timeZone: "America/New_York" }) : "—"}</td>
@@ -551,32 +554,69 @@ function CandidateExplorer({ candidates, cfg, onHighlight }: {
   );
 }
 
+// --- Forward outcome (Sections 23-26): entry observation / settlement --
+export function ForwardOutcomePanel({ cfg, entry, settlement, policy }: {
+  cfg: V4ConfigResult | null; entry: V4EntryObservation | null | undefined;
+  settlement: V4SettlementOutcome | null | undefined; policy?: string;
+}) {
+  if (!cfg) return null;
+  const life = cfg.lifecycle ?? cfg.status;
+  const shares = !!entry && entry.candidate_id === cfg.rank_1_candidate_id;
+  return (
+    <div className="card" data-testid="forward-outcome">
+      <SectionHeader title="Forward outcome" eyebrow={cfg.label} right={<LifecyclePill lifecycle={life} />} />
+      {life === "NO_ACTION" && (
+        <p className="text-muted" style={{ margin: 0 }}>No candidate satisfied the methodology for this configuration. This is a recorded outcome, not a failure. {cfg.no_action_reason ? <span className="text-faint">({cfg.no_action_reason})</span> : null}</p>
+      )}
+      {life === "FAILED" && <p className="negative" style={{ margin: 0 }}>{cfg.no_action_reason}</p>}
+      {life === "WAITING_ENTRY" && (
+        <p className="text-muted" style={{ margin: 0 }}>
+          {entry && !shares
+            ? "The event-level entry observation was taken for a different structure than this configuration's rank #1; no separate observation stream exists for it yet."
+            : "Waiting for the entry observation at the 15:30 ET decision window."}
+        </p>
+      )}
+      {life === "ENTRY_FAILED" && entry && (
+        <FailureExplanation category={entry.failure_category} detail={entry.failure_detail} provider="ibkr_tws" quality={entry.market_data_quality} retryable={false} />
+      )}
+      {(life === "WAITING_SETTLEMENT" || life === "ENTRY_OBSERVED") && entry && (
+        <>
+          <div className="grid grid-4" style={{ gap: 8 }}>
+            <Metric label="Entry observed" value={<Timestamp iso={entry.observed_at} />} />
+            <Metric label="Net executable value" value={money(entry.net_executable_value, 2)} mono />
+            <Metric label="Market data" value={<MarketDataQualityBadge quality={entry.market_data_quality} provider="ibkr_tws" />} />
+            <Metric label="Settlement" value="Waiting for post-earnings settlement observation" sub={policy} />
+          </div>
+          <p className="text-faint text-sm" style={{ margin: "8px 0 0" }}>No interim P&amp;L is shown before the settlement observation.</p>
+        </>
+      )}
+      {life === "SETTLED" && settlement && (
+        <div className="grid grid-4" style={{ gap: 8 }}>
+          <Metric label="Entry value" value={money(settlement.entry_net_value, 2)} mono />
+          <Metric label="Exit value" value={money(settlement.exit_net_value, 2)} mono sub={<Timestamp iso={settlement.settled_at} />} />
+          <Metric label="Realized P&L" value={<span className={Number(settlement.realized_pnl ?? 0) >= 0 ? "positive" : "negative"}>{money(settlement.realized_pnl, 2)}</span>} mono />
+          <Metric label="Standardized return" value={pct(settlement.return_on_standardized_capital, 2)} mono sub={<MarketDataQualityBadge quality={settlement.market_data_quality} provider="ibkr_tws" />} />
+        </div>
+      )}
+      {life === "SETTLEMENT_FAILED" && settlement && (
+        <FailureExplanation category={settlement.failure_category} detail={settlement.failure_detail} provider="ibkr_tws" quality={settlement.market_data_quality} retryable={true} />
+      )}
+      {life === "SETTLED" && <p className="text-faint text-sm" style={{ margin: "8px 0 0" }}>One observation. No statistical significance is implied.</p>}
+    </div>
+  );
+}
+
 // --- Page ------------------------------------------------------------------
-export function V4DecisionLab({ mode = "lab" }: { mode?: "lab" | "explorer" }) {
-  const params = useParams<{ id?: string }>();
-  const navigate = useNavigate();
-  const id = params.id ? Number(params.id) : null;
+// Embeddable decision view (used by the page below AND by the company
+// workspace, Section 6 -- one implementation, never duplicated).
+export function V4DecisionView({ decisionId, mode = "lab", backTo, hideHero = false }: {
+  decisionId: number; mode?: "lab" | "explorer"; backTo?: string; hideHero?: boolean;
+}) {
   const [selected, setSelected] = useState<string>("v4_2k_moderate");
   const [highlight, setHighlight] = useState<string | null>(null);
+  const cfgs = useAsync(() => api.getV4ShadowConfigurations(decisionId), [decisionId]);
+  const cands = useAsync(() => api.getV4ShadowCandidates(decisionId), [decisionId]);
 
-  const cfgs = useAsync(
-    () => (id ? api.getV4ShadowConfigurations(id) : Promise.resolve(null)),
-    [id],
-  );
-  const cands = useAsync(
-    () => (id ? api.getV4ShadowCandidates(id) : Promise.resolve(null)),
-    [id],
-  );
-
-  if (!id) {
-    return (
-      <div>
-        <div className="page-header"><h1>{mode === "explorer" ? "Candidate Explorer" : "V4 Decision Lab"}</h1></div>
-        <ExperimentalNotice />
-        <DecisionPicker mode={mode} onPick={(d) => navigate(`${mode === "explorer" ? "/candidate-explorer" : "/v4-decision-lab"}/${d}`)} />
-      </div>
-    );
-  }
   if ((cfgs.loading && !cfgs.data) || (cands.loading && !cands.data)) return <LoadingState label="Loading frozen V4 evidence…" />;
   if (cfgs.error && !cfgs.data) return <ErrorState message={cfgs.error} />;
   const data = cfgs.data as V4ShadowConfigurationsResponse | null;
@@ -589,16 +629,16 @@ export function V4DecisionLab({ mode = "lab" }: { mode?: "lab" | "explorer" }) {
 
   return (
     <div>
-      <div className="page-header" style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-        <h1 style={{ margin: 0 }}>{mode === "explorer" ? "Candidate Explorer" : "V4 Decision Lab"}</h1>
-        <div style={{ display: "flex", gap: 8 }}>
-          <Link className="btn-secondary" to={mode === "explorer" ? "/candidate-explorer" : "/v4-decision-lab"}>← All decisions</Link>
+      {backTo && (
+        <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
+          <Link className="btn-secondary" to={backTo}>← All decisions</Link>
           <Link className="btn-secondary" to={`/same-event-comparison/${data.decision.earnings_calendar_event_id}`}>Same-event comparison →</Link>
         </div>
-      </div>
+      )}
       <ExperimentalNotice text={data.notice} />
-      {mode === "lab" && <Hero d={data.decision} cfg={cfg} timing={data.timing_policy_version} />}
+      {mode === "lab" && !hideHero && <Hero d={data.decision} cfg={cfg} timing={data.timing_policy_version} />}
       <ConfigSelector configs={data.configurations} selected={selected} onSelect={(k) => { setSelected(k); setHighlight(null); }} />
+      {mode === "lab" && <ForwardOutcomePanel cfg={cfg} entry={data.entry_observation} settlement={data.settlement} policy={data.settlement_policy} />}
       {mode === "lab" && <ConfigComparison configs={data.configurations} selected={selected} onSelect={(k) => { setSelected(k); setHighlight(null); }} />}
       {mode === "lab" && cfg && <WhyThisStrategy cfg={cfg} candidates={data.candidates} />}
       {mode === "lab" && <ExpectedMoveChart em={data.decision.expected_move} spot={data.decision.market_data?.underlying_price} candidates={candidates} highlightId={highlight ?? topId} />}
@@ -611,6 +651,27 @@ export function V4DecisionLab({ mode = "lab" }: { mode?: "lab" | "explorer" }) {
         </>
       )}
       <CandidateExplorer candidates={candidates} cfg={cfg} onHighlight={setHighlight} />
+    </div>
+  );
+}
+
+// --- Page ------------------------------------------------------------------
+export function V4DecisionLab({ mode = "lab" }: { mode?: "lab" | "explorer" }) {
+  const params = useParams<{ id?: string }>();
+  const navigate = useNavigate();
+  const id = params.id ? Number(params.id) : null;
+  const base = mode === "explorer" ? "/candidate-explorer" : "/v4-decision-lab";
+  return (
+    <div>
+      <div className="page-header"><h1>{mode === "explorer" ? "Candidate Explorer" : "V4 Decision Lab"}</h1></div>
+      {!id ? (
+        <>
+          <ExperimentalNotice />
+          <DecisionPicker mode={mode} onPick={(d) => navigate(`${base}/${d}`)} />
+        </>
+      ) : (
+        <V4DecisionView decisionId={id} mode={mode} backTo={base} />
+      )}
     </div>
   );
 }

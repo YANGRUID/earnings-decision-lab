@@ -587,7 +587,7 @@ const ACTIONABILITY_LABELS: Record<string, string> = {
   contracts_only: "CONTRACTS ONLY — NO PRICING",
   unavailable: "UNAVAILABLE",
 };
-const ACTIONABLE_STATUSES = new Set(["actionable_current", "actionable_previous_session"]);
+export const ACTIONABLE_STATUSES = new Set(["actionable_current", "actionable_previous_session"]);
 
 function MarketDataHeader({ ticker }: { ticker: string }) {
   // Reuses Strategy Lab's canonical market-state read (Phase 14.11 Part
@@ -684,7 +684,7 @@ function formatDateTime(iso: string): string {
   });
 }
 
-function OfficialDecisionCard({ ticker }: { ticker: string }) {
+export function OfficialDecisionCard({ ticker }: { ticker: string }) {
   const snapshots = useAsync(
     () => api.listDecisionSnapshots({ ticker, limit: 1 }),
     [ticker]

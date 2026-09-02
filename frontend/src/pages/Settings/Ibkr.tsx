@@ -152,7 +152,7 @@ export function Ibkr() {
   const [connecting, setConnecting] = useState(false);
   const [connectError, setConnectError] = useState<string | null>(null);
 
-  if (status.loading && !status.data) return <LoadingState label="Checking IBKR Gateway status…" />;
+  if (status.loading && !status.data) return <LoadingState label="Checking Interactive Brokers connectivity…" />;
   if (status.error && !status.data) return <ErrorState message={status.error} />;
   if (!status.data) return null;
 

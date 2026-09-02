@@ -66,7 +66,7 @@ function ProviderRow({
       </div>
       {ibkrTransport && (
         <p className="text-sm text-muted" style={{ marginTop: 4, marginBottom: 0 }}>
-          Active transport: <strong>{ibkrTransport === "tws" ? "IB Gateway / TWS API" : "Web / Client Portal Gateway"}</strong>
+          Active transport: <strong>{ibkrTransport === "tws" ? "TWS API (IB Gateway)" : "Web gateway (rollback path)"}</strong>
         </p>
       )}
       <div className="grid grid-3" style={{ gap: 10, marginTop: 10 }}>

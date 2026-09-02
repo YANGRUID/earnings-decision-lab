@@ -320,7 +320,7 @@ function ibkrHealthDetail(ibkr: SystemHealth["ibkr"]): string | undefined {
   const providerLabel = ibkr.provider === "tws" ? "TWS" : "Web";
   const accountLabel =
     ibkr.live_account === true ? "live" : ibkr.live_account === false ? "paper" : null;
-  const parts = [providerLabel, accountLabel, ibkr.market_data_quality].filter(
+  const parts = [providerLabel, accountLabel, ibkr.market_data_quality ?? (ibkr.connected ? "awaiting first market-data observation" : null)].filter(
     (p): p is string => Boolean(p)
   );
   return parts.length > 0 ? parts.join(" · ") : undefined;

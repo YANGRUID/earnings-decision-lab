@@ -55,6 +55,9 @@ export function DashboardV4Header() {
           <div className="stat"><span className="stat-label">Zurich</span><span className="stat-value mono">{nowIn("Europe/Zurich")}</span></div>
           <div className="stat"><span className="stat-label">Market data</span>
             <span className="stat-value small">{h ? <span className={light(h.ibkr.state)}>{h.ibkr.provider.toUpperCase()} · {(h.ibkr.market_data_quality ?? "—").toUpperCase()}</span> : "—"}</span>
+            {h && h.ibkr.connected && !h.ibkr.market_data_quality && (
+              <span className="text-faint text-sm" data-testid="md-cold-start">Awaiting first market-data observation</span>
+            )}
           </div>
           <div className="stat"><span className="stat-label">Next windows</span>
             <span className="stat-value small mono">V4 {nextWindow(15, 30)}</span>

@@ -120,3 +120,42 @@ export function humanReasonCode(code: string): string {
   }
 }
 
+
+// Section 21 -- consistent numeric presentation. Never render raw
+// "347.500000" strings; format at the boundary.
+export function fmtPrice(value: string | number | null | undefined, digits = 2): string {
+  if (value == null || value === "") return "—";
+  const n = Number(value);
+  return Number.isNaN(n) ? "—" : n.toFixed(digits);
+}
+export function fmtStrike(value: string | number | null | undefined): string {
+  if (value == null) return "—";
+  const n = Number(value);
+  if (Number.isNaN(n)) return "—";
+  return Number.isInteger(n) ? n.toFixed(0) : n.toFixed(2).replace(/\.?0+$/, "");
+}
+export function fmtGreek(value: string | number | null | undefined, digits = 3): string {
+  if (value == null) return "—";
+  const n = Number(value);
+  return Number.isNaN(n) ? "—" : n.toFixed(digits);
+}
+export function fmtIv(value: string | number | null | undefined): string {
+  if (value == null) return "—";
+  const n = Number(value);
+  return Number.isNaN(n) ? "—" : `${(n * 100).toFixed(1)}%`;
+}
+export function fmtDte(expiration: string | null | undefined, from: Date = new Date()): string {
+  if (!expiration) return "—";
+  const d = Math.round((new Date(expiration + "T21:00:00Z").getTime() - from.getTime()) / 86400000);
+  return `${d} DTE`;
+}
+
+export function fmtMarketCap(value: string | number | null | undefined): string {
+  if (value == null) return "—";
+  const n = Number(value);
+  if (Number.isNaN(n)) return "—";
+  if (n >= 1e12) return `$${(n / 1e12).toFixed(2)}T`;
+  if (n >= 1e9) return `$${(n / 1e9).toFixed(1)}B`;
+  if (n >= 1e6) return `$${(n / 1e6).toFixed(0)}M`;
+  return `$${n.toLocaleString("en-US", { maximumFractionDigits: 0 })}`;
+}

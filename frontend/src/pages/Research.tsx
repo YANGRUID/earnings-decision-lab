@@ -184,12 +184,44 @@ function HistoryPanel({
   );
 }
 
+// Section 10-12 -- the answer experience: company, as-of, freshness,
+// grounding status, human-readable evidence categories and filing
+// references, with retrieval internals only under Advanced.
+const TOOL_CATEGORY: Record<string, string> = {
+  earnings_history: "Earnings history",
+  filings_search: "SEC filings",
+  guidance_comparison: "Guidance comparison",
+  options_snapshot: "Options market snapshot",
+  strategy_replay: "Historical price reaction",
+  company_fundamentals: "Fundamentals",
+};
+
+function filingCategory(filingType: string): string {
+  const t = filingType.toUpperCase();
+  if (t.startsWith("10-K")) return "10-K";
+  if (t.startsWith("10-Q")) return "10-Q";
+  if (t.startsWith("8-K")) return "8-K";
+  return t;
+}
+
 function AnswerPanel({ item }: { item: AIResearchHistoryItem }) {
+  const filingCats = Array.from(new Set(item.citations.map((c) => filingCategory(c.filing_type))));
+  const toolCats = Array.from(new Set(item.tool_calls.filter((t) => t.success).map((t) => TOOL_CATEGORY[t.tool_name] ?? t.tool_name.replace(/_/g, " "))));
+  const grounding = item.verification_ran
+    ? item.verification_supported ? { cls: "pill pill-positive", label: "Grounded — supported by evidence" }
+      : { cls: "pill pill-warning", label: "Revised after verification" }
+    : item.citations.length > 0 ? { cls: "pill pill-neutral", label: "Cited — verification not run" }
+      : { cls: "pill pill-warning", label: "No filing citations" };
   return (
     <>
-      <div className="card">
-        <h2>Question</h2>
-        <p style={{ margin: 0 }}>&ldquo;{item.question}&rdquo;</p>
+      <div className="card" data-testid="answer-header">
+        <div className="grid grid-4" style={{ gap: 10 }}>
+          <div className="stat"><span className="stat-label">Detected company</span><span className="stat-value small mono">{item.ticker ?? "—"}</span></div>
+          <div className="stat"><span className="stat-label">As of</span><span className="stat-value small mono">{new Date(item.created_at).toLocaleString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })} ET</span></div>
+          <div className="stat"><span className="stat-label">Research freshness</span><span className="stat-value small">{formatRelativeTime(item.created_at)}</span></div>
+          <div className="stat"><span className="stat-label">Grounding</span><span className={grounding.cls} data-testid="grounding-status">{grounding.label}</span></div>
+        </div>
+        <p className="text-muted" style={{ margin: "10px 0 0" }}>&ldquo;{item.question}&rdquo;</p>
       </div>
 
       <div className="card">
@@ -197,97 +229,59 @@ function AnswerPanel({ item }: { item: AIResearchHistoryItem }) {
         <Markdown>{item.answer_markdown}</Markdown>
       </div>
 
-      {item.citations.length > 0 && (
-        <div className="card">
-          <h2>Sources</h2>
-          {item.citations.map((c) => (
-            <div key={c.marker} className="source-item">
-              <span className="citation-badge">{c.marker}</span>
-              <div>
-                <div className="source-title">
-                  {c.ticker} · {c.filing_type} · filed {c.filing_date}
-                  {c.section ? ` · ${c.section}` : ""}
+      <div className="card" data-testid="evidence-sources">
+        <h2>Evidence sources</h2>
+        {filingCats.length === 0 && toolCats.length === 0 ? (
+          <p className="text-muted" style={{ margin: 0 }}>No external evidence was retrieved for this answer.</p>
+        ) : (
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+            {filingCats.map((c) => <span key={c} className="pill pill-neutral">{c}</span>)}
+            {toolCats.map((c) => <span key={c} className="pill pill-neutral">{c}</span>)}
+          </div>
+        )}
+        {item.citations.length > 0 && (
+          <>
+            <h3 style={{ marginTop: 12 }}>Filing references</h3>
+            {item.citations.map((c) => (
+              <div key={c.marker} className="source-item">
+                <span className="citation-badge">{c.marker}</span>
+                <div>
+                  <div className="source-title">{c.ticker} · {filingCategory(c.filing_type)} · filed {c.filing_date}{c.section ? ` · ${c.section}` : ""}</div>
+                  <a className="text-link text-sm" href={c.source_url} target="_blank" rel="noreferrer">Inspect source</a>
                 </div>
-                <a className="text-link text-sm" href={c.source_url} target="_blank" rel="noreferrer">
-                  View source
-                </a>
               </div>
-            </div>
-          ))}
-        </div>
-      )}
+            ))}
+          </>
+        )}
+        {item.tool_calls.some((t) => t.tool_name === "earnings_history" && t.success) && (
+          <p className="text-faint text-sm" style={{ margin: "8px 0 0" }}>Earnings-history evidence was used; see Historical / Control in the company workspace for the underlying events.</p>
+        )}
+      </div>
 
       <details className="card">
-        <summary style={{ cursor: "pointer", fontWeight: 600 }}>Research details</summary>
+        <summary style={{ cursor: "pointer", fontWeight: 600 }}>Advanced details</summary>
         <div className="grid grid-3" style={{ marginTop: 14, marginBottom: 14 }}>
-          <div className="stat">
-            <span className="stat-label">Generated</span>
-            <span className="stat-value small">{new Date(item.created_at).toLocaleString()}</span>
-          </div>
-          <div className="stat">
-            <span className="stat-label">Intent</span>
-            <span className="stat-value small">{item.intent_category}</span>
-          </div>
-          <div className="stat">
-            <span className="stat-label">Planning</span>
-            <span className="stat-value small">{item.planning_method}</span>
-          </div>
-          <div className="stat">
-            <span className="stat-label">Provider / model</span>
-            <span className="stat-value small">
-              {providerLabel(item.provider)} · {item.model}
-            </span>
-          </div>
-          <div className="stat">
-            <span className="stat-label">Duration</span>
-            <span className="stat-value small">{(item.total_duration_ms / 1000).toFixed(1)}s</span>
-          </div>
-          <div className="stat">
-            <span className="stat-label">Tokens (in/out)</span>
-            <span className="stat-value small">
-              {item.total_input_tokens} / {item.total_output_tokens}
-            </span>
-          </div>
-          <div className="stat">
-            <span className="stat-label">Est. cost</span>
-            <span className="stat-value small">
-              {item.estimated_cost_usd ? `$${Number(item.estimated_cost_usd).toFixed(4)}` : "n/a"}
-            </span>
-          </div>
-          <div className="stat">
-            <span className="stat-label">Verification</span>
-            {item.verification_ran ? (
-              <span className={`pill ${item.verification_supported ? "pill-positive" : "pill-negative"}`}>
-                {item.verification_supported ? "supported by evidence" : "revised"}
-              </span>
-            ) : (
-              <span className="pill pill-neutral">not run</span>
-            )}
-          </div>
+          <div className="stat"><span className="stat-label">Intent</span><span className="stat-value small">{item.intent_category}</span></div>
+          <div className="stat"><span className="stat-label">Planning</span><span className="stat-value small">{item.planning_method}</span></div>
+          <div className="stat"><span className="stat-label">Provider / model</span><span className="stat-value small">{providerLabel(item.provider)} · {item.model}</span></div>
+          <div className="stat"><span className="stat-label">Duration</span><span className="stat-value small">{(item.total_duration_ms / 1000).toFixed(1)}s</span></div>
+          <div className="stat"><span className="stat-label">Tokens (in/out)</span><span className="stat-value small">{item.total_input_tokens} / {item.total_output_tokens}</span></div>
+          <div className="stat"><span className="stat-label">Est. cost</span><span className="stat-value small">{item.estimated_cost_usd ? `$${Number(item.estimated_cost_usd).toFixed(4)}` : "n/a"}</span></div>
         </div>
-
         {item.tool_calls.length === 0 ? (
           <p className="text-sm text-muted">No tools were needed for this question.</p>
         ) : (
           item.tool_calls.map((tc, i) => (
             <div className="trace-step" key={i}>
               <div className="trace-step-header">
-                <span className="trace-step-name">{tc.tool_name}</span>
-                <span className={`pill ${tc.success ? "pill-positive" : "pill-negative"}`}>
-                  {tc.success ? "ok" : "failed"} · {tc.duration_ms.toFixed(0)}ms
-                </span>
+                <span className="trace-step-name">{TOOL_CATEGORY[tc.tool_name] ?? tc.tool_name}</span>
+                <span className={`pill ${tc.success ? "pill-positive" : "pill-negative"}`}>{tc.success ? "ok" : "failed"} · {tc.duration_ms.toFixed(0)}ms</span>
               </div>
-              <div className="text-muted" style={{ marginTop: 4 }}>
-                {tc.summary || tc.error}
-              </div>
+              <div className="text-muted" style={{ marginTop: 4 }}>{tc.summary || tc.error}</div>
               {tc.query_description && (
                 <details style={{ marginTop: 6 }}>
-                  <summary className="text-sm text-faint" style={{ cursor: "pointer" }}>
-                    Query
-                  </summary>
-                  <pre className="mono text-sm" style={{ whiteSpace: "pre-wrap", marginTop: 4 }}>
-                    {tc.query_description}
-                  </pre>
+                  <summary className="text-sm text-faint" style={{ cursor: "pointer" }}>Retrieval query</summary>
+                  <pre className="mono text-sm" style={{ whiteSpace: "pre-wrap", marginTop: 4 }}>{tc.query_description}</pre>
                 </details>
               )}
             </div>
@@ -314,9 +308,9 @@ function PreparingNotice({ tickers }: { tickers: string }) {
       <strong>Preparing research for {tickers || "this company"}…</strong>{" "}
       {p ? (
         working ? (
-          <>Current stage: {p.current_stage ?? "starting"}{p.step_index != null && p.step_total != null ? ` (${p.step_index}/${p.step_total})` : ""}.</>
+          <><strong>Running</strong> — current step: {p.current_stage ?? "starting"}{p.step_index != null && p.step_total != null ? ` (${p.step_index}/${p.step_total})` : ""}.{p.heartbeat_seconds_ago != null ? ` Last progress ${p.heartbeat_seconds_ago}s ago.` : ""}{p.completed ? ` ${p.completed} stage${p.completed === 1 ? "" : "s"} completed.` : ""}</>
         ) : (
-          <>Queued — {p.queue_depth} job{p.queue_depth === 1 ? "" : "s"} ahead in the preparation queue{p.worker_active ? "" : "; worker is idle"}.</>
+          <><strong>Queued</strong> — {p.queue_depth} job{p.queue_depth === 1 ? "" : "s"} ahead in the preparation queue{p.worker_active ? "" : "; worker is idle"}.</>
         )
       ) : (
         <>Queued for preparation.</>

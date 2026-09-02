@@ -14,12 +14,8 @@ import type {
   EarningsEventSummary,
   EarningsThesis,
   EntryCaptureAttempt,
-  EvaluationStatusResponse,
   ExpirationSelectionResult,
-  FilingSearchResponse,
   IbkrConnectResponse,
-  ImpliedMoveRequest,
-  ImpliedMoveResponse,
   OperationsEvents,
   OperationsFailures,
   OperationsJobs,
@@ -90,8 +86,6 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 export const api = {
   listCompanies: () => request<Company[]>("/companies"),
-  getCompany: (ticker: string) => request<Company>(`/companies/${ticker}`),
-
   listEarnings: (params: { ticker?: string; limit?: number; offset?: number } = {}) => {
     const qs = new URLSearchParams();
     if (params.ticker) qs.set("ticker", params.ticker);
@@ -107,12 +101,6 @@ export const api = {
       method: "POST",
       body: JSON.stringify(body),
     }),
-  calculateImpliedMove: (body: ImpliedMoveRequest) =>
-    request<ImpliedMoveResponse>("/options/implied-move", {
-      method: "POST",
-      body: JSON.stringify(body),
-    }),
-
   researchQuery: (question: string, ticker?: string) =>
     request<ResearchQueryResponse>("/research/query", {
       method: "POST",
@@ -126,8 +114,6 @@ export const api = {
     const suffix = qs.toString() ? `?${qs.toString()}` : "";
     return request<AIResearchHistoryItem[]>(`/research/history${suffix}`);
   },
-  getResearchHistoryItem: (id: number) =>
-    request<AIResearchHistoryItem>(`/research/history/${id}`),
   deleteResearchHistoryItem: (id: number) =>
     request<void>(`/research/history/${id}`, { method: "DELETE" }),
 
@@ -140,15 +126,6 @@ export const api = {
   },
   getThesisVersion: (ticker: string, id: number) =>
     request<AIThesisVersion>(`/research/${ticker}/theses/${id}`),
-  deleteThesisVersion: (ticker: string, id: number) =>
-    request<void>(`/research/${ticker}/theses/${id}`, { method: "DELETE" }),
-  searchDocuments: (params: { query: string; ticker?: string; k?: number }) => {
-    const qs = new URLSearchParams({ query: params.query });
-    if (params.ticker) qs.set("ticker", params.ticker);
-    if (params.k) qs.set("k", String(params.k));
-    return request<FilingSearchResponse>(`/research/documents?${qs.toString()}`);
-  },
-
   prepareResearch: (ticker: string) =>
     request<ResearchJob | ResearchJobQueued>(`/research/${ticker}/prepare`, { method: "POST" }),
   refreshResearch: (ticker: string) =>
@@ -171,16 +148,19 @@ export const api = {
       body: JSON.stringify(body),
     }),
 
-  getLatestEvaluation: () => request<EvaluationStatusResponse>("/evaluations/latest"),
-
   getReplaySummary: () => request<ReplaySummary>("/replay"),
 
   getSystemStatus: () => request<SystemStatus>("/system-status"),
   getIbkrConnectUrl: () => request<IbkrConnectResponse>("/ibkr/connect"),
 
   // V4.5 -- EXPERIMENTAL shadow cohort, read-only.
-  getV4ShadowDecisions: () =>
-    request<V4ShadowDecisionsResponse>("/v4/shadow/decisions"),
+  getV4ShadowDecisions: (params: { ticker?: string; limit?: number } = {}) => {
+    const q = new URLSearchParams();
+    if (params.ticker) q.set("ticker", params.ticker);
+    if (params.limit) q.set("limit", String(params.limit));
+    const suffix = q.toString() ? `?${q}` : "";
+    return request<V4ShadowDecisionsResponse>(`/v4/shadow/decisions${suffix}`);
+  },
   getV4ShadowDecision: (id: number) =>
     request<V4ShadowDecisionDetail>(`/v4/shadow/decisions/${id}`),
   getV4ShadowCandidates: (id: number) =>
@@ -275,10 +255,6 @@ export const api = {
     const suffix = qs.toString() ? `?${qs.toString()}` : "";
     return request<AIDecisionVersion[]>(`/research/${ticker}/decisions${suffix}`);
   },
-  getDecision: (ticker: string, id: number) =>
-    request<AIDecisionVersion>(`/research/${ticker}/decisions/${id}`),
-  deleteDecision: (ticker: string, id: number) =>
-    request<void>(`/research/${ticker}/decisions/${id}`, { method: "DELETE" }),
   markDecisionFinal: (ticker: string, id: number) =>
     request<AIDecisionVersion>(`/research/${ticker}/decisions/${id}/final`, { method: "POST" }),
   settleDecision: (ticker: string, id: number) =>
@@ -352,7 +328,6 @@ export const api = {
     const suffix = qs.toString() ? `?${qs.toString()}` : "";
     return request<DecisionSnapshot[]>(`/decision-snapshots${suffix}`);
   },
-  getDecisionSnapshot: (id: number) => request<DecisionSnapshot>(`/decision-snapshots/${id}`),
   getDecisionSnapshotEntries: (id: number) =>
     request<EntryCaptureAttempt[]>(`/decision-snapshots/${id}/entries`),
 

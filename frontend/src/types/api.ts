@@ -1596,6 +1596,36 @@ export interface V4ConfigResult {
   ranked_candidate_ids: string[];
   ranking_version: string | null;
   rank_1: V4CandidateSummary | null;
+  // V4 lifecycle (Sections 23-27). WAITING_ENTRY for a configuration whose
+  // rank #1 differs from the event-level observed candidate -- no separate
+  // observation stream exists yet, and evidence is never borrowed.
+  lifecycle?: V4Lifecycle;
+}
+
+export type V4Lifecycle =
+  | "RANKED" | "NO_ACTION" | "FAILED" | "WAITING_ENTRY" | "ENTRY_OBSERVED"
+  | "ENTRY_FAILED" | "WAITING_SETTLEMENT" | "SETTLED" | "SETTLEMENT_FAILED";
+
+export interface V4EntryObservation {
+  status: string;
+  candidate_id: string;
+  observed_at: string | null;
+  failure_category: string | null;
+  failure_detail: string | null;
+  market_data_quality: string | null;
+  net_executable_value: string | null;
+}
+
+export interface V4SettlementOutcome {
+  status: string;
+  settled_at: string | null;
+  failure_category: string | null;
+  failure_detail: string | null;
+  entry_net_value: string | null;
+  exit_net_value: string | null;
+  realized_pnl: string | null;
+  return_on_standardized_capital: string | null;
+  market_data_quality: string | null;
 }
 
 export interface V4ShadowConfigurationsResponse {
@@ -1607,6 +1637,9 @@ export interface V4ShadowConfigurationsResponse {
   configurations: V4ConfigResult[];
   candidates: V4CandidateSummary[];
   default_configuration_key: string;
+  entry_observation?: V4EntryObservation | null;
+  settlement?: V4SettlementOutcome | null;
+  settlement_policy?: string;
 }
 
 export interface V4ExpectedMove {
