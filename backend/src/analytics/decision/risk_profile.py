@@ -107,3 +107,23 @@ def default_max_risk_utilization_pct(profile: RiskProfile) -> Decimal:
     see services/decision_engine.py. Always overridable by an explicit
     risk_cap; never silently narrows a caller's own choice."""
     return DEFAULT_MAX_RISK_UTILIZATION_PCT[profile]
+
+
+def is_category_allowed_for_profile(category_value: str, profile: RiskProfile) -> bool:
+    """Whether a strategy family (by its StrategyCategory *value*, e.g.
+    ``"long_put"``) is permitted under ``profile``.
+
+    Exists so the V4 six-configuration layer can apply the SAME family rule
+    as ``filter_candidates_by_risk_profile`` without needing a
+    StrategyCandidate object -- V4 ranks ``RankableCandidate``s, which carry
+    the family as a string. Both paths read ``_SINGLE_LEG_LONG_CATEGORIES``,
+    so they can never disagree about what Conservative excludes.
+
+    An unrecognised family is allowed rather than rejected: only
+    Conservative restricts anything today, and silently dropping a
+    candidate because a new family name was not yet listed here would be a
+    far worse failure than ranking it.
+    """
+    if profile != RiskProfile.CONSERVATIVE:
+        return True
+    return category_value not in {c.value for c in _SINGLE_LEG_LONG_CATEGORIES}

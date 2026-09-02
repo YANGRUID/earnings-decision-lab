@@ -19,7 +19,10 @@ UNDERLYING = Decimal("100")
 
 def _candidate(category: StrategyCategory, legs: list[OptionLeg]) -> StrategyCandidate:
     return StrategyCandidate(
-        category=category, legs=tuple(legs), analysis=analyze(legs), expiration=EXP,
+        category=category,
+        legs=tuple(legs),
+        analysis=analyze(legs),
+        expiration=EXP,
         underlying_price=UNDERLYING,
     )
 
@@ -136,9 +139,10 @@ class TestDefaultRiskProfileFromPreference:
 
 class TestMinBidAskCoverageThresholds:
     def test_conservative_stricter_than_moderate(self):
-        assert MIN_BID_ASK_COVERAGE[RiskProfile.CONSERVATIVE] > MIN_BID_ASK_COVERAGE[
-            RiskProfile.MODERATE
-        ]
+        assert (
+            MIN_BID_ASK_COVERAGE[RiskProfile.CONSERVATIVE]
+            > MIN_BID_ASK_COVERAGE[RiskProfile.MODERATE]
+        )
 
     def test_aggressive_has_no_threshold(self):
         assert MIN_BID_ASK_COVERAGE[RiskProfile.AGGRESSIVE] is None
