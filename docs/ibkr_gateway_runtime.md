@@ -1,4 +1,14 @@
-# IBKR Gateway runtime automation (Phase 4.8A)
+# IBKR Gateway runtime automation (Phase 4.8A) — LEGACY / ROLLBACK TRANSPORT
+
+> **⚠️ This automates the rollback transport, not production.**
+>
+> As of the **2026-09-01 cutover**, production uses the **IB Gateway / TWS socket API**
+> (`IBKR_PROVIDER=tws`), which authenticates manually in the IB Gateway desktop application and
+> does not use IBeam at all. See **[`ibkr_architecture.md`](ibkr_architecture.md)** for the
+> authoritative current architecture.
+>
+> The `ibkr-gateway` service and everything below are retained so a rollback to the Web transport
+> stays a configuration change rather than a code change.
 
 Automates login to the IBKR **Client Portal (Web) API Gateway** — the same REST Gateway
 `docs/ibkr_integration.md` and every file under `backend/src/providers/ibkr_*.py` have always

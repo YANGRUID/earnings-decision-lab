@@ -12,11 +12,21 @@ turns this into a persisted ProviderHealthEvent when a fallback occurs).
 """
 
 import logging
+from collections.abc import Callable
 from datetime import date, datetime
 
 from observability.redact import redact
-from providers.base import MarketDataProvider, OptionsDataProvider
-from providers.types import KnownContract, OHLCBar, OptionQuote, UnderlyingQuote
+from providers.base import EarningsCalendarProvider, MarketDataProvider, OptionsDataProvider
+from providers.types import (
+    FinnhubCalendarEntry,
+    FinnhubCompanyProfile,
+    KnownContract,
+    OHLCBar,
+    OptionQuote,
+    SelectedLeg,
+    SnapshotAttempt,
+    UnderlyingQuote,
+)
 
 log = logging.getLogger(__name__)
 
@@ -132,7 +142,12 @@ class OptionsProviderChain(OptionsDataProvider):
         return None
 
     def get_quotes_for_known_contracts(
-        self, ticker: str, contracts: list[KnownContract], expiration: date, as_of: datetime
+        self,
+        ticker: str,
+        contracts: list[KnownContract],
+        expiration: date,
+        as_of: datetime,
+        on_attempt: Callable[[SnapshotAttempt], None] | None = None,
     ) -> list[OptionQuote]:
         """Same primary-then-fallback shape as get_option_chain above --
         an empty list is a legitimate, honestly reported result (matching
@@ -144,7 +159,7 @@ class OptionsProviderChain(OptionsDataProvider):
         for name, provider in self._providers:
             try:
                 quotes = provider.get_quotes_for_known_contracts(
-                    ticker, contracts, expiration, as_of
+                    ticker, contracts, expiration, as_of, on_attempt=on_attempt
                 )
                 self.last_actual_provider = name
                 if errors:
@@ -157,3 +172,113 @@ class OptionsProviderChain(OptionsDataProvider):
                 log.warning("provider %s failed for %s: %s", name, ticker, redact(str(exc)))
                 errors.append((name, exc))
         raise AllProvidersFailedError(errors)
+
+    def get_quotes_for_selected_legs(
+        self,
+        ticker: str,
+        legs: list[SelectedLeg],
+        expiration: date,
+        as_of: datetime,
+        on_attempt: Callable[[SnapshotAttempt], None] | None = None,
+    ) -> list[OptionQuote]:
+        """IBKR execution-observability hardening (2026-08-26) -- without
+        this override, OptionsDataProvider's own default (delegates to
+        self.get_option_chain, i.e. THIS chain's own full-discovery
+        method) would silently undo Section 7's entry-capture efficiency
+        fix the moment two options providers are ever configured: every
+        real request would go through full ATM-window rediscovery again,
+        on whichever provider is primary, instead of each underlying
+        provider's own efficient exact-leg resolution. Same primary-
+        then-fallback shape as get_quotes_for_known_contracts above."""
+        self.last_requested_provider = self._providers[0][0]
+        errors: list[tuple[str, Exception]] = []
+        for name, provider in self._providers:
+            try:
+                quotes = provider.get_quotes_for_selected_legs(
+                    ticker, legs, expiration, as_of, on_attempt=on_attempt
+                )
+                self.last_actual_provider = name
+                if errors:
+                    failed_name, failed_exc = errors[-1]
+                    self.last_fallback_reason = f"{failed_name} failed: {redact(str(failed_exc))}"
+                else:
+                    self.last_fallback_reason = None
+                return quotes
+            except Exception as exc:  # noqa: BLE001 — same rationale as get_option_chain
+                log.warning("provider %s failed for %s: %s", name, ticker, redact(str(exc)))
+                errors.append((name, exc))
+        raise AllProvidersFailedError(errors)
+
+
+class EarningsCalendarProviderChain(EarningsCalendarProvider):
+    """Same primary-then-fallback shape as MarketDataProviderChain/
+    OptionsProviderChain above -- EarningsAPI.com primary, Finnhub
+    fallback (see EARNINGS_CALENDAR_PROVIDER_ARCHITECTURE_REVIEW.md).
+    Fallback triggers on any real exception from the primary: timeout,
+    HTTP/auth error, rate limit, or a malformed response the provider
+    itself couldn't parse -- providers/earningsapi.py and
+    providers/finnhub.py both already turn every one of those into a
+    real exception rather than a silent empty result, so "any Exception"
+    here is the correct, complete trigger set, not an approximation."""
+
+    def __init__(self, providers: list[tuple[str, EarningsCalendarProvider]]) -> None:
+        if not providers:
+            raise ValueError("at least one provider is required")
+        self._providers = providers
+        self.last_requested_provider: str | None = None
+        self.last_actual_provider: str | None = None
+        self.last_fallback_reason: str | None = None
+
+    def get_earnings_calendar(self, from_date: date, to_date: date) -> list[FinnhubCalendarEntry]:
+        self.last_requested_provider = self._providers[0][0]
+        errors: list[tuple[str, Exception]] = []
+        for name, provider in self._providers:
+            try:
+                entries = provider.get_earnings_calendar(from_date, to_date)
+                self._record_success(name, errors)
+                return entries
+            except Exception as exc:  # noqa: BLE001 — same rationale as get_option_chain
+                log.warning(
+                    "earnings calendar provider %s failed for [%s, %s]: %s",
+                    name,
+                    from_date,
+                    to_date,
+                    redact(str(exc)),
+                )
+                errors.append((name, exc))
+        raise AllProvidersFailedError(errors)
+
+    def get_company_profile(self, symbol: str) -> FinnhubCompanyProfile | None:
+        """Same "exception AND None both fall through" contract as
+        OptionsProviderChain.get_underlying_quote above: a provider
+        reporting "unknown symbol" honestly (None) doesn't mean no
+        provider in the chain knows this symbol -- only that this one
+        doesn't. Returns None only once every provider has said so."""
+        self.last_requested_provider = self._providers[0][0]
+        errors: list[tuple[str, Exception]] = []
+        for name, provider in self._providers:
+            try:
+                profile = provider.get_company_profile(symbol)
+            except Exception as exc:  # noqa: BLE001 — same rationale as get_option_chain
+                log.warning(
+                    "earnings calendar provider %s failed for %s: %s",
+                    name,
+                    symbol,
+                    redact(str(exc)),
+                )
+                errors.append((name, exc))
+                continue
+            if profile is None:
+                errors.append((name, RuntimeError("no company profile available")))
+                continue
+            self._record_success(name, errors)
+            return profile
+        return None
+
+    def _record_success(self, name: str, prior_errors: list[tuple[str, Exception]]) -> None:
+        self.last_actual_provider = name
+        if prior_errors:
+            failed_name, failed_exc = prior_errors[-1]
+            self.last_fallback_reason = f"{failed_name} failed: {redact(str(failed_exc))}"
+        else:
+            self.last_fallback_reason = None

@@ -35,9 +35,7 @@ class FixtureEarningsDataProvider(EarningsDataProvider):
 
     def get_earnings_calendar(self, ticker: str) -> list[EarningsCalendarEntry]:
         return [
-            EarningsCalendarEntry(
-                **row, source_provider="fixture", retrieved_at=datetime.now()
-            )
+            EarningsCalendarEntry(**row, source_provider="fixture", retrieved_at=datetime.now())
             for row in self._calendar
             if row["ticker"] == ticker.upper()
         ]

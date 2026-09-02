@@ -14,7 +14,7 @@ from datetime import UTC, datetime
 
 from fastapi import APIRouter
 
-from api.deps import DbSession
+from api.deps import DbSession, TwsHealthProbeDep
 from api.exceptions import InvalidRequestError, NotFoundError
 from core.config import get_settings
 from schemas.api import (
@@ -112,12 +112,16 @@ def remove_credential(provider: str, db: DbSession) -> ProviderDashboardResponse
 
 
 @router.post("/{domain}/{provider}/test", response_model=TestConnectionResponse)
-def test_provider_connection(domain: str, provider: str, db: DbSession) -> TestConnectionResponse:
+def test_provider_connection(
+    domain: str, provider: str, db: DbSession, tws_health_probe: TwsHealthProbeDep
+) -> TestConnectionResponse:
     if domain not in DOMAIN_PROVIDERS or provider not in DOMAIN_PROVIDERS[domain]:
         raise NotFoundError(f"{provider!r} is not a real provider for domain {domain!r}")
 
     try:
-        status, detail = test_connection(get_settings(), provider, domain, db)
+        status, detail = test_connection(
+            get_settings(), provider, domain, db, tws_probe=tws_health_probe
+        )
     except UnknownTestConnectionTargetError as exc:
         raise NotFoundError(str(exc)) from exc
 

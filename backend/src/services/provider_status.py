@@ -5,10 +5,10 @@ rows -- see models/provider_health_event.py), and a hand-reviewed
 capability matrix -- the only place this project claims "provider X can do
 Y", so it never drifts from what the real adapters actually implement.
 
-Domains: price_history, earnings_estimates, filings, options, llm. Each
-lists only the providers that are REAL adapters in this codebase (see
-providers/ directory) -- never a fabricated "planned" integration
-presented as available.
+Domains: price_history, earnings_estimates, earnings_calendar, filings,
+options, llm. Each lists only the providers that are REAL adapters in this
+codebase (see providers/ directory) -- never a fabricated "planned"
+integration presented as available.
 """
 
 from dataclasses import dataclass, field
@@ -19,8 +19,9 @@ from sqlalchemy.orm import Session
 
 from core.config import Settings
 from models.app_provider_settings import AppProviderSettings
+from models.earnings_calendar_event import EarningsCalendarEvent
 from models.earnings_estimate_snapshot import EarningsEstimateSnapshot
-from models.enums import ProviderHealthStatus
+from models.enums import EarningsSource, ProviderHealthStatus
 from models.filing import Filing
 from models.options_snapshot import OptionsSnapshot
 from models.price_bar import PriceBar
@@ -30,6 +31,10 @@ from services.secret_store import credential_status
 
 PRICE_HISTORY_PROVIDERS = ("tiingo", "alpha_vantage")
 EARNINGS_ESTIMATES_PROVIDERS = ("alpha_vantage",)
+# Primary-then-fallback order, same as providers/factory.py::
+# KNOWN_EARNINGS_CALENDAR_PROVIDERS -- EarningsAPI.com primary, Finnhub
+# fallback (see EARNINGS_CALENDAR_PROVIDER_ARCHITECTURE_REVIEW.md).
+EARNINGS_CALENDAR_PROVIDERS = ("earningsapi", "finnhub")
 FILINGS_PROVIDERS = ("sec_edgar",)
 OPTIONS_PROVIDERS = ("ibkr", "alpha_vantage")
 LLM_PROVIDERS = ("deepseek", "openai", "anthropic", "openai_compatible")
@@ -39,6 +44,7 @@ LLM_PROVIDERS = ("deepseek", "openai", "anthropic", "openai_compatible")
 class ProviderCapabilities:
     prices: bool = False
     earnings_estimates: bool = False
+    earnings_calendar: bool = False
     filings: bool = False
     options: bool = False
     greeks: bool = False
@@ -54,6 +60,8 @@ PROVIDER_CAPABILITIES: dict[str, ProviderCapabilities] = {
     "alpha_vantage": ProviderCapabilities(
         prices=True, earnings_estimates=True, options=True, greeks=True
     ),
+    "earningsapi": ProviderCapabilities(earnings_calendar=True),
+    "finnhub": ProviderCapabilities(earnings_calendar=True),
     "sec_edgar": ProviderCapabilities(filings=True),
     "ibkr": ProviderCapabilities(options=True, greeks=True),
     "deepseek": ProviderCapabilities(ai=True),
@@ -74,6 +82,7 @@ PROVIDER_ENTITLEMENT_NOTES: dict[str, str] = {
 DOMAIN_PROVIDERS: dict[str, tuple[str, ...]] = {
     "price_history": PRICE_HISTORY_PROVIDERS,
     "earnings_estimates": EARNINGS_ESTIMATES_PROVIDERS,
+    "earnings_calendar": EARNINGS_CALENDAR_PROVIDERS,
     "filings": FILINGS_PROVIDERS,
     "options": OPTIONS_PROVIDERS,
     "llm": LLM_PROVIDERS,
@@ -132,19 +141,47 @@ def _last_success_at(db: Session, provider: str, domain: str) -> datetime | None
     OptionsSnapshot/etc. *is* proof of a real successful call; a log row
     claiming success would be a weaker, duplicated signal."""
     if domain == "price_history":
-        return db.query(func.max(PriceBar.retrieved_at)).filter(
-            PriceBar.source_provider == provider
-        ).scalar()
+        return (
+            db.query(func.max(PriceBar.retrieved_at))
+            .filter(PriceBar.source_provider == provider)
+            .scalar()
+        )
     if domain == "earnings_estimates":
-        return db.query(func.max(EarningsEstimateSnapshot.retrieved_at)).filter(
-            EarningsEstimateSnapshot.source_provider == provider
-        ).scalar()
+        return (
+            db.query(func.max(EarningsEstimateSnapshot.retrieved_at))
+            .filter(EarningsEstimateSnapshot.source_provider == provider)
+            .scalar()
+        )
+    if domain == "earnings_calendar":
+        # updated_at, not retrieved_at: earnings_calendar_event rows are
+        # upserted (services/earnings_calendar_sync.py), so the most
+        # recent write -- create or update -- is the real "last time this
+        # provider actually supplied data" signal, matching source= being
+        # set explicitly on both paths.
+        return (
+            db.query(func.max(EarningsCalendarEvent.updated_at))
+            .filter(EarningsCalendarEvent.source == EarningsSource(provider))
+            .scalar()
+        )
     if domain == "filings":
         return db.query(func.max(Filing.retrieved_at)).scalar()
     if domain == "options":
-        return db.query(func.max(OptionsSnapshot.retrieved_at)).filter(
-            OptionsSnapshot.source_provider == provider
-        ).scalar()
+        # IBKR TWS Migration, Phase 3 readiness (Section 8) -- the
+        # dashboard's "ibkr" entry must recognize every real tag an IBKR-
+        # sourced row has ever carried: the original bare "ibkr" (every
+        # row from before this migration's provenance split, and never
+        # rewritten -- see services/options_reconstruction.py's own
+        # comment on historical immutability), plus "ibkr_web"/"ibkr_tws"
+        # (every row since). An exact match on the bare literal "ibkr"
+        # alone would go permanently blank for "last successful IBKR
+        # use" the moment either real adapter starts writing its own
+        # tagged rows, even while options data keeps flowing correctly.
+        tags = ("ibkr", "ibkr_web", "ibkr_tws") if provider == "ibkr" else (provider,)
+        return (
+            db.query(func.max(OptionsSnapshot.retrieved_at))
+            .filter(OptionsSnapshot.source_provider.in_(tags))
+            .scalar()
+        )
     if domain == "llm":
         # No persisted artifact of a successful generation exists today
         # (a thesis/answer isn't tagged with which provider produced it at
@@ -157,9 +194,7 @@ def _last_success_at(db: Session, provider: str, domain: str) -> datetime | None
     return None
 
 
-def _provider_status(
-    db: Session, settings: Settings, provider: str, domain: str
-) -> ProviderStatus:
+def _provider_status(db: Session, settings: Settings, provider: str, domain: str) -> ProviderStatus:
     error_event = _last_health_event(db, provider, domain, exclude_connected=True)
     configured, masked_key = _configured_and_masked(provider, settings, db)
     return ProviderStatus(
@@ -181,8 +216,11 @@ def _resolve_price_history(overrides: AppProviderSettings) -> tuple[str, str | N
     fallback = overrides.price_history_fallback or (
         "alpha_vantage" if overrides.price_history_primary is None else None
     )
-    return primary, fallback, overrides.price_history_primary is not None, (
-        overrides.price_history_fallback is not None
+    return (
+        primary,
+        fallback,
+        overrides.price_history_primary is not None,
+        (overrides.price_history_fallback is not None),
     )
 
 
@@ -191,8 +229,11 @@ def _resolve_options(
 ) -> tuple[str, str | None, bool, bool]:
     primary = overrides.options_primary or settings.options_provider
     fallback = overrides.options_fallback
-    return primary, fallback, overrides.options_primary is not None, (
-        overrides.options_fallback is not None
+    return (
+        primary,
+        fallback,
+        overrides.options_primary is not None,
+        (overrides.options_fallback is not None),
     )
 
 
@@ -218,8 +259,7 @@ def get_provider_dashboard(db: Session, settings: Settings) -> list[DomainStatus
             primary_is_override=price_primary_override,
             fallback_is_override=price_fallback_override,
             providers=[
-                _provider_status(db, settings, p, "price_history")
-                for p in PRICE_HISTORY_PROVIDERS
+                _provider_status(db, settings, p, "price_history") for p in PRICE_HISTORY_PROVIDERS
             ],
         ),
         DomainStatus(
@@ -231,6 +271,17 @@ def get_provider_dashboard(db: Session, settings: Settings) -> list[DomainStatus
             providers=[
                 _provider_status(db, settings, p, "earnings_estimates")
                 for p in EARNINGS_ESTIMATES_PROVIDERS
+            ],
+        ),
+        DomainStatus(
+            domain="earnings_calendar",
+            primary=EARNINGS_CALENDAR_PROVIDERS[0],
+            fallback=EARNINGS_CALENDAR_PROVIDERS[1],
+            primary_is_override=False,
+            fallback_is_override=False,
+            providers=[
+                _provider_status(db, settings, p, "earnings_calendar")
+                for p in EARNINGS_CALENDAR_PROVIDERS
             ],
         ),
         DomainStatus(

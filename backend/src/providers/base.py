@@ -9,8 +9,11 @@ why.
 """
 
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 from datetime import UTC, date, datetime
+from decimal import Decimal
 
+from providers.ibkr_historical import HistoricalBar
 from providers.types import (
     ConsensusEstimate,
     EarningsCalendarEntry,
@@ -21,6 +24,8 @@ from providers.types import (
     KnownContract,
     OHLCBar,
     OptionQuote,
+    SelectedLeg,
+    SnapshotAttempt,
     TranscriptDocument,
     UnderlyingQuote,
     UpcomingEarningsCalendarEntry,
@@ -108,7 +113,12 @@ class OptionsDataProvider(ABC):
         return None
 
     def get_quotes_for_known_contracts(
-        self, ticker: str, contracts: list[KnownContract], expiration: date, as_of: datetime
+        self,
+        ticker: str,
+        contracts: list[KnownContract],
+        expiration: date,
+        as_of: datetime,
+        on_attempt: Callable[[SnapshotAttempt], None] | None = None,
     ) -> list[OptionQuote]:
         """Real, live quotes for contracts *already identified* (Phase
         4.5 settlement) -- deliberately not routed through get_option_
@@ -122,6 +132,12 @@ class OptionsDataProvider(ABC):
         at entry time; this method re-quotes those same contracts, never
         rediscovers new ones.
 
+        ``on_attempt``, when given (IBKR execution-observability
+        hardening, 2026-08-26), is called with a real ``SnapshotAttempt``
+        after every real poll a provider that supports warm-up telemetry
+        makes -- purely an observation hook; a provider default like this
+        one, with no such polling to observe, simply never calls it.
+
         Default: unsupported (empty list). A provider with no stable
         per-contract identifier to re-quote by (e.g. one with no conid-
         equivalent concept) reports this honestly as "no quotes" rather
@@ -130,6 +146,124 @@ class OptionsDataProvider(ABC):
         would reintroduce exactly the strike-drift risk this method
         exists to avoid. Overridden by providers that actually expose a
         stable per-contract identifier -- see providers/ibkr_options.py.
+        """
+        return []
+
+    def get_quotes_for_selected_legs(
+        self,
+        ticker: str,
+        legs: list[SelectedLeg],
+        expiration: date,
+        as_of: datetime,
+        on_attempt: Callable[[SnapshotAttempt], None] | None = None,
+    ) -> list[OptionQuote]:
+        """Real, live quotes for exactly the strikes/rights strategy
+        generation already selected (Decision Engine entry capture --
+        live market-data validation, 2026-08-26, Section 7) -- unlike
+        ``get_quotes_for_known_contracts`` above, ``legs`` carry no
+        provider contract identifier yet (``DecisionSnapshot.legs`` never
+        persisted one; see ``SelectedLeg``'s own docstring), only the
+        deterministic strike/option_type/action the ranking settled on. A
+        provider that can resolve one exact contract directly from
+        (symbol, expiration, strike, right) should do exactly that,
+        skipping any ATM-window discovery of strikes nobody selected.
+
+        ``on_attempt`` -- see get_quotes_for_known_contracts's own
+        docstring above; the identical, optional observation hook.
+
+        Default: delegates to ``get_option_chain`` and filters to the
+        requested (strike, option_type) pairs -- correct for every
+        provider (including one that already returns a full chain in one
+        call, e.g. Alpha Vantage, for which there is no narrower request
+        to make), just not necessarily minimal-cost. Overridden by a
+        provider where a narrower real request is actually possible --
+        see providers/ibkr_options.py.
+        """
+        quotes = self.get_option_chain(ticker, as_of, expiration=expiration)
+        wanted = {(leg.strike, leg.option_type) for leg in legs}
+        return [q for q in quotes if (q.strike, q.option_type) in wanted]
+
+    # ------------------------------------------------------------------
+    # Historical-close reconstruction (services/options_reconstruction.py)
+    # ------------------------------------------------------------------
+    #
+    # IBKR TWS Migration, Phase 3 readiness -- these three methods used to
+    # be called only via a concrete IBKROptionsProvider that services/
+    # options_reconstruction.py constructed directly, bypassing providers/
+    # factory.py entirely and hard-coupling reconstruction to the Web
+    # transport. Promoted here so a TWS-backed provider can implement the
+    # identical capability (see providers/ibkr_tws_options.py's own
+    # overrides) without services/options_reconstruction.py needing to
+    # know which concrete adapter it's holding. This is a provider-
+    # resolution change only -- no reconstruction math (bar selection,
+    # skew checks, Black-Scholes fallback) moves or changes.
+
+    def resolve_expiration_for_reconstruction(
+        self, ticker: str, reference_date: date, earnings_date: date | None
+    ) -> date | None:
+        """Which real, currently-listed expiration a historical-close
+        reconstruction should target -- the same selection rule
+        (select_expiration_after / select_nearest_listed_expiration) live
+        collection uses, never a separate, possibly-disagreeing rule.
+
+        No provider covered by this project can ask "what was listed as
+        of a past date" -- this necessarily resolves against *today's*
+        currently listed expirations, an honest approximation accurate
+        for reconstructing a recent (not a far-past) close, since listed
+        expirations only change by rolling off after they themselves
+        expire.
+
+        Default: unsupported (``None``). A provider with no per-
+        expiration discovery capability (e.g. Alpha Vantage, which
+        already returns a full chain in one call and has no separate
+        reconstruction path) reports this honestly; callers must treat
+        ``None`` as "reconstruction unavailable from this provider,"
+        never retry with a guessed date. Overridden by providers/
+        ibkr_options.py and providers/ibkr_tws_options.py.
+        """
+        return None
+
+    def discover_contracts_for_expiration(
+        self, ticker: str, target_expiration: date
+    ) -> tuple[int, Decimal | None, list[tuple[Decimal, str, int]]]:
+        """The underlying's conid, its current live price (used only to
+        center the strike window -- never confused with a reconstructed
+        historical underlying price), and every real ``(strike, right,
+        option_conid)`` listed for ``target_expiration``, for a caller
+        that already knows which expiration it wants (e.g. services/
+        options_reconstruction.py, after resolve_expiration_for_
+        reconstruction above has already picked one).
+
+        Default: unsupported (conid ``0``, price ``None``, no contracts).
+        Overridden by providers/ibkr_options.py and providers/ibkr_tws_
+        options.py.
+        """
+        return 0, None, []
+
+    def get_historical_bars(
+        self,
+        conid: int,
+        *,
+        bar: str = "1min",
+        period: str = "1d",
+        end_time: datetime | None = None,
+        outside_rth: bool = False,
+    ) -> list[HistoricalBar]:
+        """Real historical OHLC bars for ``conid`` up to (and including)
+        ``end_time`` -- the step after discover_contracts_for_expiration
+        resolves which conids to ask for. Real bars only, never a
+        fabricated/filled value (see providers/ibkr_historical.py's own
+        docstring for the full contract).
+
+        ``bar``/``period`` use this ABC's own canonical, compact
+        vocabulary (``"1min"``, ``"1d"``) -- the Web adapter's native
+        syntax and hence the form every caller passes. A provider whose
+        real API uses different syntax (TWS's own space-separated
+        ``"1 min"``/``"1 D"``) translates internally; see providers/
+        ibkr_tws_options.py's own override.
+
+        Default: unsupported (empty list). Overridden by providers/
+        ibkr_options.py and providers/ibkr_tws_options.py.
         """
         return []
 
@@ -184,9 +318,7 @@ class EarningsCalendarProvider(ABC):
     """
 
     @abstractmethod
-    def get_earnings_calendar(
-        self, from_date: date, to_date: date
-    ) -> list[FinnhubCalendarEntry]:
+    def get_earnings_calendar(self, from_date: date, to_date: date) -> list[FinnhubCalendarEntry]:
         """Every real, currently-scheduled earnings event in
         ``[from_date, to_date]``, inclusive, across every symbol the
         provider covers -- never filtered to a known universe by this

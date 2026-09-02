@@ -18,6 +18,13 @@ _ENV_ATTR: dict[str, str] = {
     # resolve_secret()'s DB-then-env precedence correct in advance, for
     # whenever that form is added.
     "finnhub": "finnhub_api_key",
+    # Same as "finnhub" above -- env-var-only, no Settings-UI form yet
+    # (see providers/earningsapi.py). Without this entry,
+    # resolve_secret(settings, "earningsapi", db) silently returns None
+    # even with EARNINGSAPI_API_KEY set, which would make
+    # providers/factory.py::build_earnings_calendar_provider treat
+    # EarningsAPI.com as unconfigured.
+    "earningsapi": "earningsapi_api_key",
 }
 
 

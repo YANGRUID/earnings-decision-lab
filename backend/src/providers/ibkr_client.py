@@ -51,6 +51,31 @@ class IBKRRateLimitedError(IBKRError):
     """The Gateway returned a rate-limit response."""
 
 
+class IBKRMarketDataPermissionError(IBKRError):
+    """The connection itself is fine, but this account has no market-data
+    entitlement for what was requested (IBKR TWS Migration Phase 1 -- the
+    TWS socket API surfaces this as its own explicit error code, e.g.
+    354/10168 "requested market data is not subscribed", distinct from a
+    connection failure; the Client Portal Gateway's REST API has no
+    equivalent explicit signal today -- see providers/ibkr_client.py's
+    decode_market_data_quality, which instead reports "unavailable" via
+    field 6509's "N" code on an otherwise-successful response). Raised
+    only by providers/ibkr_tws_client.py."""
+
+
+class IBKRClientIdInUseError(IBKRError):
+    """IB Gateway/TWS's own client-ID collision error (code 326) -- a
+    second connection attempted to reuse a client ID another live
+    connection already holds. Distinct from IBKRCompetingSessionError
+    above (which is the Client Portal Gateway's account-level "another
+    session already holds the brokerage connection" error): this is a
+    connection-identity collision specific to the socket API's own
+    client-ID model (see this project's IBKR TWS Migration Phase 1
+    report, Section K -- client IDs must be fixed and deterministic per
+    service precisely to avoid this). Raised only by
+    providers/ibkr_tws_client.py."""
+
+
 @dataclass(frozen=True)
 class AuthStatus:
     authenticated: bool

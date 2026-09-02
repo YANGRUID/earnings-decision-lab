@@ -167,16 +167,27 @@ frontend states the reason implied-vs-realized is empty rather than hiding it.
 remain test-only fixtures for exercising the interface shape — never wired into ingestion or
 the API.
 
-### Finnhub (Phase 4 — the forward-looking earnings calendar's single source of truth)
+### EarningsAPI.com (primary) / Finnhub (fallback) — the forward-looking earnings calendar
 
-Rejected above as redundant with Alpha Vantage through Phase 12, then reversed for one specific
-use case: the AI Benchmark Portfolio (see `ARCHITECTURE_REVIEW_PHASE4.md`) needs a real
-cross-symbol "who reports in this date range" calendar scan, which nothing in this codebase's
-existing per-ticker providers can answer. `providers/finnhub.py::FinnhubEarningsCalendarProvider`
-wraps `/calendar/earnings` (the calendar itself) and `/stock/profile2` (name/logo/market cap,
-used once a calendar entry passes the eligibility filter). Deliberately does not replace or
-touch Alpha Vantage anywhere — the existing per-ticker "next earnings date" flow
-(`services/market_expectations.py`) is untouched and keeps using
+Originally Finnhub alone (Phase 4): rejected as redundant with Alpha Vantage through Phase 12, then
+reversed for one specific use case the AI Benchmark Portfolio needs (see `ARCHITECTURE_REVIEW_
+PHASE4.md`) — a real cross-symbol "who reports in this date range" calendar scan, which nothing in
+this codebase's existing per-ticker providers can answer. Finnhub's free tier was later confirmed
+live, against this project's own real data, to return far-future placeholder dates (clustering
+around May–June 2027, even for mega-caps with well-known real quarterly cadences) once its own
+near-term coverage ran out — the sync never failed, it just silently stored dates that didn't
+reflect reality. See `EARNINGS_CALENDAR_PROVIDER_ARCHITECTURE_REVIEW.md` for the full investigation.
+
+`providers/earningsapi.py::EarningsApiCalendarProvider` is now primary: wraps
+`/v1/calendar/earnings?date=` (one real calendar date per call, no range parameter) and
+`/v1/profile/{symbol}` (name/exchange/country/market cap). Free tier: 100 req/day, 1,000/month —
+`services/earnings_calendar_sync.py`'s own per-date dedup (skip any date already covered by an
+existing row) keeps real usage to roughly 1–3 requests/day in steady state. `providers/finnhub.py::
+FinnhubEarningsCalendarProvider` is now fallback, used only if EarningsAPI.com is unreachable or
+unconfigured — see `providers/fallback.py::EarningsCalendarProviderChain`. Both are wired through
+the same, pre-existing `providers/base.py::EarningsCalendarProvider` interface — no second, parallel
+abstraction was introduced. Deliberately does not touch Alpha Vantage anywhere — the existing
+per-ticker "next earnings date" flow (`services/market_expectations.py`) is untouched and keeps using
 `AlphaVantageEarningsEstimatesProvider`.
 
 ## Not used

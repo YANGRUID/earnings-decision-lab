@@ -8,7 +8,7 @@ services/provider_status.py.
 from fastapi import APIRouter
 
 from analytics.market_session import get_market_session
-from api.deps import DbSession, Scheduler
+from api.deps import DbSession, Scheduler, TwsHealthProbeDep, TwsProviderDep
 from api.routers.evaluations import latest_evaluation
 from core.config import get_settings
 from rag.embeddings import DEFAULT_MODEL_NAME
@@ -21,6 +21,7 @@ from schemas.api import (
     ProviderDashboardResponse,
     SchedulerStatusResponse,
     SystemStatusResponse,
+    TwsStatusResponse,
 )
 from services.provider_status import get_provider_dashboard
 from services.scheduler import get_scheduler_status
@@ -29,18 +30,25 @@ from services.system_status import (
     get_data_counts,
     get_data_freshness,
     get_ibkr_status,
+    get_tws_status,
 )
 
 router = APIRouter(prefix="/system-status", tags=["system-status"])
 
 
 @router.get("", response_model=SystemStatusResponse)
-def get_system_status(db: DbSession, scheduler: Scheduler) -> SystemStatusResponse:
+def get_system_status(
+    db: DbSession,
+    scheduler: Scheduler,
+    tws_health_probe: TwsHealthProbeDep,
+    tws_provider: TwsProviderDep,
+) -> SystemStatusResponse:
     settings = get_settings()
     counts = get_data_counts(db)
     freshness = get_data_freshness(db)
     llm = describe_llm_configuration(settings)
     ibkr = get_ibkr_status(settings)
+    tws = get_tws_status(settings, probe=tws_health_probe, provider=tws_provider)
     scheduler_status = get_scheduler_status(scheduler)
     session = get_market_session()
     domains = get_provider_dashboard(db, settings)
@@ -52,6 +60,7 @@ def get_system_status(db: DbSession, scheduler: Scheduler) -> SystemStatusRespon
         embedding_model=DEFAULT_MODEL_NAME,
         evaluation=latest_evaluation(),
         ibkr=IbkrStatusResponse.model_validate(ibkr),
+        tws=TwsStatusResponse.model_validate(tws),
         scheduler=SchedulerStatusResponse.model_validate(scheduler_status),
         market_session=session.session.value,
         providers=ProviderDashboardResponse(

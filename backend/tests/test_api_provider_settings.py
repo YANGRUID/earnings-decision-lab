@@ -37,13 +37,14 @@ def _all_provider_rows(body: dict) -> list[dict]:
 
 
 class TestGetDashboard:
-    def test_returns_all_five_real_domains(self, client):
+    def test_returns_all_six_real_domains(self, client):
         response = client.get("/api/v1/settings/providers")
         assert response.status_code == 200
         domains = {d["domain"] for d in response.json()["domains"]}
         assert domains == {
             "price_history",
             "earnings_estimates",
+            "earnings_calendar",
             "filings",
             "options",
             "llm",
@@ -130,7 +131,10 @@ class TestTestConnection:
         monkeypatch.setattr(
             provider_settings_router,
             "test_connection",
-            lambda settings, provider, domain, db=None: (ProviderHealthStatus.CONNECTED, None),
+            lambda settings, provider, domain, db=None, tws_probe=None: (
+                ProviderHealthStatus.CONNECTED,
+                None,
+            ),
         )
         response = client.post("/api/v1/settings/providers/price_history/tiingo/test")
         assert response.status_code == 200
@@ -147,13 +151,11 @@ class TestTestConnection:
         assert len(events) == 1
         assert events[0].status == ProviderHealthStatus.CONNECTED
 
-    def test_failed_check_is_reflected_on_the_next_dashboard_read(
-        self, client, monkeypatch
-    ):
+    def test_failed_check_is_reflected_on_the_next_dashboard_read(self, client, monkeypatch):
         monkeypatch.setattr(
             provider_settings_router,
             "test_connection",
-            lambda settings, provider, domain, db=None: (
+            lambda settings, provider, domain, db=None, tws_probe=None: (
                 ProviderHealthStatus.RATE_LIMITED,
                 "429 too many requests",
             ),

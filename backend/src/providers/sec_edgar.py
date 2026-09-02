@@ -173,9 +173,7 @@ class SECEdgarProvider(FilingsProvider):
         )
 
 
-def _extract_fact_values(
-    facts: dict, tags: tuple[str, ...], unit: str
-) -> list[CompanyFactValue]:
+def _extract_fact_values(facts: dict, tags: tuple[str, ...], unit: str) -> list[CompanyFactValue]:
     for tag in tags:
         tag_data = facts.get(tag)
         if not tag_data:

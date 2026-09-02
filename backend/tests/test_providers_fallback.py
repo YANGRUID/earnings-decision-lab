@@ -3,13 +3,22 @@ from decimal import Decimal
 
 import pytest
 
-from providers.base import MarketDataProvider, OptionsDataProvider
+from providers.base import EarningsCalendarProvider, MarketDataProvider, OptionsDataProvider
 from providers.fallback import (
     AllProvidersFailedError,
+    EarningsCalendarProviderChain,
     MarketDataProviderChain,
     OptionsProviderChain,
 )
-from providers.types import KnownContract, OHLCBar, OptionQuote, UnderlyingQuote
+from providers.types import (
+    FinnhubCalendarEntry,
+    FinnhubCompanyProfile,
+    KnownContract,
+    OHLCBar,
+    OptionQuote,
+    SelectedLeg,
+    UnderlyingQuote,
+)
 
 
 class _FailingProvider(MarketDataProvider):
@@ -127,7 +136,7 @@ class _WorkingOptionsProvider(OptionsDataProvider):
             retrieved_at=datetime(2026, 1, 1, tzinfo=UTC),
         )
 
-    def get_quotes_for_known_contracts(self, ticker, contracts, expiration, as_of):
+    def get_quotes_for_known_contracts(self, ticker, contracts, expiration, as_of, on_attempt=None):
         return [
             OptionQuote(
                 ticker=ticker,
@@ -170,8 +179,23 @@ class _RaisingKnownContractsOptionsProvider(OptionsDataProvider):
     ):
         return []
 
-    def get_quotes_for_known_contracts(self, ticker, contracts, expiration, as_of):
+    def get_quotes_for_known_contracts(self, ticker, contracts, expiration, as_of, on_attempt=None):
         raise RuntimeError("simulated known-contracts quote failure")
+
+
+class _RaisingSelectedLegsOptionsProvider(OptionsDataProvider):
+    """Has a working option chain but a get_quotes_for_selected_legs
+    that raises -- distinct from a provider that simply doesn't override
+    it at all (which honestly delegates to get_option_chain, the
+    OptionsDataProvider default, not an exception)."""
+
+    def get_option_chain(
+        self, ticker, as_of, expiration=None, reference_date=None, earnings_anchored=True
+    ):
+        return []
+
+    def get_quotes_for_selected_legs(self, ticker, legs, expiration, as_of, on_attempt=None):
+        raise RuntimeError("simulated selected-legs quote failure")
 
 
 class TestOptionsProviderChain:
@@ -328,3 +352,231 @@ class TestOptionsProviderChainKnownContracts:
             chain.get_quotes_for_known_contracts(
                 "NVDA", self._CONTRACTS, date(2026, 1, 16), datetime.now(UTC)
             )
+
+
+class TestOptionsProviderChainSelectedLegs:
+    """IBKR execution-observability hardening (2026-08-26) -- without its
+    own override, get_quotes_for_selected_legs would silently fall back
+    to OptionsDataProvider's default (delegates to THIS chain's own
+    get_option_chain), undoing Section 7's entry-capture efficiency fix
+    the moment two options providers are ever configured. Same
+    primary-then-fallback shape as TestOptionsProviderChainKnownContracts
+    above."""
+
+    _LEGS = [SelectedLeg(strike=Decimal("100"), option_type="call", action="buy")]
+
+    def test_uses_primary_when_it_works(self):
+        chain = OptionsProviderChain(
+            [("primary", _WorkingOptionsProvider()), ("fallback", _FailingOptionsProvider())]
+        )
+        quotes = chain.get_quotes_for_selected_legs(
+            "NVDA", self._LEGS, date(2026, 1, 16), datetime.now(UTC)
+        )
+        assert quotes[0].source_provider == "working"
+        assert chain.last_actual_provider == "primary"
+        assert chain.last_fallback_reason is None
+
+    def test_falls_through_to_next_provider_on_failure(self):
+        chain = OptionsProviderChain(
+            [
+                ("primary", _RaisingSelectedLegsOptionsProvider()),
+                ("fallback", _WorkingOptionsProvider()),
+            ]
+        )
+        quotes = chain.get_quotes_for_selected_legs(
+            "NVDA", self._LEGS, date(2026, 1, 16), datetime.now(UTC)
+        )
+        assert quotes[0].source_provider == "working"
+        assert chain.last_actual_provider == "fallback"
+        assert "simulated selected-legs quote failure" in chain.last_fallback_reason
+
+    def test_raises_when_all_providers_fail(self):
+        chain = OptionsProviderChain(
+            [
+                ("primary", _RaisingSelectedLegsOptionsProvider()),
+                ("fallback", _RaisingSelectedLegsOptionsProvider()),
+            ]
+        )
+        with pytest.raises(AllProvidersFailedError):
+            chain.get_quotes_for_selected_legs(
+                "NVDA", self._LEGS, date(2026, 1, 16), datetime.now(UTC)
+            )
+
+    def test_on_attempt_forwarded_to_the_chosen_provider(self):
+        """The chain must never swallow the telemetry hook -- a caller
+        that wants per-attempt observability must still get it through
+        the fallback layer, not just when calling a single provider
+        directly."""
+        received: list[str] = []
+
+        class _ObservingProvider(OptionsDataProvider):
+            def get_option_chain(
+                self, ticker, as_of, expiration=None, reference_date=None, earnings_anchored=True
+            ):
+                return []
+
+            def get_quotes_for_selected_legs(
+                self, ticker, legs, expiration, as_of, on_attempt=None
+            ):
+                if on_attempt is not None:
+                    received.append("called")
+                return []
+
+        chain = OptionsProviderChain([("primary", _ObservingProvider())])
+        chain.get_quotes_for_selected_legs(
+            "NVDA", self._LEGS, date(2026, 1, 16), datetime.now(UTC), on_attempt=lambda a: None
+        )
+        assert received == ["called"]
+
+
+def _calendar_entry(source_provider: str) -> FinnhubCalendarEntry:
+    return FinnhubCalendarEntry(
+        symbol="NVDA",
+        earnings_date=date(2026, 8, 26),
+        session="amc",
+        fiscal_year=None,
+        fiscal_quarter=None,
+        eps_estimate=Decimal("2.09"),
+        revenue_estimate=Decimal("92072420560"),
+        source_provider=source_provider,
+        retrieved_at=datetime.now(UTC),
+    )
+
+
+def _company_profile(source_provider: str) -> FinnhubCompanyProfile:
+    return FinnhubCompanyProfile(
+        symbol="NVDA",
+        name="NVIDIA Corporation",
+        logo_url=None,
+        exchange="NASDAQ",
+        country="US",
+        market_cap_millions=Decimal("5049594.08"),
+        currency=None,
+        source_provider=source_provider,
+        retrieved_at=datetime.now(UTC),
+    )
+
+
+class _FailingCalendarProvider(EarningsCalendarProvider):
+    def get_earnings_calendar(self, from_date, to_date):
+        raise RuntimeError("simulated calendar provider failure")
+
+    def get_company_profile(self, symbol):
+        raise RuntimeError("simulated profile provider failure")
+
+
+class _WorkingCalendarProvider(EarningsCalendarProvider):
+    def __init__(self, source_provider: str = "working") -> None:
+        self._source_provider = source_provider
+
+    def get_earnings_calendar(self, from_date, to_date):
+        return [_calendar_entry(self._source_provider)]
+
+    def get_company_profile(self, symbol):
+        return _company_profile(self._source_provider)
+
+
+class _UnknownSymbolCalendarProvider(EarningsCalendarProvider):
+    """Has a working calendar but honestly returns None for
+    get_company_profile -- distinct from a provider that raises (the
+    OptionsProviderChain.get_underlying_quote precedent this mirrors:
+    both an exception and a None must fall through)."""
+
+    def get_earnings_calendar(self, from_date, to_date):
+        return [_calendar_entry("unknown-symbol")]
+
+    def get_company_profile(self, symbol):
+        return None
+
+
+class TestEarningsCalendarProviderChain:
+    def test_requires_at_least_one_provider(self):
+        with pytest.raises(ValueError):
+            EarningsCalendarProviderChain([])
+
+    def test_uses_primary_when_it_works(self):
+        chain = EarningsCalendarProviderChain(
+            [
+                ("earningsapi", _WorkingCalendarProvider("earningsapi")),
+                ("finnhub", _FailingCalendarProvider()),
+            ]
+        )
+        entries = chain.get_earnings_calendar(date(2026, 8, 26), date(2026, 8, 26))
+        assert entries[0].source_provider == "earningsapi"
+        assert chain.last_requested_provider == "earningsapi"
+        assert chain.last_actual_provider == "earningsapi"
+        assert chain.last_fallback_reason is None
+
+    def test_falls_through_to_finnhub_on_earningsapi_failure(self):
+        chain = EarningsCalendarProviderChain(
+            [
+                ("earningsapi", _FailingCalendarProvider()),
+                ("finnhub", _WorkingCalendarProvider("finnhub")),
+            ]
+        )
+        entries = chain.get_earnings_calendar(date(2026, 8, 26), date(2026, 8, 26))
+        assert entries[0].source_provider == "finnhub"
+        assert chain.last_requested_provider == "earningsapi"
+        assert chain.last_actual_provider == "finnhub"
+        assert "simulated calendar provider failure" in chain.last_fallback_reason
+
+    def test_raises_when_all_providers_fail(self):
+        chain = EarningsCalendarProviderChain(
+            [("earningsapi", _FailingCalendarProvider()), ("finnhub", _FailingCalendarProvider())]
+        )
+        with pytest.raises(AllProvidersFailedError):
+            chain.get_earnings_calendar(date(2026, 8, 26), date(2026, 8, 26))
+
+
+class TestEarningsCalendarProviderChainCompanyProfile:
+    def test_uses_primary_when_it_works(self):
+        chain = EarningsCalendarProviderChain(
+            [
+                ("earningsapi", _WorkingCalendarProvider("earningsapi")),
+                ("finnhub", _FailingCalendarProvider()),
+            ]
+        )
+        profile = chain.get_company_profile("NVDA")
+        assert profile is not None
+        assert profile.source_provider == "earningsapi"
+        assert chain.last_actual_provider == "earningsapi"
+        assert chain.last_fallback_reason is None
+
+    def test_falls_through_on_exception(self):
+        chain = EarningsCalendarProviderChain(
+            [
+                ("earningsapi", _FailingCalendarProvider()),
+                ("finnhub", _WorkingCalendarProvider("finnhub")),
+            ]
+        )
+        profile = chain.get_company_profile("NVDA")
+        assert profile is not None
+        assert profile.source_provider == "finnhub"
+        assert chain.last_actual_provider == "finnhub"
+        assert "simulated profile provider failure" in chain.last_fallback_reason
+
+    def test_falls_through_on_none(self):
+        """An unknown-symbol None from the primary is not an exception --
+        it's an honest "this provider doesn't know this symbol" -- but
+        must still fall through to the fallback exactly like an
+        exception would, since the fallback provider might know it."""
+        chain = EarningsCalendarProviderChain(
+            [
+                ("earningsapi", _UnknownSymbolCalendarProvider()),
+                ("finnhub", _WorkingCalendarProvider("finnhub")),
+            ]
+        )
+        profile = chain.get_company_profile("NVDA")
+        assert profile is not None
+        assert profile.source_provider == "finnhub"
+        assert chain.last_actual_provider == "finnhub"
+
+    def test_returns_none_when_every_provider_lacks_the_symbol(self):
+        chain = EarningsCalendarProviderChain(
+            [
+                ("earningsapi", _UnknownSymbolCalendarProvider()),
+                ("finnhub", _UnknownSymbolCalendarProvider()),
+            ]
+        )
+        profile = chain.get_company_profile("ZZUNKNOWN")
+        assert profile is None

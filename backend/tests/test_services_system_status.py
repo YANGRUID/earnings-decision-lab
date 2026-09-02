@@ -8,15 +8,26 @@ from models.company import Company
 from models.earnings_event import EarningsEvent
 from models.earnings_result import EarningsResult
 from models.price_bar import PriceBar
+from providers.ibkr_client import IBKRGatewayUnavailableError
+from providers.ibkr_tws_client import TWSConnectionManager, TWSHealthSnapshot
 from services.system_status import (
     describe_llm_configuration,
     get_data_counts,
     get_data_freshness,
     get_ibkr_status,
+    get_tws_status,
     ibkr_status_label,
+    tws_status_label,
 )
 
 _IBKR_SETTINGS = Settings(ibkr_base_url="https://localhost:5001/v1/api", _env_file=None)
+_TWS_SETTINGS = Settings(
+    ibkr_provider="tws",
+    ibkr_tws_host="host.docker.internal",
+    ibkr_tws_port=4002,
+    ibkr_tws_client_id=101,
+    _env_file=None,
+)
 
 
 def _seed_company(db_session, ticker: str = "ZZSTAT1") -> Company:
@@ -169,6 +180,143 @@ class TestGetIbkrStatus:
         status = get_ibkr_status(_IBKR_SETTINGS)
 
         assert status.status_label == "COMPETING_SESSION"
+
+
+class TestTwsStatusLabel:
+    """IBKR TWS Migration Phase 1, Section 35/37 -- the pure mapping,
+    mirroring TestIbkrStatusLabel's own precedent above."""
+
+    def test_not_configured_when_web_transport_selected(self):
+        assert tws_status_label(configured=False, gateway_reachable=False, api_ready=False) == (
+            "NOT_CONFIGURED"
+        )
+
+    def test_gateway_unreachable_when_configured_but_no_socket(self):
+        assert tws_status_label(configured=True, gateway_reachable=False, api_ready=False) == (
+            "GATEWAY_UNREACHABLE"
+        )
+
+    def test_auth_required_when_socket_connects_but_never_ready(self):
+        """Section 37 -- a real socket connection with no nextValidId means
+        IB Gateway/TWS isn't logged into the brokerage session yet; this
+        must be labeled distinctly from a generic 'IBKR down'."""
+        assert tws_status_label(configured=True, gateway_reachable=True, api_ready=False) == (
+            "AUTH_REQUIRED"
+        )
+
+    def test_connected_when_fully_ready(self):
+        assert (
+            tws_status_label(configured=True, gateway_reachable=True, api_ready=True) == "CONNECTED"
+        )
+
+
+class TestGetTwsStatus:
+    """The real, bounded, connect-then-disconnect probe -- socket-level
+    internals mocked at the TWSConnectionManager class boundary, mirroring
+    TestGetIbkrStatus's own httpx_mock precedent for the Web provider."""
+
+    def test_reports_not_configured_when_web_transport_selected(self):
+        status = get_tws_status(_IBKR_SETTINGS)  # ibkr_provider defaults to "web"
+        assert status.configured is False
+        assert status.status_label == "NOT_CONFIGURED"
+
+    def test_reports_connected_for_a_real_ready_connection(self, monkeypatch):
+        monkeypatch.setattr(TWSConnectionManager, "connect_and_start", lambda self: None)
+        monkeypatch.setattr(
+            TWSConnectionManager,
+            "health_snapshot",
+            lambda self: TWSHealthSnapshot(
+                provider="tws",
+                gateway_reachable=True,
+                socket_connected=True,
+                api_ready=True,
+                market_data_quality_last_seen="delayed",
+                last_heartbeat=None,
+                last_error=None,
+                reconnect_state="ready",
+            ),
+        )
+        shutdown_calls = []
+        monkeypatch.setattr(TWSConnectionManager, "shutdown", lambda self: shutdown_calls.append(1))
+
+        status = get_tws_status(_TWS_SETTINGS)
+
+        assert status.configured is True
+        assert status.gateway_reachable is True
+        assert status.api_ready is True
+        assert status.market_data_quality == "delayed"
+        assert status.status_label == "CONNECTED"
+        assert shutdown_calls == [1]  # never left connected after the probe
+
+    def test_reports_gateway_unreachable_on_connect_failure(self, monkeypatch):
+        def _raise(self):
+            raise IBKRGatewayUnavailableError("could not reach IB Gateway/TWS")
+
+        monkeypatch.setattr(TWSConnectionManager, "connect_and_start", _raise)
+        monkeypatch.setattr(TWSConnectionManager, "shutdown", lambda self: None)
+
+        status = get_tws_status(_TWS_SETTINGS)
+
+        assert status.configured is True
+        assert status.gateway_reachable is False
+        assert status.status_label == "GATEWAY_UNREACHABLE"
+        assert status.error is not None
+
+    def test_prefers_a_persistent_probe_over_a_fresh_one_shot_connection(self, monkeypatch):
+        """IBKR TWS Migration Phase 2, Section 11 -- when an app-owned
+        TwsHealthProbe is passed, get_tws_status must read from it
+        (cheap, no new socket) instead of constructing its own
+        TWSConnectionManager and connecting fresh."""
+        from unittest.mock import MagicMock
+
+        fresh_connect_calls = []
+        monkeypatch.setattr(
+            TWSConnectionManager,
+            "connect_and_start",
+            lambda self: fresh_connect_calls.append(1),
+        )
+
+        fake_probe = MagicMock()
+        fake_probe.snapshot.return_value = TWSHealthSnapshot(
+            provider="tws",
+            gateway_reachable=True,
+            socket_connected=True,
+            api_ready=True,
+            market_data_quality_last_seen="live",
+            last_heartbeat=None,
+            last_error=None,
+            reconnect_state="ready",
+        )
+
+        status = get_tws_status(_TWS_SETTINGS, probe=fake_probe)
+
+        assert fresh_connect_calls == []  # no fresh TWSConnectionManager was ever connected
+        assert fake_probe.snapshot.call_count == 1
+        assert status.status_label == "CONNECTED"
+        assert status.market_data_quality == "live"
+
+    def test_never_exposes_account_id_or_credentials(self, monkeypatch):
+        """Section 35's explicit prohibition -- structural: TwsStatus has
+        no field capable of carrying an account id, username, or session
+        secret at all."""
+        import dataclasses
+
+        from services.system_status import TwsStatus
+
+        field_names = {f.name for f in dataclasses.fields(TwsStatus)}
+        assert field_names == {
+            "configured",
+            "gateway_reachable",
+            "socket_connected",
+            "api_ready",
+            "market_data_quality",
+            "error",
+            "status_label",
+            # IBKR TWS Migration, Phase 3 readiness -- additive, still no
+            # field capable of carrying an account id/username/secret.
+            "last_heartbeat",
+            "reconnect_state",
+        }
 
 
 class TestDescribeLlmConfiguration:

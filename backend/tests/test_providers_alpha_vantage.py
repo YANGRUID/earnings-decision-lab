@@ -44,9 +44,7 @@ def test_requires_api_key():
 
 
 def test_get_daily_bars_parses_and_filters_by_range(httpx_mock):
-    httpx_mock.add_response(
-        url=re.compile(r"https://www\.alphavantage\.co/query.*"), json=RESPONSE
-    )
+    httpx_mock.add_response(url=re.compile(r"https://www\.alphavantage\.co/query.*"), json=RESPONSE)
     provider = AlphaVantageMarketDataProvider(api_key="test-key")
 
     bars = provider.get_daily_bars("MU", date(2025, 9, 22), date(2025, 9, 23))

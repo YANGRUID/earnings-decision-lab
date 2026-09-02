@@ -1,4 +1,16 @@
-# Interactive Brokers integration (Phase 13)
+# Interactive Brokers integration (Phase 13) — LEGACY / ROLLBACK TRANSPORT
+
+> **⚠️ This is no longer the production path.**
+>
+> As of the **2026-09-01 cutover**, production uses the **IB Gateway / TWS socket API**
+> (`IBKR_PROVIDER=tws`), not the Client Portal Gateway described below. See
+> **[`ibkr_architecture.md`](ibkr_architecture.md)** — that is the authoritative reference for the
+> current architecture.
+>
+> Everything here still works and is retained deliberately, so that rolling back to the Web
+> transport is a configuration change rather than a code change. But the "run the Gateway and log
+> in via browser every session" workflow described below is **not** how production authenticates
+> today, and there is no automatic failover between the two transports.
 
 This project can source real options-chain data from the user's own Interactive Brokers account,
 via the official **Client Portal Gateway** — a small Java process IBKR ships that the user runs

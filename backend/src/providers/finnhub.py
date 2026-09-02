@@ -80,9 +80,7 @@ class FinnhubEarningsCalendarProvider(EarningsCalendarProvider):
         response.raise_for_status()
         return response
 
-    def get_earnings_calendar(
-        self, from_date: date, to_date: date
-    ) -> list[FinnhubCalendarEntry]:
+    def get_earnings_calendar(self, from_date: date, to_date: date) -> list[FinnhubCalendarEntry]:
         try:
             response = self._get(
                 "/calendar/earnings",
@@ -101,9 +99,7 @@ class FinnhubEarningsCalendarProvider(EarningsCalendarProvider):
         payload = response.json()
         raw_entries = payload.get("earningsCalendar")
         if raw_entries is None:
-            raise FinnhubError(
-                f"unexpected /calendar/earnings response shape: {list(payload)}"
-            )
+            raise FinnhubError(f"unexpected /calendar/earnings response shape: {list(payload)}")
 
         retrieved_at = datetime.now(UTC)
         entries: list[FinnhubCalendarEntry] = []

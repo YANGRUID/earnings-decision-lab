@@ -5,17 +5,21 @@ from decimal import Decimal
 import httpx
 import pytest
 
+from models.enums import QuoteRequirement
 from providers.ibkr_client import IBKRClient, IBKRNotAuthenticatedError
 from providers.ibkr_options import (
     IBKRContractNotFoundError,
     IBKROptionsProvider,
+    _decimal_or_none,
     _month_code,
     _next_month_code,
     _parse_abbreviated_int,
     _parse_percent,
     _parse_volume,
+    entry_requirement_for_action,
+    exit_requirement_for_action,
 )
-from providers.types import KnownContract
+from providers.types import KnownContract, SelectedLeg
 
 BASE_URL = "https://localhost:5001/v1/api"
 AS_OF = datetime(2026, 8, 17, 20, 0, tzinfo=UTC)
@@ -126,6 +130,27 @@ class TestPureParsers:
 
     def test_parse_percent_none(self):
         assert _parse_percent(None) is None
+
+    def test_decimal_or_none_strips_a_real_ibkr_status_prefix(self):
+        """Regression test: confirmed live (2026-08-25, market closed)
+        that /iserver/marketdata/snapshot's field 31 ("Last") returned
+        "C208.48" for a real, valid NVDA close price, not "208.48" --
+        the leading "C" made this silently unparseable before this fix,
+        discarding real quote data across every price/Greek field this
+        adapter reads (they all share the same snapshot endpoint)."""
+        assert _decimal_or_none("C208.48") == Decimal("208.48")
+        assert _decimal_or_none("H100.5") == Decimal("100.5")
+
+    def test_decimal_or_none_plain_numeric_unaffected(self):
+        assert _decimal_or_none("208.48") == Decimal("208.48")
+        assert _decimal_or_none("-1.5") == Decimal("-1.5")
+
+    def test_decimal_or_none_none_and_empty(self):
+        assert _decimal_or_none(None) is None
+        assert _decimal_or_none("") is None
+
+    def test_decimal_or_none_prefix_only_is_none(self):
+        assert _decimal_or_none("C") is None
         assert _parse_percent("") is None
 
     def test_parse_abbreviated_int_thousands(self):
@@ -271,7 +296,7 @@ class TestGetOptionChainFullFlow:
         assert call.volume == 21700
         assert call.market_data_quality == "frozen"
         assert call.external_contract_id == "907866760"
-        assert call.source_provider == "ibkr"
+        assert call.source_provider == "ibkr_web"
         assert call.expiration_date == date(2026, 8, 19)
 
         put = next(q for q in quotes if q.option_type == "put" and q.strike == Decimal("225.0"))
@@ -300,6 +325,391 @@ class TestGetOptionChainFullFlow:
 
         assert len(quotes) >= 1
         assert all(q.expiration_date == date(2026, 8, 17) for q in quotes)
+
+    def test_auto_mode_calls_secdef_strikes_exactly_once(self):
+        """Live market-data validation (2026-08-26) -- AUTO mode
+        (``expiration=None``) used to call ``/iserver/secdef/strikes``
+        twice for the exact same (conid, month): once inside
+        ``_resolve_target_expiration`` (needed for a probe strike) and a
+        second, redundant time right after in ``get_option_chain`` itself.
+        ``_resolve_target_expiration`` now returns the strikes it already
+        fetched so the second call never happens."""
+        counts = {"strikes": 0}
+
+        def counting_route(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/v1/api/iserver/secdef/strikes":
+                counts["strikes"] += 1
+            return self._route(request)
+
+        provider = _make_provider(transport=httpx.MockTransport(counting_route))
+
+        quotes = provider.get_option_chain("NVDA", AS_OF, reference_date=date(2026, 8, 17))
+
+        assert len(quotes) >= 1
+        assert counts["strikes"] == 1
+
+    def test_manual_expiration_still_calls_secdef_strikes_once(self):
+        """The manual-expiration branch (``expiration=`` given) never went
+        through ``_resolve_target_expiration`` at all, so it only ever
+        made one real ``/iserver/secdef/strikes`` call -- confirmed
+        unchanged by the AUTO-mode fix above."""
+        counts = {"strikes": 0}
+
+        def counting_route(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/v1/api/iserver/secdef/strikes":
+                counts["strikes"] += 1
+            return self._route(request)
+
+        provider = _make_provider(transport=httpx.MockTransport(counting_route))
+
+        quotes = provider.get_option_chain("NVDA", AS_OF, expiration=date(2026, 8, 19))
+
+        assert len(quotes) >= 1
+        assert counts["strikes"] == 1
+
+
+class TestSnapshotWarmup:
+    """Post-live correction (2026-08-25) -- _snapshot_with_warmup's real,
+    bounded, validating retry, replacing the old fixed single 2.0s wait.
+    See that method's own docstring, and _SNAPSHOT_WARMUP_MAX_ATTEMPTS's,
+    for the real Aug 25 evidence (EntrySnapshot rows with a resolved
+    conid + a real market-data-quality code but empty bid/ask/last)
+    this exists to fix."""
+
+    def test_retries_until_the_last_price_field_actually_arrives(self):
+        """Real, observed IBKR shape: the first N snapshot responses for
+        a freshly-subscribed conid carry only identity fields; a later
+        one carries the real last price. This must not be accepted (or
+        given up on) before that real value has a chance to arrive."""
+        call_count = {"snapshot": 0}
+
+        def route(request: httpx.Request) -> httpx.Response:
+            path = request.url.path
+            if path == "/v1/api/iserver/auth/status":
+                return httpx.Response(200, json=REAL_AUTH_STATUS)
+            if path == "/v1/api/iserver/marketdata/snapshot":
+                call_count["snapshot"] += 1
+                # Priming call (#1) and the next 2 real polls (#2, #3)
+                # come back identity-only; the 4th call is the first one
+                # with real data -- still well inside the real bound.
+                if call_count["snapshot"] < 4:
+                    return httpx.Response(200, json=[{"conid": 4815747, "conidEx": "4815747"}])
+                return httpx.Response(200, json=REAL_UNDERLYING_SNAPSHOT)
+            raise AssertionError(f"unexpected request in test: {request.url}")
+
+        provider = _make_provider(transport=httpx.MockTransport(route))
+
+        price, quality = provider._underlying_quote(4815747)  # noqa: SLF001 -- unit-testing the real retry algorithm directly
+
+        assert price == Decimal("225.54")
+        assert quality == "delayed"
+        # 1 priming call + at least 3 real polls to reach the 4th
+        # response -- a real, bounded number of calls, not unbounded.
+        assert call_count["snapshot"] == 4
+
+    def test_gives_up_honestly_after_the_bounded_attempt_count(self):
+        """A conid whose real data never arrives within the bound must
+        still return the honest "no data" answer this project already
+        reports -- never hang, never fabricate a value, and never make
+        an unbounded number of real IBKR calls."""
+        call_count = {"snapshot": 0}
+
+        def route(request: httpx.Request) -> httpx.Response:
+            path = request.url.path
+            if path == "/v1/api/iserver/auth/status":
+                return httpx.Response(200, json=REAL_AUTH_STATUS)
+            if path == "/v1/api/iserver/marketdata/snapshot":
+                call_count["snapshot"] += 1
+                return httpx.Response(200, json=[{"conid": 4815747, "conidEx": "4815747"}])
+            raise AssertionError(f"unexpected request in test: {request.url}")
+
+        provider = _make_provider(transport=httpx.MockTransport(route))
+
+        price, quality = provider._underlying_quote(4815747)  # noqa: SLF001 -- unit-testing the real retry algorithm directly
+
+        assert price is None
+        assert quality == "unknown"
+        # 1 priming call + exactly _SNAPSHOT_WARMUP_MAX_ATTEMPTS real
+        # polls -- bounded, real, never infinite.
+        from providers.ibkr_options import _SNAPSHOT_WARMUP_MAX_ATTEMPTS
+
+        assert call_count["snapshot"] == 1 + _SNAPSHOT_WARMUP_MAX_ATTEMPTS
+
+    def test_a_fully_populated_first_real_response_needs_no_extra_polling(self):
+        """The common, real case (a genuinely liquid, already-warm
+        conid): the first poll after priming already has real data --
+        this must not retry needlessly."""
+        call_count = {"snapshot": 0}
+
+        def route(request: httpx.Request) -> httpx.Response:
+            path = request.url.path
+            if path == "/v1/api/iserver/auth/status":
+                return httpx.Response(200, json=REAL_AUTH_STATUS)
+            if path == "/v1/api/iserver/marketdata/snapshot":
+                call_count["snapshot"] += 1
+                return httpx.Response(200, json=REAL_UNDERLYING_SNAPSHOT)
+            raise AssertionError(f"unexpected request in test: {request.url}")
+
+        provider = _make_provider(transport=httpx.MockTransport(route))
+
+        price, _quality = provider._underlying_quote(4815747)  # noqa: SLF001 -- unit-testing the real retry algorithm directly
+
+        assert price == Decimal("225.54")
+        assert call_count["snapshot"] == 2  # priming call + exactly one real poll
+
+
+class TestRequirementMapping:
+    """IBKR execution-observability hardening (2026-08-26) -- the real
+    action -> executable-side rule, mirrored from benchmark_entry_
+    capture.py::_price_leg (entry) and benchmark_exit_capture.py::
+    _price_exit_leg (exit, the exact inverse)."""
+
+    def test_entry_buy_requires_ask(self):
+        assert entry_requirement_for_action("buy") == QuoteRequirement.ASK
+
+    def test_entry_sell_requires_bid(self):
+        assert entry_requirement_for_action("sell") == QuoteRequirement.BID
+
+    def test_entry_unknown_action_is_analytical_never_guessed(self):
+        assert entry_requirement_for_action(None) == QuoteRequirement.ANALYTICAL
+        assert entry_requirement_for_action("short") == QuoteRequirement.ANALYTICAL
+
+    def test_exit_of_a_buy_leg_requires_bid(self):
+        """Closing a long (BUY) leg means selling it -- BID."""
+        assert exit_requirement_for_action("buy") == QuoteRequirement.BID
+
+    def test_exit_of_a_sell_leg_requires_ask(self):
+        """Closing a short (SELL) leg means buying it back -- ASK."""
+        assert exit_requirement_for_action("sell") == QuoteRequirement.ASK
+
+    def test_exit_unknown_action_is_analytical_never_guessed(self):
+        assert exit_requirement_for_action(None) == QuoteRequirement.ANALYTICAL
+
+
+class TestExecutableSideAwareWarmup:
+    """IBKR execution-observability hardening (2026-08-26) -- the real
+    readiness bug this task's own audit confirmed from source:
+    _snapshot_with_warmup's exit condition only ever checked LAST, so a
+    LONG entry's real ASK could still be missing on a poll this method
+    would already accept. These tests drive _snapshot_with_warmup
+    directly (the same "unit-test the real retry algorithm" precedent
+    TestSnapshotWarmup already uses) with a real ``required`` map, using
+    scripted multi-attempt responses -- LAST-only, then LAST+one side,
+    then both sides -- to prove the exit condition genuinely waits for
+    the specific field each conid's own executable side needs."""
+
+    def _scripted_provider(self, responses: list[list[dict]]) -> IBKROptionsProvider:
+        call_count = {"snapshot": 0}
+
+        def route(request: httpx.Request) -> httpx.Response:
+            path = request.url.path
+            if path == "/v1/api/iserver/auth/status":
+                return httpx.Response(200, json=REAL_AUTH_STATUS)
+            if path == "/v1/api/iserver/marketdata/snapshot":
+                idx = min(call_count["snapshot"], len(responses) - 1)
+                call_count["snapshot"] += 1
+                return httpx.Response(200, json=responses[idx])
+            raise AssertionError(f"unexpected request in test: {request.url}")
+
+        provider = _make_provider(transport=httpx.MockTransport(route))
+        provider._test_call_count = call_count  # type: ignore[attr-defined]
+        return provider
+
+    def test_long_entry_continues_past_last_until_ask_arrives(self):
+        """Attempt 1: LAST present, ASK missing -- must continue. Attempt
+        2: ASK present -- must stop successfully. Exactly the example in
+        this task's own Section 2."""
+        responses = [
+            [{"conid": 907866760, "conidEx": "907866760"}],  # priming
+            [{"conid": 907866760, "31": "6.35", "84": "6.20"}],  # LAST+BID, no ASK
+            [{"conid": 907866760, "31": "6.35", "84": "6.20", "86": "6.50"}],  # ASK arrives
+        ]
+        provider = self._scripted_provider(responses)
+
+        data = provider._snapshot_with_warmup(  # noqa: SLF001 -- unit-testing the real retry algorithm directly
+            [907866760], fields="31,84,86", required={907866760: QuoteRequirement.ASK}
+        )
+
+        assert _decimal_or_none(data[0]["86"]) == Decimal("6.50")
+        assert provider._test_call_count["snapshot"] == 3  # type: ignore[attr-defined]
+
+    def test_short_entry_continues_past_last_until_bid_arrives(self):
+        responses = [
+            [{"conid": 907867812, "conidEx": "907867812"}],  # priming
+            [{"conid": 907867812, "31": "1.89", "86": "1.90"}],  # LAST+ASK, no BID
+            [{"conid": 907867812, "31": "1.89", "86": "1.90", "84": "1.88"}],  # BID arrives
+        ]
+        provider = self._scripted_provider(responses)
+
+        data = provider._snapshot_with_warmup(  # noqa: SLF001 -- unit-testing the real retry algorithm directly
+            [907867812], fields="31,84,86", required={907867812: QuoteRequirement.BID}
+        )
+
+        assert _decimal_or_none(data[0]["84"]) == Decimal("1.88")
+        assert provider._test_call_count["snapshot"] == 3  # type: ignore[attr-defined]
+
+    def test_ask_never_arrives_exhausts_attempts_and_reports_honestly(self):
+        """No fallback, no fabricated price -- the bounded attempt count
+        is respected exactly as before, and the caller sees the real,
+        still-incomplete last response, never a guessed ASK."""
+        row = {"conid": 907866760, "31": "6.35", "84": "6.20"}  # ASK never shows up
+        provider = self._scripted_provider([[row], [row]])
+
+        data = provider._snapshot_with_warmup(  # noqa: SLF001 -- unit-testing the real retry algorithm directly
+            [907866760], fields="31,84,86", required={907866760: QuoteRequirement.ASK}
+        )
+
+        assert _decimal_or_none(data[0].get("86")) is None
+        from providers.ibkr_options import _SNAPSHOT_WARMUP_MAX_ATTEMPTS
+
+        assert provider._test_call_count["snapshot"] == 1 + _SNAPSHOT_WARMUP_MAX_ATTEMPTS  # type: ignore[attr-defined]
+
+    def test_bid_never_arrives_exhausts_attempts_and_reports_honestly(self):
+        row = {"conid": 907867812, "31": "1.89", "86": "1.90"}  # BID never shows up
+        provider = self._scripted_provider([[row], [row]])
+
+        data = provider._snapshot_with_warmup(  # noqa: SLF001 -- unit-testing the real retry algorithm directly
+            [907867812], fields="31,84,86", required={907867812: QuoteRequirement.BID}
+        )
+
+        assert _decimal_or_none(data[0].get("84")) is None
+        from providers.ibkr_options import _SNAPSHOT_WARMUP_MAX_ATTEMPTS
+
+        assert provider._test_call_count["snapshot"] == 1 + _SNAPSHOT_WARMUP_MAX_ATTEMPTS  # type: ignore[attr-defined]
+
+    def test_multi_leg_each_conid_independently_requires_its_own_side(self):
+        """A real long call butterfly's shape: long lower call needs ASK,
+        short middle call needs BID. "Some field exists" or "one leg is
+        complete" must never be treated as sufficient -- both legs' own
+        real requirement must be independently satisfied."""
+        long_conid, short_conid = 111, 222
+        responses = [
+            [  # priming
+                {"conid": long_conid, "conidEx": "111"},
+                {"conid": short_conid, "conidEx": "222"},
+            ],
+            [  # long leg's ASK still missing; short leg's BID already there
+                {"conid": long_conid, "31": "6.35", "84": "6.20"},
+                {"conid": short_conid, "31": "3.05", "84": "2.90", "86": "3.10"},
+            ],
+            [  # long leg's ASK finally arrives
+                {"conid": long_conid, "31": "6.35", "84": "6.20", "86": "6.50"},
+                {"conid": short_conid, "31": "3.05", "84": "2.90", "86": "3.10"},
+            ],
+        ]
+        provider = self._scripted_provider(responses)
+
+        data = provider._snapshot_with_warmup(  # noqa: SLF001 -- unit-testing the real retry algorithm directly
+            [long_conid, short_conid],
+            fields="31,84,86",
+            required={long_conid: QuoteRequirement.ASK, short_conid: QuoteRequirement.BID},
+        )
+
+        by_conid = {row["conid"]: row for row in data}
+        assert _decimal_or_none(by_conid[long_conid]["86"]) == Decimal("6.50")
+        assert _decimal_or_none(by_conid[short_conid]["84"]) == Decimal("2.90")
+        # Stopped as soon as BOTH were independently satisfied (attempt
+        # 3), not earlier just because the short leg was already done
+        # on attempt 2.
+        assert provider._test_call_count["snapshot"] == 3  # type: ignore[attr-defined]
+
+    def test_analytical_default_unaffected_by_missing_bid_ask(self):
+        """No ``required`` passed at all (every caller before this
+        hardening pass, and get_option_chain's own analytical path
+        today) -- LAST alone still ends the poll, byte-identical to the
+        pre-hardening behavior, even with bid/ask genuinely absent."""
+        row = {"conid": 4815747, "31": "225.54"}  # last only, no bid/ask
+        provider = self._scripted_provider([[row], [row]])
+
+        data = provider._snapshot_with_warmup([4815747], fields="31,84,86")  # noqa: SLF001
+
+        assert _decimal_or_none(data[0]["31"]) == Decimal("225.54")
+        assert provider._test_call_count["snapshot"] == 2  # type: ignore[attr-defined]
+
+
+class TestExecutableSideAwareEntryAndExitIntegration:
+    """End-to-end proof (not just the low-level warmup unit) that
+    SelectedLeg.action / KnownContract.action actually flow through
+    get_quotes_for_selected_legs / get_quotes_for_known_contracts into a
+    real required-side wait -- the exact wiring
+    services/benchmark_entry_capture.py and services/benchmark_exit_
+    capture.py now depend on."""
+
+    def _route(self, snapshot_responses: list[list[dict]]):
+        call_count = {"snapshot": 0}
+
+        def route(request: httpx.Request) -> httpx.Response:
+            path = request.url.path
+            params = dict(httpx.QueryParams(request.url.query))
+            if path == "/v1/api/iserver/auth/status":
+                return httpx.Response(200, json=REAL_AUTH_STATUS)
+            if path == "/v1/api/iserver/secdef/search":
+                return httpx.Response(200, json=REAL_SECDEF_SEARCH_NVDA)
+            if path == "/v1/api/iserver/secdef/info":
+                strike, right = params["strike"], params["right"]
+                assert strike == "225.0" and right == "C"
+                return httpx.Response(200, json=REAL_SECDEF_INFO_225_CALL)
+            if path == "/v1/api/iserver/marketdata/snapshot":
+                idx = min(call_count["snapshot"], len(snapshot_responses) - 1)
+                call_count["snapshot"] += 1
+                return httpx.Response(200, json=snapshot_responses[idx])
+            raise AssertionError(f"unexpected request in test: {request.url}")
+
+        route.call_count = call_count  # type: ignore[attr-defined]
+        return route
+
+    def test_get_quotes_for_selected_legs_waits_for_ask_on_a_buy_leg(self):
+        conid = 907866760
+        route = self._route(
+            [
+                [{"conid": conid, "31": "6.35", "84": "6.20"}],  # LAST+BID, no ASK yet
+                [{"conid": conid, "31": "6.35", "84": "6.20", "86": "6.50"}],  # ASK arrives
+            ]
+        )
+        provider = _make_provider(transport=httpx.MockTransport(route))
+
+        quotes = provider.get_quotes_for_selected_legs(
+            "NVDA",
+            [SelectedLeg(strike=Decimal("225.0"), option_type="call", action="buy")],
+            expiration=date(2026, 8, 19),
+            as_of=AS_OF,
+        )
+
+        assert len(quotes) == 1
+        assert quotes[0].ask == Decimal("6.50")
+        # Primed + exactly 1 real poll to reach ASK.
+        assert route.call_count["snapshot"] == 2  # type: ignore[attr-defined]
+
+    def test_get_quotes_for_known_contracts_waits_for_bid_closing_a_buy_leg(self):
+        """Settlement/exit: a KnownContract whose original action was
+        BUY must wait for BID (SELL_TO_CLOSE), not stop the moment LAST
+        or ASK shows up."""
+        conid = 907866760
+        route = self._route(
+            [
+                [{"conid": conid, "31": "6.35", "86": "6.55"}],  # LAST+ASK, no BID yet
+                [{"conid": conid, "31": "6.35", "86": "6.55", "84": "6.20"}],  # BID arrives
+            ]
+        )
+        provider = _make_provider(transport=httpx.MockTransport(route))
+
+        quotes = provider.get_quotes_for_known_contracts(
+            "NVDA",
+            [
+                KnownContract(
+                    strike=Decimal("225.0"),
+                    option_type="call",
+                    external_contract_id=str(conid),
+                    action="buy",
+                )
+            ],
+            date(2026, 8, 19),
+            AS_OF,
+        )
+
+        assert len(quotes) == 1
+        assert quotes[0].bid == Decimal("6.20")
+        assert route.call_count["snapshot"] == 2  # type: ignore[attr-defined]
 
 
 class TestListAvailableExpirations:
@@ -361,9 +771,7 @@ class TestListAvailableExpirations:
             if path == "/v1/api/iserver/secdef/info" and params.get("month") == "AUG26":
                 return httpx.Response(
                     200,
-                    json=[
-                        {"conid": 1, "strike": 225.0, "right": "C", "maturityDate": "20260821"}
-                    ],
+                    json=[{"conid": 1, "strike": 225.0, "right": "C", "maturityDate": "20260821"}],
                 )
             if path == "/v1/api/iserver/secdef/info" and params.get("month") == "SEP26":
                 return httpx.Response(

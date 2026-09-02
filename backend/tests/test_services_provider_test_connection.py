@@ -153,3 +153,91 @@ class TestIbkr:
         )
         status, _detail = run_test_connection(_settings(), "ibkr", "options")
         assert status == ProviderHealthStatus.AUTH_FAILED
+
+
+class TestIbkrTws:
+    """IBKR TWS Migration, Phase 3 readiness (Section 31/42) -- a real gap
+    this task's frontend audit surfaced: _test_ibkr always tested the Web
+    Gateway, even with ibkr_provider="tws" configured, so Data Providers'
+    generic "Test Connection" button silently tested the wrong transport.
+    Monkeypatches get_tws_status (imported by name into
+    services.provider_test_connection) rather than touching httpx --
+    TWS is a socket API, not HTTP, so httpx_mock has nothing to intercept
+    here; this exercises only _test_ibkr's own status_label -> ProviderHealthStatus mapping."""
+
+    def _tws_status(self, **overrides):
+        from services.system_status import TwsStatus
+
+        defaults = dict(
+            configured=True,
+            gateway_reachable=True,
+            socket_connected=True,
+            api_ready=True,
+            market_data_quality="delayed",
+            error=None,
+            status_label="CONNECTED",
+            last_heartbeat=None,
+            reconnect_state="ready",
+        )
+        defaults.update(overrides)
+        return TwsStatus(**defaults)
+
+    def test_connected_maps_to_connected(self, monkeypatch):
+        monkeypatch.setattr(
+            "services.provider_test_connection.get_tws_status",
+            lambda settings, probe=None: self._tws_status(),
+        )
+        status, detail = run_test_connection(
+            _settings(ibkr_provider="tws"), "ibkr", "options"
+        )
+        assert status == ProviderHealthStatus.CONNECTED
+        assert detail is None
+
+    def test_gateway_unreachable_maps_to_gateway_offline(self, monkeypatch):
+        monkeypatch.setattr(
+            "services.provider_test_connection.get_tws_status",
+            lambda settings, probe=None: self._tws_status(
+                gateway_reachable=False,
+                socket_connected=False,
+                api_ready=False,
+                status_label="GATEWAY_UNREACHABLE",
+                error="could not reach IB Gateway/TWS",
+                reconnect_state="failed",
+            ),
+        )
+        status, detail = run_test_connection(
+            _settings(ibkr_provider="tws"), "ibkr", "options"
+        )
+        assert status == ProviderHealthStatus.GATEWAY_OFFLINE
+        assert detail == "could not reach IB Gateway/TWS"
+
+    def test_not_ready_maps_to_auth_failed(self, monkeypatch):
+        monkeypatch.setattr(
+            "services.provider_test_connection.get_tws_status",
+            lambda settings, probe=None: self._tws_status(
+                api_ready=False,
+                status_label="AUTH_REQUIRED",
+                error="no nextValidId arrived",
+                reconnect_state="connected",
+            ),
+        )
+        status, detail = run_test_connection(
+            _settings(ibkr_provider="tws"), "ibkr", "options"
+        )
+        assert status == ProviderHealthStatus.AUTH_FAILED
+        assert detail == "no nextValidId arrived"
+
+    def test_web_config_never_calls_get_tws_status(self, monkeypatch, httpx_mock):
+        """The default ibkr_provider="web" path must be byte-for-byte
+        unaffected -- confirmed by making get_tws_status raise if it's
+        ever even called."""
+
+        def _boom(*args, **kwargs):
+            raise AssertionError("get_tws_status must not be called when ibkr_provider=web")
+
+        monkeypatch.setattr("services.provider_test_connection.get_tws_status", _boom)
+        httpx_mock.add_response(
+            json={"authenticated": True, "established": True, "competing": False, "connected": True}
+        )
+        status, _detail = run_test_connection(_settings(), "ibkr", "options")
+        assert status == ProviderHealthStatus.CONNECTED

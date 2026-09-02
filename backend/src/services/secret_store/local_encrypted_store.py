@@ -56,9 +56,7 @@ class LocalEncryptedSecretStore:
         row = self._row(provider)
         return dict(row.extra) if row is not None and row.extra else {}
 
-    def set(
-        self, provider: str, domain: str, value: str, extra: dict | None = None
-    ) -> None:
+    def set(self, provider: str, domain: str, value: str, extra: dict | None = None) -> None:
         """Raises MasterKeyNotConfiguredError if no master key is set --
         never silently stores a plaintext fallback."""
         ciphertext = encrypt(self._settings, value)

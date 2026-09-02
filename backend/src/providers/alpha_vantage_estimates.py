@@ -103,14 +103,18 @@ class AlphaVantageEarningsEstimatesProvider(EarningsEstimatesProvider):
                     eps_estimate_average=_decimal_or_none(entry.get("eps_estimate_average")),
                     eps_estimate_high=_decimal_or_none(entry.get("eps_estimate_high")),
                     eps_estimate_low=_decimal_or_none(entry.get("eps_estimate_low")),
-                    eps_estimate_analyst_count=_int_or_none(entry.get("eps_estimate_analyst_count")),
+                    eps_estimate_analyst_count=_int_or_none(
+                        entry.get("eps_estimate_analyst_count")
+                    ),
                     eps_estimate_revision_up_30d=_int_or_none(
                         entry.get("eps_estimate_revision_up_trailing_30_days")
                     ),
                     eps_estimate_revision_down_30d=_int_or_none(
                         entry.get("eps_estimate_revision_down_trailing_30_days")
                     ),
-                    revenue_estimate_average=_decimal_or_none(entry.get("revenue_estimate_average")),
+                    revenue_estimate_average=_decimal_or_none(
+                        entry.get("revenue_estimate_average")
+                    ),
                     revenue_estimate_high=_decimal_or_none(entry.get("revenue_estimate_high")),
                     revenue_estimate_low=_decimal_or_none(entry.get("revenue_estimate_low")),
                     revenue_estimate_analyst_count=_int_or_none(
@@ -151,9 +155,7 @@ class AlphaVantageEarningsEstimatesProvider(EarningsEstimatesProvider):
         content_type = response.headers.get("content-type", "")
         if "json" in content_type:
             payload = response.json()
-            note = (
-                payload.get("Note") or payload.get("Information") or payload.get("Error Message")
-            )
+            note = payload.get("Note") or payload.get("Information") or payload.get("Error Message")
             raise AlphaVantageError(
                 note or f"unexpected JSON response for EARNINGS_CALENDAR: {payload}",
                 rate_limited=is_rate_limit_note(note),

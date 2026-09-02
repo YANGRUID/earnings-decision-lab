@@ -63,9 +63,7 @@ class TestIbkrConnectEndpoint:
 
         assert response.json() == {"url": "https://localhost:6100"}
 
-    def test_response_contains_only_a_url_never_credentials_or_a_session(
-        self, client, monkeypatch
-    ):
+    def test_response_contains_only_a_url_never_credentials_or_a_session(self, client, monkeypatch):
         # Explicit, deliberate regression guard matching this endpoint's
         # own docstring: it hands back a URL and nothing else -- no
         # password field, no token, no account identifier.

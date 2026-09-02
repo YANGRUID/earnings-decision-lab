@@ -3,7 +3,14 @@ from decimal import Decimal
 
 from core.config import Settings
 from models.company import Company
-from models.enums import OptionType, ProviderHealthStatus
+from models.earnings_calendar_event import EarningsCalendarEvent
+from models.enums import (
+    EarningsCalendarEventStatus,
+    EarningsSource,
+    EarningsTiming,
+    OptionType,
+    ProviderHealthStatus,
+)
 from models.options_snapshot import OptionsSnapshot
 from models.price_bar import PriceBar
 from services.provider_settings import ProviderSettingsUpdate, update_app_provider_settings
@@ -58,9 +65,7 @@ class TestGetProviderDashboard:
 
     def test_options_primary_override_wins_over_settings_default(self, db_session):
         update_app_provider_settings(db_session, ProviderSettingsUpdate(options_primary="ibkr"))
-        domains = get_provider_dashboard(
-            db_session, _settings(options_provider="alpha_vantage")
-        )
+        domains = get_provider_dashboard(db_session, _settings(options_provider="alpha_vantage"))
         options = next(d for d in domains if d.domain == "options")
         assert options.primary == "ibkr"
         assert options.primary_is_override is True
@@ -87,9 +92,7 @@ class TestGetProviderDashboard:
         assert "real-secret" not in tiingo.masked_key
 
     def test_unconfigured_provider_reports_configured_false_and_no_masked_key(self, db_session):
-        domains = get_provider_dashboard(
-            db_session, _settings(alpha_vantage_api_key=None)
-        )
+        domains = get_provider_dashboard(db_session, _settings(alpha_vantage_api_key=None))
         price_history = next(d for d in domains if d.domain == "price_history")
         av = next(p for p in price_history.providers if p.provider == "alpha_vantage")
         assert av.configured is False
@@ -239,3 +242,68 @@ class TestGetProviderDashboard:
         options = next(d for d in domains if d.domain == "options")
         ibkr = next(p for p in options.providers if p.provider == "ibkr")
         assert ibkr.last_success_at == retrieved_at
+
+    def test_earnings_calendar_primary_is_earningsapi_fallback_is_finnhub(self, db_session):
+        domains = get_provider_dashboard(db_session, _settings())
+        earnings_calendar = next(d for d in domains if d.domain == "earnings_calendar")
+        assert earnings_calendar.primary == "earningsapi"
+        assert earnings_calendar.fallback == "finnhub"
+        # No AppProviderSettings override mechanism exists for this
+        # domain (deliberately not repurposed for calendar sync-state
+        # tracking, see EARNINGS_CALENDAR_PROVIDER_ARCHITECTURE_REVIEW.md)
+        # -- always reports as the fixed, non-override default.
+        assert earnings_calendar.primary_is_override is False
+        assert earnings_calendar.fallback_is_override is False
+        assert {p.provider for p in earnings_calendar.providers} == {"earningsapi", "finnhub"}
+
+    def test_earnings_calendar_last_success_at_uses_source_specific_rows(self, db_session):
+        # earnings_calendar_event has an incoming FK from decision_snapshot
+        # (see models/decision_snapshot.py), so it isn't a leaf table --
+        # unlike clean_provider_state's own tables, real rows already
+        # committed by earlier real syncs against this shared dev Postgres
+        # instance can't safely be bulk-deleted here. Using clearly
+        # future-dated timestamps instead keeps this test's MAX(updated_at)
+        # assertion correct regardless of what real data already exists.
+        earningsapi_synced_at = datetime(2030, 1, 1, 6, 0, tzinfo=UTC)
+        finnhub_synced_at = datetime(2029, 1, 1, 6, 0, tzinfo=UTC)
+        db_session.add_all(
+            [
+                EarningsCalendarEvent(
+                    symbol="ZZPSTATAPI",
+                    company_name="Test EarningsAPI Co",
+                    earnings_date=date(2026, 9, 1),
+                    earnings_time=EarningsTiming.AMC,
+                    status=EarningsCalendarEventStatus.UPCOMING,
+                    source=EarningsSource.EARNINGSAPI,
+                    updated_at=earningsapi_synced_at,
+                ),
+                EarningsCalendarEvent(
+                    symbol="ZZPSTATFH",
+                    company_name="Test Finnhub Co",
+                    earnings_date=date(2026, 8, 15),
+                    earnings_time=EarningsTiming.BMO,
+                    status=EarningsCalendarEventStatus.COMPLETED,
+                    source=EarningsSource.FINNHUB,
+                    updated_at=finnhub_synced_at,
+                ),
+            ]
+        )
+        db_session.flush()
+
+        domains = get_provider_dashboard(db_session, _settings())
+        earnings_calendar = next(d for d in domains if d.domain == "earnings_calendar")
+        earningsapi = next(p for p in earnings_calendar.providers if p.provider == "earningsapi")
+        finnhub = next(p for p in earnings_calendar.providers if p.provider == "finnhub")
+        assert earningsapi.last_success_at == earningsapi_synced_at
+        assert finnhub.last_success_at == finnhub_synced_at
+
+    def test_earnings_calendar_configured_reflects_the_real_env_key(self, db_session):
+        domains = get_provider_dashboard(
+            db_session, _settings(earningsapi_api_key="ea-real-secret-key-9k2p")
+        )
+        earnings_calendar = next(d for d in domains if d.domain == "earnings_calendar")
+        earningsapi = next(p for p in earnings_calendar.providers if p.provider == "earningsapi")
+        finnhub = next(p for p in earnings_calendar.providers if p.provider == "finnhub")
+        assert earningsapi.configured is True
+        assert earningsapi.masked_key == "•" * 8 + "9k2p"
+        assert finnhub.configured is False  # not set in _settings()'s defaults

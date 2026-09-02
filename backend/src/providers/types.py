@@ -6,10 +6,13 @@ code) so malformed provider responses fail loudly here instead of silently
 propagating into the database.
 """
 
+from dataclasses import dataclass, field
 from datetime import date, datetime
 from decimal import Decimal
 
 from pydantic import BaseModel, ConfigDict
+
+from models.enums import QuoteRequirement
 
 
 class ProvenancedModel(BaseModel):
@@ -181,6 +184,39 @@ class KnownContract(BaseModel):
     strike: Decimal
     option_type: str  # "call" | "put"
     external_contract_id: str
+    action: str | None = None  # "buy" | "sell" -- the ORIGINAL entry action
+    """The leg's original entry action (EntrySnapshot.action), when known
+    -- IBKR execution-observability hardening (2026-08-26): lets a
+    provider that supports side-aware warm-up wait for the real
+    executable side an EXIT actually needs (BID to close a BUY leg, ASK
+    to close a SELL leg -- the inverse of the entry mapping; see
+    QuoteRequirement's own docstring). ``None`` (any caller built before
+    this hardening pass) means "unknown" -- a provider must fall back to
+    QuoteRequirement.ANALYTICAL for that leg, never guess a side."""
+
+
+class SelectedLeg(BaseModel):
+    """One strategy leg already chosen by strategy generation (Decision
+    Engine or Strategy Lab), *before* any contract identifier exists for
+    it -- ``DecisionSnapshot.legs`` (and ``StrategyCandidate.legs`` before
+    that) never carry a provider conid, only the deterministic strike/
+    option_type/action the ranking already settled on (see
+    services/decision_engine.py::leg_to_dict). Live market-data validation
+    (2026-08-26), Section 7: lets a caller that already knows exactly
+    which strikes/rights it wants ask a provider to resolve only those,
+    instead of rediscovering an entire ATM window the way
+    get_option_chain() does.
+    """
+
+    strike: Decimal
+    option_type: str  # "call" | "put"
+    action: str | None = None  # "buy" | "sell"
+    """The leg's real entry action -- IBKR execution-observability
+    hardening (2026-08-26): lets a provider that supports side-aware
+    warm-up wait for the real executable side an ENTRY actually needs
+    (ASK for a BUY leg, BID for a SELL leg; see QuoteRequirement's own
+    docstring). ``None`` means "unknown" -- falls back to
+    QuoteRequirement.ANALYTICAL, never a guessed side."""
 
 
 class UnderlyingQuote(ProvenancedModel):
@@ -276,3 +312,69 @@ class FinnhubCompanyProfile(ProvenancedModel):
     country: str | None = None
     market_cap_millions: Decimal | None = None
     currency: str | None = None
+
+
+@dataclass(frozen=True)
+class SnapshotFieldPresence:
+    """Whether a real, meaningful (non-status-code) value was present for
+    one conid on one snapshot poll -- what "warmed up" actually means,
+    field by field, rather than a single pass/fail boolean. Plain
+    dataclass, not a Pydantic model: internally generated telemetry, not
+    parsed external input."""
+
+    bid_present: bool
+    ask_present: bool
+    last_present: bool
+    market_data_quality: str
+    bid: Decimal | None = None
+    ask: Decimal | None = None
+    last_price: Decimal | None = None
+
+
+@dataclass(frozen=True)
+class SnapshotAttempt:
+    """One real poll inside a provider's own snapshot warm-up (see
+    providers/ibkr_options.py::_snapshot_with_warmup) -- an optional,
+    additive observation a caller can attach to see exactly how a real
+    subscription warms up, without changing warmup behavior itself.
+    Callers that don't pass ``on_attempt`` are byte-for-byte unaffected
+    by this type's existence."""
+
+    attempt: int  # 1-indexed
+    elapsed_ms: float  # since the priming call returned
+    per_conid: dict[int, SnapshotFieldPresence] = field(default_factory=dict)
+
+
+# Real action -> real executable side, IBKR execution-observability
+# hardening (2026-08-26). Mirrors services/benchmark_entry_capture.py::
+# _price_leg and services/benchmark_exit_capture.py::_price_exit_leg
+# exactly -- this is the same real rule, just consulted earlier (to
+# decide when warm-up may stop) instead of only after the fact (to
+# decide what price to record). Provider-agnostic on purpose: both
+# providers/ibkr_options.py (to drive real warm-up) and services/
+# quote_telemetry.py (to label a persisted telemetry row) need the
+# identical mapping, so it lives once, here, at the shared provider
+# boundary rather than being duplicated or imported cross-provider.
+_ENTRY_REQUIREMENT_BY_ACTION: dict[str, QuoteRequirement] = {
+    "buy": QuoteRequirement.ASK,
+    "sell": QuoteRequirement.BID,
+}
+# Closing a BUY (long) leg means selling it -> needs BID. Closing a SELL
+# (short) leg means buying it back -> needs ASK. The exact inverse of the
+# entry mapping above, over the leg's ORIGINAL entry action.
+_EXIT_REQUIREMENT_BY_ACTION: dict[str, QuoteRequirement] = {
+    "buy": QuoteRequirement.BID,
+    "sell": QuoteRequirement.ASK,
+}
+
+
+def entry_requirement_for_action(action: str | None) -> QuoteRequirement:
+    if action is None:
+        return QuoteRequirement.ANALYTICAL
+    return _ENTRY_REQUIREMENT_BY_ACTION.get(action, QuoteRequirement.ANALYTICAL)
+
+
+def exit_requirement_for_action(action: str | None) -> QuoteRequirement:
+    if action is None:
+        return QuoteRequirement.ANALYTICAL
+    return _EXIT_REQUIREMENT_BY_ACTION.get(action, QuoteRequirement.ANALYTICAL)

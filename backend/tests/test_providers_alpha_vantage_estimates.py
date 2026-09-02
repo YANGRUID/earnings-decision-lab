@@ -66,8 +66,7 @@ MALFORMED_RATE_LIMIT_CSV = (
 # degrades to this malformed CSV row instead of the JSON error body every
 # other Alpha Vantage endpoint returns under the same rate limit.
 LIVE_RATE_LIMIT_CSV = (
-    "symbol,name,reportDate,fiscalDateEnding,estimate,currency,timeOfTheDay\r\n"
-    "I,n,f,o,r,m,a\r\n"
+    "symbol,name,reportDate,fiscalDateEnding,estimate,currency,timeOfTheDay\r\nI,n,f,o,r,m,a\r\n"
 )
 
 
