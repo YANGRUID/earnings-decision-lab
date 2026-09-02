@@ -14,11 +14,20 @@ const DATA_DOMAINS = [
   "options",
 ] as const;
 
+/** An error is the provider's current state only while nothing has
+ * succeeded after it -- the backend already drops superseded errors, and
+ * this keeps the pill honest even against a stale response. */
+function errorIsCurrent(status: ProviderStatus): boolean {
+  if (!status.last_error_status || !status.last_error_at) return false;
+  if (!status.last_success_at) return true;
+  return new Date(status.last_error_at).getTime() > new Date(status.last_success_at).getTime();
+}
+
 function StatusPill({ status }: { status: ProviderStatus }) {
   if (!status.configured) {
     return <span className="pill pill-neutral">not configured</span>;
   }
-  if (status.last_error_status && status.last_error_at) {
+  if (errorIsCurrent(status)) {
     return <span className="pill pill-negative">{status.last_error_status}</span>;
   }
   return <span className="pill pill-positive">configured</span>;
@@ -111,7 +120,7 @@ function ProviderRow({
           {status.entitlement_note}
         </p>
       )}
-      {status.last_error_detail && (
+      {status.last_error_detail && errorIsCurrent(status) && (
         <div className="notice" style={{ marginTop: 10, marginBottom: 0 }}>
           Last error ({formatRelativeTime(status.last_error_at)}): {status.last_error_detail}
         </div>

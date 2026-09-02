@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { useAsync } from "../../hooks/useAsync";
+import { invalidateStatus } from "../../lib/statusCache";
 import { api, ApiError } from "../../api/client";
 import { LoadingState, ErrorState } from "../../components/StatusStates";
 import { formatRelativeTime } from "../../lib/format";
@@ -178,7 +179,8 @@ export function Ibkr() {
           ? "Connected"
           : `${outcome.status}${outcome.detail ? `: ${outcome.detail}` : ""}`
       );
-      status.reload();
+      invalidateStatus("system-status");
+    status.reload();
     } catch (err) {
       setResult(err instanceof ApiError ? err.message : "Test failed.");
     } finally {
@@ -220,6 +222,7 @@ export function Ibkr() {
 
   const refreshStatus = () => {
     setConnectError(null);
+    invalidateStatus("system-status");
     status.reload();
   };
 
@@ -349,9 +352,12 @@ export function Ibkr() {
             <div className="stat">
               <span className="stat-label">Last error</span>
               <span className="stat-value small">
-                {ibkrProvider.last_error_status
+                {ibkrProvider.last_error_status &&
+                ibkrProvider.last_error_at &&
+                (!ibkrProvider.last_success_at ||
+                  new Date(ibkrProvider.last_error_at).getTime() > new Date(ibkrProvider.last_success_at).getTime())
                   ? `${ibkrProvider.last_error_status} (${formatRelativeTime(ibkrProvider.last_error_at)})`
-                  : "none recorded"}
+                  : "none since the last successful snapshot"}
               </span>
             </div>
           </div>
