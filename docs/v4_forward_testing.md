@@ -25,6 +25,22 @@ same instant for both. Every record carries its policy version.
 
 Historical V3 rows keep the 15:55 ET they were observed at; none are relabelled.
 
+### Due windows
+
+Both V4 jobs derive their windows from the **same** schedule function V3 uses
+(`compute_entry_exit_schedule`), with the V4 policy passed in — so V4 can never land on a different
+legal decision *day* than V3, and its settlement instant is V3's exactly.
+
+| Job | Window | Outside the window |
+|---|---|---|
+| `v4_shadow_decision` (15:30 ET cron) | `entry(V4) ≤ now ≤ entry(V4) + 5 min` on the legal pre-earnings trading day | event not selected |
+| `v4_shadow_settlement` (15:55 ET cron) | `exit − 5 min ≤ now ≤ exit + 5 min`, exit = 15:55 ET on the first post-earnings trading day (V3's own early tolerance and late grace) | before: left pending; after: every pending configuration is closed as a terminal `SETTLEMENT_WINDOW_MISSED` failure — no later quote is ever used as exit evidence |
+
+A 15:30 entry is therefore never settled the same afternoon. Found live on 2026-09-02 before
+activation: the decision job had reused V3's 15:55-keyed predicate (0 of 34 events selected at
+15:30) and the settlement job had no exit-window guard; both are fixed and pinned by
+`tests/test_v4_shadow_timing_windows.py`.
+
 ## Six configuration cohorts
 
 | Key | Capital | Risk cap | Max risk | Liquidity floor | Families |
