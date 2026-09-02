@@ -27,11 +27,12 @@ Strictly read-only and strictly diagnostic:
 
 import time
 from datetime import UTC, date, datetime
+from decimal import Decimal
 
 from fastapi import APIRouter
 
 from analytics.decision.v4_4b_ranking import rank_candidates
-from api.deps import TwsProviderDep
+from api.deps import DbSession, TwsProviderDep
 from api.exceptions import InvalidRequestError
 from providers.ibkr_client import IBKRError
 from schemas.api import TwsProductionSanityResponse
@@ -90,14 +91,10 @@ def tws_production_sanity(tws_provider: TwsProviderDep) -> TwsProductionSanityRe
     if not contracts:
         raise InvalidRequestError(f"no contracts resolved for {_PROBE_TICKER} {expiration}")
 
-    strike, right, option_conid = min(
-        contracts, key=lambda c: (abs(c[0] - underlying.price), c[1])
-    )
+    strike, right, option_conid = min(contracts, key=lambda c: (abs(c[0] - underlying.price), c[1]))
     from providers.types import SelectedLeg  # noqa: PLC0415 -- local, diagnostic-only
 
-    leg = SelectedLeg(
-        strike=strike, option_type="call" if right == "C" else "put", action="buy"
-    )
+    leg = SelectedLeg(strike=strike, option_type="call" if right == "C" else "put", action="buy")
     try:
         quotes = tws_provider.get_quotes_for_selected_legs(
             _PROBE_TICKER, [leg], expiration, datetime.now(UTC)
@@ -236,3 +233,307 @@ def v4_shadow_dry_run(
         "persisted": False,
         "orders_placed": 0,
     }
+
+
+# --------------------------------------------------------------------------
+# Activation-phase live dry-run (Sections 34-43): the FULL six-cohort path,
+# in-process on the lifespan-owned TWS provider, persisting NOTHING.
+#
+# Everything generate_shadow_decision does -- decision row, shared
+# candidates, six configuration results, candidate-level observations and
+# per-configuration entries -- is executed inside an outer SAVEPOINT that is
+# rolled back after the telemetry has been read. The DecisionView call is
+# real (it is part of the path being validated). No order, no write.
+# --------------------------------------------------------------------------
+@router.get("/v4-cohort-dry-run", response_model=None)
+def v4_cohort_dry_run(
+    tws_provider: TwsProviderDep,
+    db: DbSession,
+    ticker: str = "AAPL",
+    direction_fallback: str = "neutral",
+) -> dict:
+    from decimal import Decimal  # noqa: PLC0415
+
+    from models.company import Company  # noqa: PLC0415
+    from models.earnings_calendar_event import EarningsCalendarEvent  # noqa: PLC0415
+    from models.v4_shadow import (  # noqa: PLC0415
+        V4ShadowCandidateObservation,
+        V4ShadowConfigEntry,
+        V4ShadowConfigResult,
+        V4ShadowDecision,
+    )
+    from services.v4_shadow import generate_shadow_decision  # noqa: PLC0415
+    from services.v4_shadow_orchestration import default_view_generator  # noqa: PLC0415
+
+    if tws_provider is None:
+        raise InvalidRequestError(
+            "no shared TWS provider on this process -- ibkr_provider is not 'tws'"
+        )
+
+    now = datetime.now(UTC)
+    timings: dict[str, float] = {}
+    t0 = time.monotonic()
+
+    # 1. DecisionView -- real, from prepared research (one call).
+    company = db.query(Company).filter_by(ticker=ticker.upper()).one_or_none()
+    event = (
+        db.query(EarningsCalendarEvent)
+        .filter_by(symbol=ticker.upper())
+        .order_by(EarningsCalendarEvent.earnings_date.desc())
+        .first()
+    )
+    view = None
+    view_note = None
+    t = time.monotonic()
+    if company is not None and event is not None:
+        try:
+            view = default_view_generator(db, company, event, now)
+        except Exception as exc:  # noqa: BLE001 -- reported, never fatal to the dry-run
+            view_note = f"view generation failed: {type(exc).__name__}: {exc}"
+    else:
+        view_note = "no company/calendar row for ticker -- view generation skipped"
+    timings["decision_view_ms"] = (time.monotonic() - t) * 1000
+    direction = view.direction if view and view.direction else direction_fallback
+    volatility_view = view.volatility_view if view else None
+
+    # 2. Common evidence + candidate universe (one assembly, one quote sweep).
+    t = time.monotonic()
+    assembly = assemble_shadow_candidates(
+        provider=tws_provider,
+        ticker=ticker.upper(),
+        as_of=now,
+        direction=direction,
+        volatility_view=volatility_view,
+        earnings_date=event.earnings_date if event is not None else None,
+    )
+    timings["assembly_ms"] = (time.monotonic() - t) * 1000
+    if assembly.failure_category is not None:
+        return {
+            "notice": DRY_RUN_NOTICE,
+            "ticker": ticker.upper(),
+            "status": "FAILED",
+            "failure_category": assembly.failure_category,
+            "failure_detail": assembly.failure_detail,
+            "assembly": summarize_assembly(assembly),
+            "view_note": view_note,
+            "persisted": False,
+            "orders_placed": 0,
+        }
+
+    # 3. Full freeze inside an OUTER savepoint that is always rolled back.
+    outer = db.begin_nested()
+    result = None
+    configs: list = []
+    entries: list = []
+    observations: list = []
+    transient_calendar_event = False
+    try:
+        if event is not None:
+            freeze_event_id = event.id
+        else:
+            # Section 36: a ticker outside the calendar universe (AAPL is
+            # not in an upcoming window) must still exercise the FULL
+            # freeze path -- six configurations, candidate observations,
+            # per-configuration entries -- which needs a real calendar row
+            # for the foreign key. The row lives only inside this
+            # savepoint, which is rolled back unconditionally below: it is
+            # never committed, never visible to any other request, never
+            # picked up by a scheduler. No history is created.
+            from analytics.earnings_timing import next_trading_day  # noqa: PLC0415
+
+            placeholder = EarningsCalendarEvent(
+                symbol=ticker.upper(),
+                company_name=ticker.upper(),
+                earnings_date=next_trading_day(now.date()),
+                earnings_time="AMC",
+                source="EARNINGSAPI",
+                status="UPCOMING",
+            )
+            db.add(placeholder)
+            db.flush()
+            freeze_event_id = placeholder.id
+            transient_calendar_event = True
+
+        t = time.monotonic()
+        result = generate_shadow_decision(
+            db,
+            earnings_calendar_event_id=freeze_event_id,
+            ticker=ticker.upper(),
+            company_name=company.name if company else ticker.upper(),
+            legal_decision_window_at=now,
+            as_of=now,
+            view=view
+            or __import__("services.v4_shadow", fromlist=["ShadowDecisionView"]).ShadowDecisionView(
+                direction=direction,
+                volatility_view=volatility_view,
+                expected_move_intent=None,
+                confidence=None,
+                reasoning="dry-run fallback view",
+                evidence_refs={},
+                llm_provider=None,
+                llm_model=None,
+                prompt_version=None,
+            ),
+            candidates=assembly.candidates,
+            underlying_price=assembly.underlying_price,
+            underlying_quote_at=assembly.underlying_quote_at,
+            market_data_quality=assembly.market_data_quality,
+            tws_request_count=assembly.budget.total,
+            unique_contracts_quoted=assembly.budget.unique_contracts_quoted,
+        )
+        timings["freeze_valuation_ranking_sixconfig_ms"] = (time.monotonic() - t) * 1000
+        if result.decision_id:
+            configs = [
+                {
+                    "configuration_key": r.configuration_key,
+                    "status": r.status,
+                    "rank_1_candidate_id": r.rank_1_candidate_id,
+                    "eligible": r.eligible_candidate_count,
+                    "excluded": r.excluded_candidate_count,
+                    "no_action_reason": r.no_action_reason,
+                }
+                for r in db.query(V4ShadowConfigResult).filter_by(
+                    shadow_decision_id=result.decision_id
+                )
+            ]
+            entries = [
+                {
+                    "configuration_key": e.configuration_key,
+                    "candidate_id": e.candidate_id,
+                    "status": e.status,
+                    "quantity": e.quantity,
+                    "capital_used": str(e.capital_used),
+                    "max_risk_used": str(e.max_risk_used),
+                    "entry_net_value": str(e.entry_net_value),
+                    "candidate_observation_id": e.candidate_observation_id,
+                    "market_data_quality": e.market_data_quality,
+                }
+                for e in db.query(V4ShadowConfigEntry).filter_by(
+                    shadow_decision_id=result.decision_id
+                )
+            ]
+            observations = [
+                {
+                    "candidate_id": o.candidate_id,
+                    "phase": o.phase,
+                    "status": o.status,
+                    "net_executable_value": str(o.net_executable_value),
+                    "unique_contract_count": o.unique_contract_count,
+                    "earliest_leg_observed_at": o.earliest_leg_observed_at,
+                    "latest_leg_observed_at": o.latest_leg_observed_at,
+                    "max_leg_timestamp_skew_seconds": str(o.max_leg_timestamp_skew_seconds),
+                    "market_data_quality": o.market_data_quality,
+                    "legs": (o.legs_json or {}).get("legs"),
+                }
+                for o in db.query(V4ShadowCandidateObservation).filter_by(
+                    shadow_decision_id=result.decision_id
+                )
+            ]
+            decision_row = db.get(V4ShadowDecision, result.decision_id)
+            assert decision_row is not None
+            decision_versions = {
+                "engine": decision_row.engine_version,
+                "ranking": decision_row.ranking_version,
+                "valuation": decision_row.valuation_version,
+                "scenario_grid": decision_row.scenario_grid_version,
+                "timing_policy": decision_row.decision_timing_policy_version,
+            }
+        else:
+            decision_versions = {}
+    finally:
+        outer.rollback()  # ZERO-WRITE: everything above is discarded.
+    timings["total_ms"] = (time.monotonic() - t0) * 1000
+
+    latency = getattr(assembly, "latency", None)
+    unique_selected = sorted(
+        {c["rank_1_candidate_id"] for c in configs if c["rank_1_candidate_id"]}
+    )
+    return {
+        "notice": DRY_RUN_NOTICE,
+        "ticker": ticker.upper(),
+        "status": result.status if result else "FAILED",
+        "reason": result.reason if result else None,
+        "view": None
+        if view is None
+        else {
+            "direction": view.direction,
+            "volatility_view": view.volatility_view,
+            "expected_move_intent": view.expected_move_intent,
+            "confidence": view.confidence,
+            "llm_provider": view.llm_provider,
+            "llm_model": view.llm_model,
+        },
+        "view_note": view_note,
+        "transient_calendar_event": transient_calendar_event,
+        "assembly": summarize_assembly(assembly),
+        "request_budget": {
+            "underlying_quotes": assembly.budget.underlying_quotes,
+            "metadata_calls": assembly.budget.metadata_calls,
+            "chain_discovery_calls": assembly.budget.chain_discovery_calls,
+            "selected_leg_quote_calls": assembly.budget.selected_leg_quote_calls,
+            "unique_contracts_quoted": assembly.budget.unique_contracts_quoted,
+            "total": assembly.budget.total,
+        },
+        "stage_latency_ms": {
+            **({k: float(v) for k, v in vars(latency).items()} if latency is not None else {}),
+            **{k: round(v, 3) for k, v in timings.items()},
+        },
+        "versions": decision_versions,
+        "candidate_count": result.candidate_count if result else 0,
+        "rankable_count": result.rankable_count if result else 0,
+        "configurations": configs,
+        "unique_selected_candidates": unique_selected,
+        "config_entries": entries,
+        "candidate_observations": observations,
+        "evidence_sweeps": {
+            "decision_view_calls": 1 if view is not None else 0,
+            "assembly_calls": 1,
+            "quote_sweeps": assembly.budget.selected_leg_quote_calls,
+            "configurations_evaluated": len(configs),
+        },
+        "persisted": False,
+        "orders_placed": 0,
+        "standardized_capital_note": str(Decimal("2000")),
+    }
+
+
+@router.get("/contract-resolution", response_model=None)
+def contract_resolution_check(tws_provider: TwsProviderDep, symbol: str = "BF.B") -> dict:
+    """Section 37 -- read-only class-share resolution through the shared,
+    lifespan-owned provider (no diagnostic socket). Uses the SAME
+    normalization the production path uses."""
+    from datetime import date as _date  # noqa: PLC0415
+
+    from providers.ibkr_tws_options import ibkr_symbol  # noqa: PLC0415
+
+    if tws_provider is None:
+        raise InvalidRequestError("no shared TWS provider on this process")
+    out: dict = {"symbol": symbol, "ibkr_symbol": ibkr_symbol(symbol)}
+    t = time.monotonic()
+    try:
+        quote = tws_provider.get_underlying_quote(symbol)
+        out["underlying"] = (
+            None
+            if quote is None
+            else {
+                k: (
+                    str(v)
+                    if isinstance(v, Decimal)
+                    else (v.isoformat() if hasattr(v, "isoformat") else v)
+                )
+                for k, v in vars(quote).items()
+                if not k.startswith("_")
+            }
+        )
+    except Exception as exc:  # noqa: BLE001
+        out["underlying_error"] = f"{type(exc).__name__}: {exc}"
+    out["underlying_ms"] = round((time.monotonic() - t) * 1000, 1)
+    t = time.monotonic()
+    try:
+        expirations = tws_provider.list_available_expirations(symbol, after=_date.today())
+        out["expirations"] = [e.isoformat() for e in expirations][:12]
+        out["expiration_count"] = len(expirations)
+    except Exception as exc:  # noqa: BLE001
+        out["expirations_error"] = f"{type(exc).__name__}: {exc}"
+    out["secdef_ms"] = round((time.monotonic() - t) * 1000, 1)
+    return out
