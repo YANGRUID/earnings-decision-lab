@@ -22,6 +22,7 @@ from providers.types import OptionQuote
 
 ExpirationQuality = Literal["good", "acceptable", "poor", "untradeable"]
 
+
 # Same thresholds as services/options_reconstruction.py::classify_chain_quality
 # (Phase 14.13 Part 16) -- duplicated rather than imported since analytics/
 # must not depend on services/ (services depends on analytics/, never the
@@ -246,9 +247,7 @@ def build_expiration_candidate(
     atm_iv = _atm_iv(atm_quotes)
     atm_spread_pct = _atm_spread_pct(atm_quotes)
 
-    qualities_present = {
-        q.market_data_quality for q in quotes if q.market_data_quality is not None
-    }
+    qualities_present = {q.market_data_quality for q in quotes if q.market_data_quality is not None}
     data_quality_fraction = (
         min(
             (_DATA_QUALITY_SCORE.get(q, Decimal("0")) for q in qualities_present),

@@ -124,9 +124,7 @@ def long_call_butterfly(
     middle_strike at expiration. Strikes must satisfy
     lower_strike < middle_strike < upper_strike."""
     if not (lower_strike < middle_strike < upper_strike):
-        raise ValueError(
-            "long call butterfly requires lower_strike < middle_strike < upper_strike"
-        )
+        raise ValueError("long call butterfly requires lower_strike < middle_strike < upper_strike")
     return [
         OptionLeg(OptionType.CALL, Action.BUY, lower_strike, lower_premium),
         OptionLeg(OptionType.CALL, Action.SELL, middle_strike, middle_premium, quantity=2),

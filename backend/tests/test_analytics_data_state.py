@@ -2,7 +2,8 @@ from datetime import UTC, datetime
 
 from analytics.data_state import compute_options_data_state, compute_snapshot_age
 from analytics.market_session import EASTERN
-from models.enums import DataState
+from models.enums import DataState, MarketDataQuality
+from providers.ibkr_client import decode_market_data_quality
 
 
 def _eastern(year, month, day, hour, minute=0) -> datetime:
@@ -41,15 +42,11 @@ class TestComputeOptionsDataState:
         # Same real calendar day, but "now" is late at night -- market closed.
         now_closed = _eastern(2026, 3, 18, 22, 0)
         snapshot = _eastern(2026, 3, 18, 15, 0)
-        assert (
-            compute_options_data_state(snapshot, "live", now_closed) == DataState.MARKET_CLOSED
-        )
+        assert compute_options_data_state(snapshot, "live", now_closed) == DataState.MARKET_CLOSED
 
     def test_same_day_market_open_live_quality(self):
         snapshot = _eastern(2026, 3, 18, 10, 55)
-        assert (
-            compute_options_data_state(snapshot, "live", _REGULAR_SESSION_NOW) == DataState.LIVE
-        )
+        assert compute_options_data_state(snapshot, "live", _REGULAR_SESSION_NOW) == DataState.LIVE
 
     def test_same_day_market_open_delayed_quality(self):
         snapshot = _eastern(2026, 3, 18, 10, 55)
@@ -61,22 +58,50 @@ class TestComputeOptionsDataState:
     def test_same_day_market_open_frozen_quality(self):
         snapshot = _eastern(2026, 3, 18, 10, 55)
         assert (
-            compute_options_data_state(snapshot, "frozen", _REGULAR_SESSION_NOW)
-            == DataState.FROZEN
+            compute_options_data_state(snapshot, "frozen", _REGULAR_SESSION_NOW) == DataState.FROZEN
         )
 
-    def test_same_day_market_open_unrecognized_quality_is_unknown(self):
+    def test_same_day_market_open_unavailable_quality_is_premium_required(self):
+        """Phase 4 market-data-quality hardening (2026-08-26), Section 15
+        -- IBKR's real "N" (Not Subscribed) code decodes to "unavailable"
+        (providers/ibkr_client.py's decode_market_data_quality), which maps
+        to the specific PREMIUM_REQUIRED state, not the generic UNKNOWN
+        one used for a truly unrecognized string."""
         snapshot = _eastern(2026, 3, 18, 10, 55)
         assert (
             compute_options_data_state(snapshot, "unavailable", _REGULAR_SESSION_NOW)
+            == DataState.PREMIUM_REQUIRED
+        )
+
+    def test_same_day_market_open_truly_unrecognized_quality_is_unknown(self):
+        snapshot = _eastern(2026, 3, 18, 10, 55)
+        assert (
+            compute_options_data_state(snapshot, "some_new_provider_flag", _REGULAR_SESSION_NOW)
             == DataState.UNKNOWN
         )
 
     def test_same_day_market_open_missing_quality_is_unknown(self):
         snapshot = _eastern(2026, 3, 18, 10, 55)
-        assert (
-            compute_options_data_state(snapshot, None, _REGULAR_SESSION_NOW) == DataState.UNKNOWN
-        )
+        assert compute_options_data_state(snapshot, None, _REGULAR_SESSION_NOW) == DataState.UNKNOWN
+
+
+class TestMarketDataQualityUnavailableMember:
+    """Phase 4 market-data-quality hardening (2026-08-26), Section 15 --
+    proves the real, previously-latent bug is fixed: decode_market_data_
+    quality() already returns "unavailable" for IBKR's "N" (Not
+    Subscribed) code, but MarketDataQuality had no matching member, so
+    every real caller that casts MarketDataQuality(quote.market_data_
+    quality) (benchmark_entry_capture.py, benchmark_exit_capture.py,
+    options_analytics.py) would have raised ValueError the first time
+    IBKR actually returned "N" for any contract."""
+
+    def test_decode_not_subscribed_code_returns_unavailable(self):
+        assert decode_market_data_quality("N") == "unavailable"
+
+    def test_market_data_quality_enum_accepts_the_real_unavailable_string(self):
+        # Previously raised ValueError -- this is the exact real cast every
+        # caller above performs on a real provider response.
+        assert MarketDataQuality("unavailable") == MarketDataQuality.UNAVAILABLE
 
 
 class TestComputeSnapshotAge:

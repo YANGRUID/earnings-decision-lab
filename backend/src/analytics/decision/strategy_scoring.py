@@ -49,6 +49,7 @@ def filter_candidates_by_risk_preference(
         return [c for c in candidates if c.category not in _SINGLE_LEG_LONG_CATEGORIES]
     return list(candidates)
 
+
 # Rebalanced again in Options Decision Engine V3 Part F to add
 # expiration_fit and risk_profile_fit as real, scored components (Part
 # 36) -- proportionally scaled down from the Phase 14.10 Part E3 weights
@@ -181,9 +182,7 @@ def target_price_for_direction(
     return underlying_price * (1 + fraction * implied_move_pct)
 
 
-def _direction_fit(
-    candidate: StrategyCandidate, payoff_at_target: Decimal | None
-) -> int:
+def _direction_fit(candidate: StrategyCandidate, payoff_at_target: Decimal | None) -> int:
     if payoff_at_target is None:
         return round(WEIGHT_DIRECTION_FIT * Decimal("0.3"))  # no implied move -- can't assess
     max_profit = candidate.analysis.max_profit
@@ -198,9 +197,7 @@ def _direction_fit(
     return round(fraction * WEIGHT_DIRECTION_FIT)
 
 
-def _volatility_fit(
-    candidate: StrategyCandidate, volatility_view: DecisionVolatilityView
-) -> int:
+def _volatility_fit(candidate: StrategyCandidate, volatility_view: DecisionVolatilityView) -> int:
     """Real signal: net_premium's sign is a structural fact about whether
     the candidate is a net-debit (long options premium, profits from a
     large realized move regardless of direction -- long call/put,

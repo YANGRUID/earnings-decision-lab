@@ -22,6 +22,4 @@ def list_benchmark_entries(
     query = db.query(EntryCaptureAttempt)
     if status:
         query = query.filter(EntryCaptureAttempt.status == status.upper())
-    return (
-        query.order_by(EntryCaptureAttempt.id.desc()).offset(offset).limit(limit).all()
-    )
+    return query.order_by(EntryCaptureAttempt.id.desc()).offset(offset).limit(limit).all()

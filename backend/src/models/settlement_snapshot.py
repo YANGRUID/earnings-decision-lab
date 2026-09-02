@@ -77,9 +77,7 @@ class SettlementSnapshot(Base):
     capture_error: Mapped[str | None] = mapped_column(Text)
     source_provider: Mapped[str | None] = mapped_column(String(64))
 
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now()
-    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     decision_snapshot: Mapped["DecisionSnapshot"] = relationship(  # noqa: F821
         back_populates="settlement_snapshots"

@@ -39,6 +39,12 @@ from analytics.decision.track_record_math import (
     probability_bucket_label,
     rate_from_bools,
 )
+from analytics.decision.v4_capital import (
+    StandardizedCohortSummary,
+    compute_standardized_decision_metrics,
+    summarize_standardized_cohort,
+)
+from analytics.decision.v4_methodology import ENGINE_VERSION_V4
 from analytics.options.payoff import Action, OptionLeg, analyze
 from models.benchmark_portfolio import BenchmarkPortfolio
 from models.decision_snapshot import DecisionSnapshot
@@ -58,6 +64,25 @@ _DIRECTION_SIGN: dict[DecisionDirection, int] = {
     DecisionDirection.STRONG_BEARISH: -1,
 }
 
+# V4.1 methodology foundation (2026-08-31) -- forensic audit Part I
+# Section 10's own root-cause finding, read-side only: max_drawdown_pct
+# below is computed as a real sequential equity curve against
+# BenchmarkPortfolio.initial_capital, but every real entry independently
+# sizes against that same, never-decremented capital (no code path ever
+# debits/credits BenchmarkPortfolio.cash_balance) -- so a multi-decision
+# aggregate can exceed 100% "of peak equity" even though no single
+# decision ever risked more than its own share. See
+# analytics/decision/v4_capital.py for the full explanation and the
+# standardized, per-decision-capital reading shown alongside it.
+LEGACY_CAPITAL_CAVEAT = (
+    "This portfolio drawdown figure aggregates decisions that each independently sized "
+    "against the full $2,000 BenchmarkPortfolio capital (V3's real sizing behavior -- that "
+    "capital was never actually shared or depleted across concurrent positions), not a true "
+    "portfolio equity curve. Not comparable to a real portfolio drawdown. See the "
+    "standardized, per-decision metrics for a correctly-labeled reading of the same "
+    "real settlements."
+)
+
 
 @dataclass(frozen=True)
 class TrackRecordFilters:
@@ -70,12 +95,35 @@ class TrackRecordFilters:
     dte_bucket: str | None = None  # one of DTE_BUCKETS' labels
     risk_profile: RiskProfile | None = None
     iv_regime: str | None = None
+    # V4.1 methodology foundation (2026-08-31) -- cohort isolation. V3
+    # ("options-decision-engine-v3") and V4 ("options-decision-engine-v4",
+    # not yet produced by any real code path) must never be silently
+    # mixed into one aggregate; None (the default) means "every real
+    # engine version," matching every other filter field's own
+    # None-means-unrestricted convention here.
+    engine_version: str | None = None
 
 
 @dataclass(frozen=True)
 class BenchmarkTrackRecordSummary:
     portfolio_id: int
     total_decisions: int
+    # Post-live correction (2026-08-25): a real, honest pre-settlement
+    # breakdown -- Aug 25 produced 8 real decisions, 1 real captured
+    # entry, and 0 settled, with no performance metric possible yet, but
+    # the page still had nothing useful to say about what actually
+    # happened. actionable_decisions/no_action_decisions split on
+    # whether the strategy engine recommended anything at all
+    # (decision.legs empty/None -- see services/decision_snapshot_
+    # freezing.py); entries_captured/entries_capture_failed are counted
+    # only over actionable decisions -- a no-action decision was never a
+    # real capture attempt in any meaningful sense and must never be
+    # counted as an infrastructure entry failure (Section 5's own
+    # explicit rule).
+    actionable_decisions: int
+    no_action_decisions: int
+    entries_captured: int
+    entries_capture_failed: int
     settled_decisions: int
     win_rate: Rate
     average_r: Decimal | None
@@ -87,6 +135,20 @@ class BenchmarkTrackRecordSummary:
     directional_accuracy: Rate
     breakeven_accuracy: Rate
     range_accuracy: Rate
+    # V4.1 methodology foundation (2026-08-31) -- read-side only, no
+    # historical settlement value changed. max_drawdown/max_drawdown_pct
+    # above remain exactly V3's own real, unaltered legacy figures
+    # (forensic audit Part I Section 10: computed as a genuine sequential
+    # equity curve against BenchmarkPortfolio.initial_capital, which is
+    # never actually debited/credited per-trade) -- legacy_capital_caveat
+    # is populated whenever this summary includes at least one such
+    # legacy-semantics decision, so a caller can render it right next to
+    # the number instead of presenting it as a clean portfolio statistic.
+    # standardized is the new, honestly-labeled per-decision reading of
+    # the SAME real settlements (Section 9-11) -- never a replacement for
+    # the fields above, always shown alongside them.
+    legacy_capital_caveat: str | None
+    standardized: StandardizedCohortSummary
 
 
 @dataclass(frozen=True)
@@ -153,6 +215,8 @@ def _matches_filters(
         dte = _dte_for_decision(decision)
         if dte is None or dte_bucket_label(dte) != filters.dte_bucket:
             return False
+    if filters.engine_version is not None and decision.engine_version != filters.engine_version:
+        return False
     return True
 
 
@@ -163,6 +227,50 @@ def _fetch_filtered_decisions(
         db.query(DecisionSnapshot).filter(DecisionSnapshot.benchmark_portfolio_id == portfolio.id)
     ).all()
     return [d for d in decisions if _matches_filters(d, portfolio, filters)]
+
+
+@dataclass(frozen=True)
+class _ActionSummary:
+    actionable_decisions: int
+    no_action_decisions: int
+    entries_captured: int
+    entries_capture_failed: int
+
+
+def _compute_action_summary(
+    db: Session, decisions: list[DecisionSnapshot], portfolio: BenchmarkPortfolio
+) -> _ActionSummary:
+    """Post-live correction (2026-08-25) -- see BenchmarkTrackRecordSummary's
+    own docstring for why this split exists. Only actionable decisions
+    (a real recommended strategy exists) are ever counted toward entries_
+    captured/entries_capture_failed: a no-action decision's own FAILED
+    EntryCaptureAttempt ("no recommended strategy legs to enter", see
+    services/benchmark_entry_capture.py) is real but was never a genuine
+    capture attempt, so it must never inflate an infrastructure-failure
+    count."""
+    actionable = [d for d in decisions if d.legs]
+    no_action = [d for d in decisions if not d.legs]
+    actionable_ids = [d.id for d in actionable]
+    attempts = (
+        db.query(EntryCaptureAttempt)
+        .filter(
+            EntryCaptureAttempt.decision_snapshot_id.in_(actionable_ids),
+            EntryCaptureAttempt.benchmark_portfolio_id == portfolio.id,
+        )
+        .all()
+        if actionable_ids
+        else []
+    )
+    captured_ids = {a.decision_snapshot_id for a in attempts if a.status == CaptureStatus.CAPTURED}
+    failed_ids = {
+        a.decision_snapshot_id for a in attempts if a.status == CaptureStatus.FAILED
+    } - captured_ids
+    return _ActionSummary(
+        actionable_decisions=len(actionable),
+        no_action_decisions=len(no_action),
+        entries_captured=len(captured_ids),
+        entries_capture_failed=len(failed_ids),
+    )
 
 
 def _direction_correct(
@@ -240,9 +348,7 @@ def _range_correct(
     move). None for a zero entry price (can't determine a real move)."""
     if entry_underlying_price == 0:
         return None
-    actual_move_pct = abs(
-        (exit_underlying_price - entry_underlying_price) / entry_underlying_price
-    )
+    actual_move_pct = abs((exit_underlying_price - entry_underlying_price) / entry_underlying_price)
     return actual_move_pct <= implied_move_pct
 
 
@@ -364,14 +470,34 @@ def compute_benchmark_track_record(
     decisions = _fetch_filtered_decisions(db, portfolio, filters)
     facts = _collect_settled_facts(db, decisions, portfolio)
     facts.sort(key=lambda f: f.captured_at)  # type: ignore[arg-type,return-value]
+    action_summary = _compute_action_summary(db, decisions, portfolio)
 
     r_multiples = [f.r_multiple for f in facts if f.r_multiple is not None]
     realized_pnls = [f.realized_pnl for f in facts]
     drawdown = compute_max_drawdown(portfolio.initial_capital, realized_pnls)
 
+    r_multiple_by_decision = {f.decision_id: f.r_multiple for f in facts}
+    standardized = summarize_standardized_cohort(
+        [
+            compute_standardized_decision_metrics(
+                realized_pnl=f.realized_pnl,
+                return_pct=None,
+                is_win=f.is_win,
+                r_legacy=r_multiple_by_decision.get(f.decision_id),
+            )
+            for f in facts
+        ]
+    )
+    legacy_present = any(d.engine_version != ENGINE_VERSION_V4 for d in decisions)
+    legacy_capital_caveat = LEGACY_CAPITAL_CAVEAT if (legacy_present and facts) else None
+
     return BenchmarkTrackRecordSummary(
         portfolio_id=portfolio.id,
         total_decisions=len(decisions),
+        actionable_decisions=action_summary.actionable_decisions,
+        no_action_decisions=action_summary.no_action_decisions,
+        entries_captured=action_summary.entries_captured,
+        entries_capture_failed=action_summary.entries_capture_failed,
         settled_decisions=len(facts),
         win_rate=rate_from_bools([f.is_win for f in facts]),
         average_r=compute_average(r_multiples),
@@ -389,6 +515,8 @@ def compute_benchmark_track_record(
         range_accuracy=rate_from_bools(
             [f.range_correct for f in facts if f.range_correct is not None]
         ),
+        legacy_capital_caveat=legacy_capital_caveat,
+        standardized=standardized,
     )
 
 

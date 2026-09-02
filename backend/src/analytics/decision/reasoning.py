@@ -89,8 +89,7 @@ def build_risk_bullets(ranked: ViewRankedStrategy) -> list[str]:
 
     if analysis.max_loss is None:
         bullets.append(
-            "This position has undefined/unbounded risk -- no finite maximum loss can be "
-            "stated."
+            "This position has undefined/unbounded risk -- no finite maximum loss can be stated."
         )
     elif analysis.net_premium >= 0:
         bullets.append(
@@ -113,7 +112,7 @@ def build_risk_bullets(ranked: ViewRankedStrategy) -> list[str]:
         )
 
     bullets.append(
-        "Implied volatility can fall sharply right after earnings (\"IV crush\"), which can "
+        'Implied volatility can fall sharply right after earnings ("IV crush"), which can '
         "reduce the value of long option legs even on a favorable move."
     )
 

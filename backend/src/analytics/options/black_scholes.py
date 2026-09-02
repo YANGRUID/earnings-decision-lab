@@ -59,8 +59,7 @@ def _d1_d2(
         raise ValueError("spot and strike must be positive")
     sqrt_t = math.sqrt(time_to_expiry_years)
     d1 = (
-        math.log(spot / strike)
-        + (rate - dividend_yield + 0.5 * vol**2) * time_to_expiry_years
+        math.log(spot / strike) + (rate - dividend_yield + 0.5 * vol**2) * time_to_expiry_years
     ) / (vol * sqrt_t)
     d2 = d1 - vol * sqrt_t
     return d1, d2

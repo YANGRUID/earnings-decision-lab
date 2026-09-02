@@ -22,6 +22,7 @@ existing row first so a routine, already-frozen event never even reaches
 a live generate_decision() call.
 """
 
+import logging
 from dataclasses import dataclass
 from decimal import Decimal
 
@@ -33,6 +34,7 @@ from models.benchmark_portfolio import BenchmarkPortfolio
 from models.company import Company
 from models.decision_snapshot import DecisionSnapshot
 from models.earnings_calendar_event import EarningsCalendarEvent
+from models.enums import DecisionVolatilityView
 from models.volatility_snapshot import VolatilitySnapshot
 from services.decision_engine import DecisionResult, leg_to_dict
 from services.historical_moves import get_historical_move_pcts
@@ -54,6 +56,8 @@ PROMPT_VERSION = "v1"
 # engine (services/expiration_engine.py::resolve_auto_expiration) would
 # introduce a second value here, not change this one's meaning.
 EXPIRATION_SOURCE_V3_RESOLVER = "v3_auto_resolver"
+
+log = logging.getLogger("services.decision_snapshot_freezing")
 
 # iv_percentile thresholds for the volatility_regime classification --
 # new to this phase, no existing V3 concept. Deliberately simple
@@ -87,9 +91,7 @@ class FrozenProbability:
     historical_compatibility: dict | None
 
 
-def _freeze_probability(
-    db: Session, company: Company, result: DecisionResult
-) -> FrozenProbability:
+def _freeze_probability(db: Session, company: Company, result: DecisionResult) -> FrozenProbability:
     recommended = result.recommended
     if recommended is None:
         return FrozenProbability(None, None, None, None)
@@ -164,6 +166,58 @@ def freeze_decision_snapshot(
         else None
     )
 
+    # Phase 4 reproducibility hardening (2026-08-26), Section 7 -- matches
+    # each recommended leg back to the real quote candidate generation
+    # actually built it from. Never changes which candidate was selected
+    # or how it was scored -- result.recommended was already decided
+    # before this lookup is built; this only recovers metadata for legs
+    # that selection already settled on.
+    #
+    # Post-official-run cleanup (2026-08-27), Section 5 -- keyed by
+    # (expiration, strike, option_type), not (strike, option_type) alone.
+    # result.option_quotes is the raw snapshot services/options_analytics.
+    # py::select_pricing_snapshot read (every row sharing one
+    # snapshot_timestamp, never filtered to one expiration -- see that
+    # module's own multi-expiration term-structure use of the same rows),
+    # so the same strike/right can be real at more than one expiration in
+    # one decision's quotes. Unqualified (strike, option_type) risked
+    # silently keying onto the WRONG expiration's contract id when that
+    # happened; result.expiration -- the one expiration the recommended
+    # strategy actually uses -- disambiguates it. (This is unrelated to
+    # services/quote_telemetry.py's own (strike, option_type) matching:
+    # that module only ever sees quotes already fetched for one explicit
+    # expiration -- capture_benchmark_entry passes expiration=selected_
+    # expiration to the provider -- so no such ambiguity can reach it.)
+    #
+    # A genuine same-key collision (two different real contract ids for
+    # the same expiration/strike/right) would mean the snapshot itself is
+    # corrupt -- never observed in real data. Logged and resolved to the
+    # first one seen, deterministically, rather than raising: a metadata-
+    # recovery ambiguity must not turn into a new way for decision
+    # generation to fail (candidate selection above is already final by
+    # this point).
+    external_contract_id_by_leg: dict[tuple[object, Decimal, str], str] = {}
+    for quote in result.option_quotes:
+        if quote.external_contract_id is None:
+            continue
+        key = (quote.expiration_date, quote.strike, quote.option_type)
+        existing = external_contract_id_by_leg.get(key)
+        if existing is not None and existing != quote.external_contract_id:
+            log.warning(
+                "ambiguous option contract match for %s %s %s %s: "
+                "snapshot carries distinct external_contract_id values "
+                "%s and %s for the same expiration/strike/right -- "
+                "keeping the first one seen",
+                company.ticker,
+                quote.expiration_date,
+                quote.strike,
+                quote.option_type,
+                existing,
+                quote.external_contract_id,
+            )
+            continue
+        external_contract_id_by_leg[key] = quote.external_contract_id
+
     snapshot = DecisionSnapshot(
         earnings_calendar_event_id=calendar_event.id,
         benchmark_portfolio_id=portfolio.id,
@@ -187,7 +241,16 @@ def freeze_decision_snapshot(
         score_breakdown=(recommended.ranked.score.as_dict() if recommended is not None else None),
         selected_expiration=result.expiration,
         legs=(
-            [leg_to_dict(leg) for leg in recommended.ranked.candidate.legs]
+            [
+                leg_to_dict(
+                    leg,
+                    expiration=result.expiration,  # type: ignore[arg-type]
+                    external_contract_id=external_contract_id_by_leg.get(
+                        (result.expiration, leg.strike, leg.option_type.value)
+                    ),
+                )
+                for leg in recommended.ranked.candidate.legs
+            ]
             if recommended is not None
             else None
         ),
@@ -198,9 +261,24 @@ def freeze_decision_snapshot(
         why_this_strategy=(recommended.why if recommended is not None else None),
         why_this_expiration=(recommended.why_expiration if recommended is not None else None),
         why_these_strikes=(recommended.why_strikes if recommended is not None else None),
-        why_not_alternatives=(
-            recommended.why_not_alternative if recommended is not None else None
-        ),
+        why_not_alternatives=(recommended.why_not_alternative if recommended is not None else None),
+        # Phase 4 reproducibility hardening (2026-08-26), Sections 3-6 --
+        # these were already computed by generate_decision() for every
+        # real decision attempt (even one with no recommended strategy),
+        # just never frozen before now. Copied verbatim from ``result``,
+        # never re-derived: result.risk_profile is already the effective
+        # profile actually used (independent of the mutable
+        # BenchmarkPortfolio.risk_profile reference), result.confidence is
+        # already the deterministic evidence-confidence score, and
+        # result.provider/result.model are already the real DecisionView-
+        # generation LLM identity (see decision_snapshot.py's own column
+        # docstrings for why this is always safe/honest to freeze here).
+        volatility_view=DecisionVolatilityView(result.view.volatility_view),
+        effective_risk_profile=result.risk_profile,
+        deterministic_confidence_score=result.confidence.total,
+        deterministic_confidence_breakdown=result.confidence.as_dict(),
+        decision_llm_provider=result.provider,
+        decision_llm_model=result.model,
         engine_version=ENGINE_VERSION,
         prompt_version=PROMPT_VERSION,
         expiration_source=EXPIRATION_SOURCE_V3_RESOLVER,

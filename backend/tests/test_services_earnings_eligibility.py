@@ -12,9 +12,7 @@ from services.earnings_eligibility import check_eligibility
 
 
 class _FakeOptionsProvider(OptionsDataProvider):
-    def __init__(
-        self, expirations: list[date] | None = None, raise_error: bool = False
-    ) -> None:
+    def __init__(self, expirations: list[date] | None = None, raise_error: bool = False) -> None:
         self._expirations = expirations if expirations is not None else [date(2026, 12, 18)]
         self._raise_error = raise_error
 
@@ -55,6 +53,7 @@ def test_market_cap_below_10b_skipped():
 
     assert result.eligible is False
     assert result.reason is not None and "market cap" in result.reason
+    assert result.retryable is False  # a real, permanent business-rule rejection
 
 
 def test_market_cap_unknown_skipped():
@@ -72,6 +71,7 @@ def test_valid_company_accepted():
     assert result.eligible is True
     assert result.reason is None
     assert result.symbol == "TESTNVDA"
+    assert result.retryable is False
 
 
 def test_non_us_listed_skipped():
@@ -96,11 +96,24 @@ def test_no_tradable_option_chain_skipped():
 
     assert result.eligible is False
     assert result.reason == "no tradable option chain"
+    # A real, empty chain (the call succeeded, there's genuinely nothing
+    # tradable) is not the same as a transient provider-call failure --
+    # never worth retrying on its own.
+    assert result.retryable is False
 
 
 def test_options_chain_lookup_failure_skipped_not_raised():
+    """Post-live correction (2026-08-25): real Aug 25 evidence -- WSM's
+    preparation-time options-chain probe hit a genuine IBKR rate limit
+    (a transient failure of the provider CALL itself, not a real,
+    data-driven ineligibility verdict) and was recorded exactly like a
+    permanent hard filter, even though WSM's own later, independent
+    execution-time check succeeded minutes afterward and produced a real
+    DecisionSnapshot. retryable=True is what lets callers (services/
+    earnings_research_preparation.py) represent this honestly instead."""
     event = _event()
     result = check_eligibility(event, _FakeOptionsProvider(raise_error=True))
 
     assert result.eligible is False
     assert result.reason is not None and "options chain lookup failed" in result.reason
+    assert result.retryable is True

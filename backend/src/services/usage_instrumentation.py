@@ -138,9 +138,7 @@ class _InstrumentedDataProvider:
         return wrapped
 
 
-def instrument_data_provider[T](
-    inner: T, db: Session | None, provider: str, domain: str
-) -> T:
+def instrument_data_provider[T](inner: T, db: Session | None, provider: str, domain: str) -> T:
     """Wraps any data-provider adapter instance for usage tracking. Typed
     as returning ``T`` (the caller's own provider Protocol) since the proxy
     forwards every method with the same signature -- callers keep type-

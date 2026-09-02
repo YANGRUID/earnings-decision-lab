@@ -114,9 +114,7 @@ def analyze(legs: list[OptionLeg]) -> StrategyAnalysis:
     )
 
 
-def _find_breakevens(
-    points: list[tuple[Decimal, Decimal]], slope_inf: int
-) -> tuple[Decimal, ...]:
+def _find_breakevens(points: list[tuple[Decimal, Decimal]], slope_inf: int) -> tuple[Decimal, ...]:
     breakevens: list[Decimal] = []
     for (s1, p1), (s2, p2) in zip(points, points[1:], strict=False):
         if p1 == 0:

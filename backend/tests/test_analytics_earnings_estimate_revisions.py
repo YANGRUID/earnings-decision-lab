@@ -38,9 +38,7 @@ class TestRevenueRevisionDirection:
         )
 
     def test_lower_current_is_down(self):
-        assert (
-            revenue_revision_direction(Decimal("100"), Decimal("200")) == RevisionDirection.DOWN
-        )
+        assert revenue_revision_direction(Decimal("100"), Decimal("200")) == RevisionDirection.DOWN
 
     def test_equal_is_flat(self):
         assert revenue_revision_direction(Decimal("100"), Decimal("100")) == RevisionDirection.FLAT

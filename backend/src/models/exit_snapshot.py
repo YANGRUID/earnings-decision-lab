@@ -65,9 +65,7 @@ class ExitSnapshot(Base):
 
     __tablename__ = "exit_snapshot"
     __table_args__ = (
-        UniqueConstraint(
-            "settlement_attempt_id", "leg_index", name="uq_exit_snapshot_attempt_leg"
-        ),
+        UniqueConstraint("settlement_attempt_id", "leg_index", name="uq_exit_snapshot_attempt_leg"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -142,9 +140,7 @@ class ExitSnapshot(Base):
     capture_error: Mapped[str | None] = mapped_column(Text)
     source_provider: Mapped[str | None] = mapped_column(String(64))
 
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now()
-    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     decision_snapshot: Mapped["DecisionSnapshot"] = relationship()  # noqa: F821
     settlement_attempt: Mapped["SettlementCaptureAttempt"] = relationship(  # noqa: F821

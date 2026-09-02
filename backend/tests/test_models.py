@@ -384,9 +384,7 @@ def test_official_ai_earnings_benchmark_seed_row_persisted(db_session):
     """The real, migrated seed row (641899980b94, renamed from Phase
     4.3's 'Default Benchmark Portfolio') -- not a fixture, the actual
     official benchmark this whole phase's capture logic reads."""
-    official = (
-        db_session.query(BenchmarkPortfolio).filter_by(name="AI Earnings Benchmark").one()
-    )
+    official = db_session.query(BenchmarkPortfolio).filter_by(name="AI Earnings Benchmark").one()
     assert official.initial_capital == Decimal("2000.00")
     assert official.risk_profile == RiskProfile.MODERATE
     assert official.expiration_mode == ExpirationMode.AUTO

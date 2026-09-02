@@ -4,9 +4,10 @@ earnings_calendar_event table. Mounted at ``/earnings-calendar``, not
 existing ``GET /earnings/{event_id}`` route (api/routers/earnings.py),
 which is int-keyed and answers a structurally different question
 (one already-reported SEC-XBRL event, by id) from this one (a company's
-forward-looking Finnhub calendar entries, by symbol). See
-PHASE4_ARCHITECTURE_REVIEW.md sec 6 for the router-naming convention
-this follows.
+forward-looking earnings calendar entries, by symbol -- EarningsAPI.com
+primary, Finnhub fallback, see EARNINGS_CALENDAR_PROVIDER_ARCHITECTURE_
+REVIEW.md). See PHASE4_ARCHITECTURE_REVIEW.md sec 6 for the
+router-naming convention this follows.
 
 No write endpoint here -- Phase 4.2 only adds read access; the sync job
 itself is scheduler-only (services/scheduler.py), not exposed over HTTP

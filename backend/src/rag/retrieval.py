@@ -1,25 +1,30 @@
 """Hybrid retrieval: pgvector cosine similarity + PostgreSQL full-text
 search, combined by Reciprocal Rank Fusion (RRF).
 
-No separate reranking model (e.g. a cross-encoder) is used — see
-docs/ai_architecture.md for why that isn't justified yet at this project's
-current scale (a handful of tickers, a modest real filing count): RRF over
-two independently-reasonable rankings is a well-established, much cheaper
-technique that doesn't require an additional model dependency, and can be
-replaced by a real reranker later without changing this module's interface
-if retrieval quality ever demonstrably needs it.
+RRF-only remains the DEFAULT (no ``reranker`` passed) -- see
+docs/ai_architecture.md for why that was the original deliberate choice at
+this project's scale: RRF over two independently-reasonable rankings is a
+well-established, much cheaper technique that doesn't require an
+additional model dependency. Phase 4 RAG hardening (2026-08-26), Section
+25 adds an OPTIONAL local cross-encoder reranker (rag/reranking.py) a
+caller can opt into via the ``reranker`` parameter below, without changing
+this function's existing behavior for every caller that doesn't pass one.
 """
 
 import logging
 import time
 from dataclasses import dataclass, replace
 from datetime import date
+from typing import TYPE_CHECKING
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from models.company import Company
 from models.document_chunk import DocumentChunk
+
+if TYPE_CHECKING:
+    from rag.reranking import Reranker
 from models.filing import Filing
 
 log = logging.getLogger("rag.retrieval")
@@ -48,6 +53,13 @@ class RetrievedChunk:
     chunk_index: int
     text: str
     score: float
+    # Phase 4 AI Research source-transparency hardening (2026-08-26),
+    # Section 28 -- the real SEC accession number, when the filing has
+    # one (Filing.accession_number is nullable for a non-SEC filing type
+    # in principle, though every real row today has one). Defaulted so
+    # every existing test fixture that builds a RetrievedChunk directly
+    # (never caring about this field) keeps working unchanged.
+    accession_number: str | None = None
 
 
 def _base_query(filters: RetrievalFilters | None):
@@ -82,6 +94,7 @@ def _to_retrieved_chunk(
         else filing.filing_type,
         filing_date=filing.filing_date,
         source_url=filing.source_url,
+        accession_number=filing.accession_number,
         section=chunk.section,
         chunk_index=chunk.chunk_index,
         text=chunk.text,
@@ -116,10 +129,7 @@ def keyword_search(
     rank_expr = func.ts_rank(ts_vector, ts_query)
 
     stmt = (
-        _base_query(filters)
-        .where(ts_vector.op("@@")(ts_query))
-        .order_by(rank_expr.desc())
-        .limit(k)
+        _base_query(filters).where(ts_vector.op("@@")(ts_query)).order_by(rank_expr.desc()).limit(k)
     )
     rows = db.execute(stmt).all()
     return [
@@ -134,12 +144,18 @@ def hybrid_search(
     filters: RetrievalFilters | None = None,
     k: int = 10,
     rrf_k: int = DEFAULT_RRF_K,
+    reranker: "Reranker | None" = None,
 ) -> list[RetrievedChunk]:
     """Reciprocal Rank Fusion: score(chunk) = sum(1 / (rrf_k + rank + 1))
     across whichever of the two ranked lists it appears in. A chunk found by
     both searches outranks one found by only one, without needing the two
     searches' raw scores (cosine similarity and ts_rank aren't comparable)
     to be normalized against each other.
+
+    ``reranker`` (Phase 4 RAG hardening, 2026-08-26, Section 25) --
+    OPTIONAL, deliberately not constructed here: a caller passes a real
+    rag.reranking.Reranker instance to opt in. None (the default, every
+    real caller today) preserves RRF-only ranking exactly, unchanged.
     """
     start = time.monotonic()
     vector_results = vector_search(db, query_embedding, filters, k=k * 2)
@@ -156,6 +172,11 @@ def hybrid_search(
 
     ranked_ids = sorted(rrf_scores, key=lambda cid: rrf_scores[cid], reverse=True)[:k]
     results = [replace(by_id[cid], score=rrf_scores[cid]) for cid in ranked_ids]
+
+    if reranker is not None:
+        from rag.reranking import rerank_chunks
+
+        results = rerank_chunks(reranker, query_text, results)
 
     log.info(
         "hybrid search completed",

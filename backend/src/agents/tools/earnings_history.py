@@ -1,3 +1,5 @@
+from datetime import date
+
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -11,16 +13,27 @@ from models.price_reaction import PriceReaction
 
 
 class EarningsHistoryArgs(BaseModel):
-    ticker: str = Field(description="Stock ticker, e.g. 'MU'")
+    ticker: str = Field(description="Stock ticker, e.g. 'INTU'")
     limit: int = Field(default=8, ge=1, le=20)
+    # Post-live correction (2026-08-25) Part A8 -- point-in-time safety:
+    # when set, excludes any earnings event dated after this cutoff, so a
+    # historical/replay caller can never see a real event that hadn't
+    # happened yet as of the moment being analyzed. None (the default,
+    # every real caller today) means "as of now" -- unchanged behavior.
+    as_of: date | None = Field(
+        default=None,
+        description="Optional point-in-time cutoff (YYYY-MM-DD) -- excludes events after this "
+        "date.",
+    )
 
 
 class EarningsHistoryTool(Tool[EarningsHistoryArgs]):
     name = "get_historical_earnings"
     description = (
-        "Real historical earnings results and price reactions for a covered ticker "
-        "(NVDA, AMD, MU, SNDK): actual EPS/revenue and next-day/five-day price moves "
-        "where available."
+        "Real historical earnings results and price reactions for any company already "
+        "research-ready in this system: actual EPS/revenue and next-day/five-day price "
+        "moves where available. Not limited to a fixed ticker list -- pass the real ticker "
+        "the question is about."
     )
     args_schema = EarningsHistoryArgs
 
@@ -51,9 +64,12 @@ class EarningsHistoryTool(Tool[EarningsHistoryArgs]):
                 isouter=True,
             )
             .where(EarningsEvent.company_id == company.id)
-            .order_by(EarningsEvent.fiscal_year.desc(), EarningsEvent.fiscal_quarter.desc())
-            .limit(args.limit)
         )
+        if args.as_of is not None:
+            stmt = stmt.where(EarningsEvent.earnings_date <= args.as_of)
+        stmt = stmt.order_by(
+            EarningsEvent.fiscal_year.desc(), EarningsEvent.fiscal_quarter.desc()
+        ).limit(args.limit)
         rows = self._db.execute(stmt).all()
 
         events = []

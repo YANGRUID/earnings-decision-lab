@@ -1,14 +1,29 @@
+from datetime import date
+
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from agents.tools.base import Tool
 from agents.tools.types import ToolOutcome
 from models.company import Company
+from models.earnings_event import EarningsEvent
 from models.strategy_replay import StrategyReplay
 
 
 class StrategyReplayArgs(BaseModel):
     ticker: str = Field(description="Stock ticker, e.g. 'MU'")
+    # Phase 4 point-in-time hardening (2026-08-26), Section 20 -- defensive:
+    # this table is always empty today (no historical options-chain data
+    # exists to run a replay against, see this tool's own description),
+    # but a future historical/replay caller must never see a replay of an
+    # earnings event that hadn't happened yet as of the moment being
+    # analyzed, once real replay data exists. None (the default) means
+    # "as of now" -- unchanged behavior.
+    as_of: date | None = Field(
+        default=None,
+        description="Optional point-in-time cutoff (YYYY-MM-DD) -- excludes replays of "
+        "earnings events after this date.",
+    )
 
 
 class StrategyReplayTool(Tool[StrategyReplayArgs]):
@@ -36,12 +51,14 @@ class StrategyReplayTool(Tool[StrategyReplayArgs]):
                 data={"replays": []},
             )
 
-        rows = (
+        query = (
             self._db.query(StrategyReplay)
             .join(StrategyReplay.earnings_event)
             .filter(StrategyReplay.earnings_event.has(company_id=company.id))
-            .all()
         )
+        if args.as_of is not None:
+            query = query.filter(EarningsEvent.earnings_date <= args.as_of)
+        rows = query.all()
         if not rows:
             return ToolOutcome(
                 success=True,

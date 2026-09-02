@@ -57,7 +57,13 @@ def _seed_portfolio(db_session, symbol_prefix: str) -> BenchmarkPortfolio:
     return portfolio
 
 
-def _seed_settled_decision(db_session, portfolio: BenchmarkPortfolio, symbol: str):
+def _seed_settled_decision(
+    db_session,
+    portfolio: BenchmarkPortfolio,
+    symbol: str,
+    *,
+    engine_version: str = "options-decision-engine-v3",
+):
     event = EarningsCalendarEvent(
         symbol=symbol,
         company_name=f"{symbol} Co",
@@ -79,7 +85,7 @@ def _seed_settled_decision(db_session, portfolio: BenchmarkPortfolio, symbol: st
         selected_expiration=date(2026, 9, 18),
         estimated_probability=Decimal("0.72"),
         volatility_regime="normal",
-        engine_version="options-decision-engine-v3",
+        engine_version=engine_version,
         prompt_version="v1",
         expiration_source="v3_auto_resolver",
     )
@@ -133,9 +139,7 @@ def _seed_settled_decision(db_session, portfolio: BenchmarkPortfolio, symbol: st
 def test_track_record_with_zero_settled_trades_returns_null_metrics(client, db_session):
     portfolio = _seed_portfolio(db_session, "TESTAPITR46A")
 
-    response = client.get(
-        "/api/v1/benchmark/track-record", params={"portfolio_id": portfolio.id}
-    )
+    response = client.get("/api/v1/benchmark/track-record", params={"portfolio_id": portfolio.id})
     assert response.status_code == 200
     body = response.json()
     assert body["settled_decisions"] == 0
@@ -150,9 +154,7 @@ def test_track_record_with_a_settled_win(client, db_session):
     portfolio = _seed_portfolio(db_session, "TESTAPITR46B")
     _seed_settled_decision(db_session, portfolio, "TESTAPITR46B1")
 
-    response = client.get(
-        "/api/v1/benchmark/track-record", params={"portfolio_id": portfolio.id}
-    )
+    response = client.get("/api/v1/benchmark/track-record", params={"portfolio_id": portfolio.id})
     assert response.status_code == 200
     body = response.json()
     assert body["total_decisions"] == 1
@@ -161,6 +163,59 @@ def test_track_record_with_a_settled_win(client, db_session):
     assert body["win_rate"]["total"] == 1
     assert body["win_rate"]["pct"] == "1"
     assert body["directional_accuracy"]["correct"] == 1
+
+
+def test_track_record_reports_standardized_metrics_alongside_legacy_ones(client, db_session):
+    """V4.1 methodology foundation (2026-08-31) -- the new, correctly-
+    labeled per-decision reading appears alongside V3's own unaltered
+    legacy max_drawdown, never replacing it."""
+    portfolio = _seed_portfolio(db_session, "TESTAPITR46F")
+    _seed_settled_decision(db_session, portfolio, "TESTAPITR46F1")
+
+    response = client.get("/api/v1/benchmark/track-record", params={"portfolio_id": portfolio.id})
+    body = response.json()
+    assert body["max_drawdown"] is not None  # V3's legacy figure, unchanged
+    assert body["legacy_capital_caveat"] is not None
+    assert "not a true portfolio equity curve" in body["legacy_capital_caveat"]
+    assert body["standardized"]["n"] == 1
+    assert body["standardized"]["wins"] == 1
+    assert body["standardized"]["portfolio_drawdown_available"] is False
+    assert Decimal(body["standardized"]["mean_return_on_standardized_capital"]) == Decimal("0.04")
+
+
+def test_track_record_engine_version_filter_isolates_v3_from_v4_cohorts(client, db_session):
+    """V4.1 Section 13 -- V3 and V4 must never be silently mixed into one
+    aggregate. V4 genuinely has zero official decisions in this
+    codebase; this test seeds a synthetic V4-labeled row purely to prove
+    the FILTER mechanism isolates cohorts correctly -- it does not claim
+    this represents any real V4 decision."""
+    portfolio = _seed_portfolio(db_session, "TESTAPITR46G")
+    _seed_settled_decision(
+        db_session, portfolio, "TESTAPITR46G1", engine_version="options-decision-engine-v3"
+    )
+    _seed_settled_decision(
+        db_session, portfolio, "TESTAPITR46G2", engine_version="options-decision-engine-v4"
+    )
+
+    unfiltered = client.get("/api/v1/benchmark/track-record", params={"portfolio_id": portfolio.id})
+    v3_only = client.get(
+        "/api/v1/benchmark/track-record",
+        params={"portfolio_id": portfolio.id, "engine_version": "options-decision-engine-v3"},
+    )
+    v4_only = client.get(
+        "/api/v1/benchmark/track-record",
+        params={"portfolio_id": portfolio.id, "engine_version": "options-decision-engine-v4"},
+    )
+
+    assert unfiltered.json()["total_decisions"] == 2
+    assert v3_only.json()["total_decisions"] == 1
+    assert v3_only.json()["settled_decisions"] == 1
+    assert v4_only.json()["total_decisions"] == 1
+    assert v4_only.json()["settled_decisions"] == 1
+    # Each cohort's own standardized summary reflects only its own
+    # decisions, never the other cohort's.
+    assert v3_only.json()["standardized"]["n"] == 1
+    assert v4_only.json()["standardized"]["n"] == 1
 
 
 def test_track_record_strategy_filter(client, db_session):
@@ -190,18 +245,14 @@ def test_track_record_rejects_an_unknown_confidence_bucket(client, db_session):
 
 
 def test_track_record_404_for_unknown_portfolio(client, db_session):
-    response = client.get(
-        "/api/v1/benchmark/track-record", params={"portfolio_id": 999_999_999}
-    )
+    response = client.get("/api/v1/benchmark/track-record", params={"portfolio_id": 999_999_999})
     assert response.status_code == 404
 
 
 def test_calibration_with_zero_settled_trades_returns_empty_buckets(client, db_session):
     portfolio = _seed_portfolio(db_session, "TESTAPITR46E")
 
-    response = client.get(
-        "/api/v1/benchmark/calibration", params={"portfolio_id": portfolio.id}
-    )
+    response = client.get("/api/v1/benchmark/calibration", params={"portfolio_id": portfolio.id})
     assert response.status_code == 200
     body = response.json()
     assert body["settled_decisions"] == 0
@@ -213,9 +264,7 @@ def test_calibration_buckets_a_real_settled_decision(client, db_session):
     portfolio = _seed_portfolio(db_session, "TESTAPITR46F")
     _seed_settled_decision(db_session, portfolio, "TESTAPITR46F1")
 
-    response = client.get(
-        "/api/v1/benchmark/calibration", params={"portfolio_id": portfolio.id}
-    )
+    response = client.get("/api/v1/benchmark/calibration", params={"portfolio_id": portfolio.id})
     assert response.status_code == 200
     body = response.json()
     assert body["settled_decisions"] == 1

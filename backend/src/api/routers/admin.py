@@ -1,8 +1,8 @@
 """Phase 4.9 -- developer-only endpoints to run a real scheduled job on
-demand, so the real earnings pipeline (Finnhub -> earnings calendar ->
-decision generation -> entry capture -> settlement) can be validated
-without waiting for its daily cron trigger (services/scheduler.py, all
-firing at 00:00 UTC / 15:55 America/New_York).
+demand, so the real earnings pipeline (EarningsAPI.com/Finnhub -> earnings
+calendar -> decision generation -> entry capture -> settlement) can be
+validated without waiting for its daily cron trigger (services/
+scheduler.py, all firing at 00:00 UTC / 15:55 America/New_York).
 
 Each endpoint here calls the EXACT SAME job function the scheduler
 itself calls -- there is exactly one implementation of "what does the
@@ -10,8 +10,8 @@ calendar sync / decision generation / settlement job do", never a
 second, parallel "admin version" of that logic. This also means every
 existing safety property of those jobs applies unchanged here: real
 providers only (no fake data is ever seeded, inserted, or fabricated by
-this router -- it only triggers real Finnhub/IBKR calls through the
-already-existing, already-tested pipeline), full idempotency (running
+this router -- it only triggers real EarningsAPI.com/Finnhub/IBKR calls
+through the already-existing, already-tested pipeline), full idempotency (running
 an endpoint twice in a row is always safe -- see services/decision_
 pipeline.py, services/benchmark_entry_capture.py, services/benchmark_
 exit_capture.py's own idempotency guarantees), and the same honest
@@ -28,7 +28,7 @@ way, so nothing about their existence is revealed.
 import logging
 from datetime import date
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Query, status
 from sqlalchemy import func
 
 from api.deps import DbSession
@@ -41,11 +41,13 @@ from models.settlement_capture_attempt import SettlementCaptureAttempt
 from schemas.api import (
     AdminRunDecisionGenerationResponse,
     AdminRunEarningsSyncResponse,
+    AdminRunResearchPreparationResponse,
     AdminRunSettlementCaptureResponse,
 )
 from services.scheduler import (
     run_decision_and_entry_capture_job,
     run_earnings_calendar_sync_job,
+    run_earnings_research_preparation_job,
     run_exit_capture_job,
 )
 
@@ -83,6 +85,44 @@ def run_earnings_sync(
 
     return AdminRunEarningsSyncResponse(
         earnings_calendar_events_before=before, earnings_calendar_events_after=after
+    )
+
+
+@router.post(
+    "/run-research-preparation",
+    response_model=AdminRunResearchPreparationResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def run_research_preparation(db: DbSession) -> AdminRunResearchPreparationResponse:
+    """Pre-live hardening (2026-08-25) -- enqueues durable research-
+    preparation jobs for upcoming eligible calendar events (services/
+    earnings_research_preparation.py), the same enqueue-only job the
+    scheduler runs daily at 01:00 UTC. Returns as soon as enqueueing
+    finishes (a handful of cheap DB reads plus one lightweight options-
+    chain check per candidate) -- it does NOT wait for, or own the
+    lifetime of, the actual preparation work; the dedicated research-
+    worker process claims and runs each queued row independently, so an
+    HTTP client disconnecting here has zero effect on it. Never
+    generates a decision or captures an entry price -- see that
+    module's own docstring for the exact boundary. Run this on demand
+    to queue today's real candidates immediately rather than waiting
+    for tomorrow's scheduled run."""
+    settings = get_settings()
+    _ensure_enabled(settings)
+
+    log.info("admin: enqueueing real earnings research preparation candidates")
+    results = run_earnings_research_preparation_job()
+
+    queued = sum(1 for r in results if r.outcome == "queued")
+    already_ready = sum(1 for r in results if r.outcome == "already_ready")
+    filtered_out = sum(1 for r in results if r.outcome == "filtered_out")
+    preparation_warning = sum(1 for r in results if r.outcome == "preparation_warning")
+
+    return AdminRunResearchPreparationResponse(
+        queued=queued,
+        already_ready=already_ready,
+        filtered_out=filtered_out,
+        preparation_warning=preparation_warning,
     )
 
 

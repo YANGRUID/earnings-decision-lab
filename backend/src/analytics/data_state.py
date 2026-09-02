@@ -26,9 +26,9 @@ def compute_options_data_state(
     if snapshot_timestamp is None:
         return DataState.NOT_COLLECTED
 
-    same_session_day = snapshot_timestamp.astimezone(EASTERN).date() == as_of.astimezone(
-        EASTERN
-    ).date()
+    same_session_day = (
+        snapshot_timestamp.astimezone(EASTERN).date() == as_of.astimezone(EASTERN).date()
+    )
     if not same_session_day:
         return DataState.PREVIOUS_SESSION
 
@@ -42,6 +42,13 @@ def compute_options_data_state(
         return DataState.DELAYED
     if market_data_quality == "frozen":
         return DataState.FROZEN
+    # Phase 4 market-data-quality hardening (2026-08-26), Section 15 --
+    # IBKR's real "N" (Not Subscribed) availability code decodes to the
+    # specific "unavailable" signal (providers/ibkr_client.py's
+    # decode_market_data_quality), which maps to the existing, more
+    # precise PREMIUM_REQUIRED state rather than the generic UNKNOWN one.
+    if market_data_quality == "unavailable":
+        return DataState.PREMIUM_REQUIRED
     return DataState.UNKNOWN
 
 

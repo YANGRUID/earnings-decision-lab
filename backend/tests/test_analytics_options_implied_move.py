@@ -143,9 +143,7 @@ def test_select_target_expiration_and_anchor_general_when_date_unknown():
     expirations = {date(2025, 9, 19), date(2025, 9, 26)}
     # reference_date (the snapshot's own date) allows the same-day 9/19
     # expiration -- general mode, no earnings event to outlive.
-    expiration, anchor = select_target_expiration_and_anchor(
-        expirations, None, date(2025, 9, 19)
-    )
+    expiration, anchor = select_target_expiration_and_anchor(expirations, None, date(2025, 9, 19))
     assert expiration == date(2025, 9, 19)
     assert anchor == OptionsSnapshotAnchor.GENERAL_CURRENT
 

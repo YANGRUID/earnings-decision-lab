@@ -3,6 +3,7 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from agents.tools.base import Tool
+from agents.tools.earnings_estimates import EarningsEstimatesTool
 from agents.tools.earnings_history import EarningsHistoryTool
 from agents.tools.filings_search import FilingsSearchTool
 from agents.tools.guidance_comparison import GuidanceComparisonTool
@@ -19,6 +20,7 @@ def build_tool_registry(db: Session, embedder: EmbeddingProvider) -> dict[str, T
     # name and its own args_schema is used to validate incoming JSON (see
     # agents/orchestrator.py), not statically at this list's construction.
     tools: list[Tool[Any]] = [
+        EarningsEstimatesTool(db),
         EarningsHistoryTool(db),
         FilingsSearchTool(db, embedder),
         GuidanceComparisonTool(db),

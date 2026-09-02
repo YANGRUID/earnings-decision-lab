@@ -8,6 +8,9 @@ from fastapi import APIRouter, BackgroundTasks, Query, Request
 from analytics.decision.budget import validate_risk_cap_inputs
 from analytics.decision.probability import build_estimated_probability
 from analytics.market_session import get_market_session
+from analytics.options.expiration_methodology_comparison import (
+    compare_expiration_methodologies,
+)
 from analytics.options.expiration_selection import ExpirationCandidate, ExpirationSelectionResult
 from analytics.options.move_compatibility import (
     MoveCompatibility,
@@ -32,6 +35,7 @@ from models.enums import (
 )
 from models.filing import Filing
 from models.price_bar import PriceBar
+from models.research_preparation_job import JobStatus
 from providers.factory import (
     MissingOptionsProviderConfigError,
     UnknownOptionsProviderError,
@@ -55,6 +59,7 @@ from schemas.api import (
     EstimatedProbabilityResponse,
     ExecutionTraceResponse,
     ExpirationCandidateResponse,
+    ExpirationMethodologyComparisonResponse,
     ExpirationScoreResponse,
     ExpirationSelectionResponse,
     FilingSearchResponse,
@@ -66,6 +71,7 @@ from schemas.api import (
     OptionsMarketStateResponse,
     PendingDecisionResponse,
     PendingDecisionsResponse,
+    PreparingCompanyResponse,
     RankedStrategyResponse,
     RateResponse,
     ResearchJobQueuedResponse,
@@ -73,6 +79,7 @@ from schemas.api import (
     ResearchOverviewResponse,
     ResearchQueryRequest,
     ResearchQueryResponse,
+    ResearchQueryStatus,
     ScenarioPnlResponse,
     SettlementAttemptResponse,
     StrategyAnalysisResponse,
@@ -96,6 +103,7 @@ from services.decision_history import (
     persist_decision,
 )
 from services.decision_settlement import compute_settlement_eligibility, settle_decision
+from services.earnings_research_preparation import enqueue_ticker_for_preparation
 from services.earnings_thesis import ThesisGenerationError, generate_earnings_thesis
 from services.expiration_engine import (
     DEFAULT_MAX_CANDIDATES,
@@ -133,6 +141,7 @@ from services.research_orchestration import (
     get_running_research_job,
     prepare_company_research,
 )
+from services.research_query_resolution import resolve_mentioned_companies
 from services.strategy_generation import generate_strategy_candidates
 from services.symbol_resolution import normalize_ticker, resolve_symbol
 from services.track_record import compute_track_record
@@ -172,7 +181,60 @@ def research_query(
             "calls. Please wait a moment and try again."
         )
 
-    result = orchestrator.run(body.question)
+    settings = get_settings()
+    edgar = SECEdgarProvider(user_agent=settings.sec_edgar_user_agent)
+    resolution = resolve_mentioned_companies(db, edgar, body.question, explicit_ticker=body.ticker)
+
+    if body.ticker:
+        explicit = normalize_ticker(body.ticker)
+        if not any(r.ticker == explicit for r in resolution.resolved):
+            # The one company this request explicitly named (e.g. the
+            # Research page's own ?ticker= context) isn't a real,
+            # SEC-known company at all -- an honest, definitive state
+            # (Part A11), not a guess dressed up as an answer.
+            return ResearchQueryResponse(
+                question=body.question,
+                status="company_not_found",
+                unresolved_tickers=[explicit],
+            )
+
+    # Part A4 -- reuse a company's research immediately if it's already
+    # ready; for anything that isn't, enqueue through the SAME durable
+    # queue the automated scheduler uses (never run preparation inline
+    # in this request) and report it honestly rather than answering from
+    # nothing.
+    ready_tickers: list[str] = []
+    preparing: list[PreparingCompanyResponse] = []
+    for r in resolution.resolved:
+        job = get_latest_research_job(db, r.ticker)
+        if job is not None and job.status in (
+            JobStatus.COMPLETED,
+            JobStatus.COMPLETED_WITH_WARNINGS,
+        ):
+            ready_tickers.append(r.ticker)
+        else:
+            queued_job = enqueue_ticker_for_preparation(db, r.ticker)
+            preparing.append(
+                PreparingCompanyResponse(
+                    ticker=r.ticker,
+                    job_id=queued_job.id,
+                    job_status=queued_job.status.value,
+                )
+            )
+
+    if resolution.resolved and not ready_tickers:
+        # Every real, resolved company this question is about still
+        # needs preparation -- nothing to honestly answer with yet.
+        return ResearchQueryResponse(
+            question=body.question,
+            status="preparing",
+            preparing=preparing,
+            unresolved_tickers=resolution.unresolved,
+        )
+
+    result = orchestrator.run(
+        body.question, resolved_tickers=ready_tickers or None, as_of=body.as_of
+    )
     trace = result.trace
 
     ticker = normalize_ticker(body.ticker) if body.ticker else None
@@ -186,8 +248,22 @@ def research_query(
     # this line, so no row is ever written for a broken/incomplete answer.
     persist_research_query(db, ticker=ticker, company=company, provider=llm.name, result=result)
 
+    # Part A11 -- honest, real-signal detection, not a guess: only when
+    # this question was scoped to a specific real company (ready_tickers
+    # non-empty), every tool call it tried genuinely failed, and no
+    # citation was produced either.
+    all_tool_calls_failed = bool(trace.tool_calls) and all(
+        not tc.success for tc in trace.tool_calls
+    )
+    status: ResearchQueryStatus = (
+        "insufficient_evidence"
+        if ready_tickers and all_tool_calls_failed and not result.citations
+        else "completed"
+    )
+
     return ResearchQueryResponse(
         question=result.question,
+        status=status,
         answer=result.answer,
         citations=[CitationResponse.from_citation(c) for c in result.citations],
         trace=ExecutionTraceResponse(
@@ -214,6 +290,8 @@ def research_query(
             estimated_cost_usd=trace.estimated_cost_usd,
             total_duration_ms=trace.total_duration_ms,
         ),
+        preparing=preparing,
+        unresolved_tickers=resolution.unresolved,
     )
 
 
@@ -514,7 +592,18 @@ def _expiration_candidate_response(candidate: ExpirationCandidate) -> Expiration
 
 def _expiration_selection_response(
     result: ExpirationSelectionResult,
+    earnings_date: date | None = None,
 ) -> ExpirationSelectionResponse:
+    # Phase 4 methodology-experiments hardening (2026-08-26), Section 35 --
+    # EXPERIMENTAL only, mode="auto" with a real earnings date to compare
+    # against; zero extra provider calls (reuses this same result's own
+    # already-discovered candidates). Never touches the official
+    # BenchmarkPortfolio methodology.
+    comparison = None
+    if result.mode == "auto" and earnings_date is not None:
+        comparison = ExpirationMethodologyComparisonResponse.model_validate(
+            compare_expiration_methodologies(result, earnings_date)
+        )
     return ExpirationSelectionResponse(
         mode=result.mode,
         selected=(
@@ -523,6 +612,7 @@ def _expiration_selection_response(
         alternatives=[_expiration_candidate_response(c) for c in result.alternatives],
         reasons=result.reasons,
         warning=result.warning,
+        methodology_comparison=comparison,
     )
 
 
@@ -568,7 +658,7 @@ def get_expiration_selection(
         result = resolve_auto_expiration(
             db, company, provider, now, earnings_date, max_candidates=max_candidates
         )
-    return _expiration_selection_response(result)
+    return _expiration_selection_response(result, earnings_date)
 
 
 @router.get("/{symbol}/strategies", response_model=StrategyLabResponse)
@@ -881,9 +971,7 @@ def get_thesis_history(
 
 
 @router.get("/{symbol}/theses/{version_id}", response_model=AIThesisVersionResponse)
-def get_thesis_version_item(
-    symbol: str, version_id: int, db: DbSession
-) -> AIThesisVersionResponse:
+def get_thesis_version_item(symbol: str, version_id: int, db: DbSession) -> AIThesisVersionResponse:
     ticker = normalize_ticker(symbol)
     company = db.query(Company).filter(Company.ticker == ticker).one_or_none()
     if company is None:
@@ -1093,9 +1181,7 @@ def delete_decision_item(symbol: str, decision_id: int, db: DbSession) -> None:
 
 
 @router.post("/{symbol}/decisions/{decision_id}/final", response_model=AIDecisionVersionResponse)
-def mark_decision_final(
-    symbol: str, decision_id: int, db: DbSession
-) -> AIDecisionVersionResponse:
+def mark_decision_final(symbol: str, decision_id: int, db: DbSession) -> AIDecisionVersionResponse:
     """Marks ``decision_id`` as the Final Decision for this company (Phase
     14.9 Part F section 22) -- the one used for post-event track-record
     evaluation. Unmarks any other decision that was previously final for

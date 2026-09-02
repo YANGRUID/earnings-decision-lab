@@ -22,13 +22,21 @@ from models.enums import (
     EarningsTiming,
     OptionAction,
     OptionType,
+    QuoteRequirement,
     RiskProfile,
 )
 from models.exit_snapshot import ExitSnapshot
+from models.quote_acquisition_attempt import QuoteAcquisitionAttempt
 from models.settlement_capture_attempt import SettlementCaptureAttempt
 from providers.base import OptionsDataProvider
-from providers.ibkr_client import IBKRGatewayUnavailableError
-from providers.types import KnownContract, OptionQuote, UnderlyingQuote
+from providers.ibkr_client import IBKRGatewayUnavailableError, IBKRRateLimitedError
+from providers.types import (
+    KnownContract,
+    OptionQuote,
+    SnapshotAttempt,
+    SnapshotFieldPresence,
+    UnderlyingQuote,
+)
 from services.benchmark_exit_capture import (
     EXIT_EARLY_CAPTURE_TOLERANCE,
     capture_benchmark_exit,
@@ -73,7 +81,12 @@ class _FakeExitOptionsProvider(OptionsDataProvider):
         return []
 
     def get_quotes_for_known_contracts(
-        self, ticker: str, contracts: list[KnownContract], expiration: date, as_of: datetime
+        self,
+        ticker: str,
+        contracts: list[KnownContract],
+        expiration: date,
+        as_of: datetime,
+        on_attempt=None,
     ) -> list[OptionQuote]:
         if self._raise_exc is not None:
             raise self._raise_exc
@@ -83,6 +96,25 @@ class _FakeExitOptionsProvider(OptionsDataProvider):
         if self._underlying is _UNSET:
             return _underlying()
         return self._underlying
+
+
+class _TelemetryEmittingExitOptionsProvider(_FakeExitOptionsProvider):
+    """IBKR execution-observability hardening (2026-08-26), Section 24 --
+    a fake that actually invokes ``on_attempt`` with real, scripted
+    per-poll telemetry, mirroring test_services_benchmark_entry_capture.
+    py's own identical fake on the entry side."""
+
+    def __init__(self, *args, attempts: list[SnapshotAttempt] | None = None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._attempts = attempts or []
+
+    def get_quotes_for_known_contracts(
+        self, ticker, contracts, expiration, as_of, on_attempt=None
+    ) -> list[OptionQuote]:
+        if on_attempt is not None:
+            for attempt in self._attempts:
+                on_attempt(attempt)
+        return self._quotes
 
 
 def _underlying(
@@ -299,15 +331,22 @@ def _butterfly_legs() -> list[dict]:
 def test_long_leg_uses_bid_at_exit(db_session):
     event, portfolio = _seed_event_and_portfolio(db_session)
     decision, _attempt, _legs = _seed_entered_decision(
-        db_session, event, portfolio, _single_long_call_leg(),
-        net_entry_cash=Decimal("210.00"), initial_max_risk=Decimal("210.00"),
+        db_session,
+        event,
+        portfolio,
+        _single_long_call_leg(),
+        net_entry_cash=Decimal("210.00"),
+        initial_max_risk=Decimal("210.00"),
     )
     quotes = [_exit_quote("111", "call", Decimal("100"), Decimal("2.90"), Decimal("3.10"))]
     provider = _FakeExitOptionsProvider(quotes)
 
     attempt = capture_benchmark_exit(
-        db_session, decision_snapshot=decision, portfolio=portfolio,
-        options_provider=provider, now=_due_now(),
+        db_session,
+        decision_snapshot=decision,
+        portfolio=portfolio,
+        options_provider=provider,
+        now=_due_now(),
     )
     db_session.flush()
 
@@ -318,18 +357,154 @@ def test_long_leg_uses_bid_at_exit(db_session):
     assert leg.realized_pnl_per_share == Decimal("0.80")  # 2.90 - 2.10
 
 
+def test_live_only_policy_rejects_a_delayed_exit_leg(db_session, monkeypatch):
+    """Phase 4 market-data-quality hardening (2026-08-26), Section 16 --
+    mirrors test_services_benchmark_entry_capture.py's own coverage."""
+    import services.benchmark_exit_capture as exit_capture_module
+    from core.config import Settings
+    from models.enums import MarketDataQualityPolicy
+
+    monkeypatch.setattr(
+        exit_capture_module,
+        "get_settings",
+        lambda: Settings(
+            market_data_quality_policy=MarketDataQualityPolicy.LIVE_ONLY, _env_file=None
+        ),
+    )
+    event, portfolio = _seed_event_and_portfolio(db_session)
+    decision, _attempt, _legs = _seed_entered_decision(
+        db_session,
+        event,
+        portfolio,
+        _single_long_call_leg(),
+        net_entry_cash=Decimal("210.00"),
+        initial_max_risk=Decimal("210.00"),
+    )
+    quotes = [
+        _exit_quote(
+            "111",
+            "call",
+            Decimal("100"),
+            Decimal("2.90"),
+            Decimal("3.10"),
+            market_data_quality="delayed",
+        )
+    ]
+    provider = _FakeExitOptionsProvider(quotes)
+
+    attempt = capture_benchmark_exit(
+        db_session,
+        decision_snapshot=decision,
+        portfolio=portfolio,
+        options_provider=provider,
+        now=_due_now(),
+    )
+
+    assert attempt.status == CaptureStatus.FAILED
+    assert "live_only" in (attempt.capture_error or "")
+
+
+def test_quote_acquisition_telemetry_persisted_for_a_long_exit_leg(db_session):
+    """IBKR execution-observability hardening (2026-08-26), Section 6/24
+    -- closing a BUY (long) leg requires BID; telemetry must reflect
+    that real requirement, and must persist every real poll, not just
+    the final one."""
+    event, portfolio = _seed_event_and_portfolio(db_session)
+    decision, _attempt, _legs = _seed_entered_decision(
+        db_session,
+        event,
+        portfolio,
+        _single_long_call_leg(),
+        net_entry_cash=Decimal("210.00"),
+        initial_max_risk=Decimal("210.00"),
+    )
+    final_quote = _exit_quote("111", "call", Decimal("100"), Decimal("2.90"), Decimal("3.10"))
+    attempts = [
+        SnapshotAttempt(
+            attempt=1,
+            elapsed_ms=1600.0,
+            per_conid={
+                111: SnapshotFieldPresence(
+                    bid_present=False,
+                    ask_present=True,
+                    last_present=True,
+                    market_data_quality="delayed",
+                    ask=Decimal("3.10"),
+                    last_price=Decimal("3.00"),
+                )
+            },
+        ),
+        SnapshotAttempt(
+            attempt=2,
+            elapsed_ms=3100.0,
+            per_conid={
+                111: SnapshotFieldPresence(
+                    bid_present=True,
+                    ask_present=True,
+                    last_present=True,
+                    market_data_quality="delayed",
+                    bid=Decimal("2.90"),
+                    ask=Decimal("3.10"),
+                    last_price=Decimal("3.00"),
+                )
+            },
+        ),
+    ]
+    provider = _TelemetryEmittingExitOptionsProvider([final_quote], attempts=attempts)
+
+    attempt = capture_benchmark_exit(
+        db_session,
+        decision_snapshot=decision,
+        portfolio=portfolio,
+        options_provider=provider,
+        now=_due_now(),
+    )
+    db_session.flush()
+
+    assert attempt.status == CaptureStatus.CAPTURED
+    rows = (
+        db_session.query(QuoteAcquisitionAttempt)
+        .filter_by(settlement_capture_attempt_id=attempt.id)
+        .order_by(QuoteAcquisitionAttempt.snapshot_attempt_number)
+        .all()
+    )
+    assert len(rows) == 2
+    first, second = rows
+    assert first.snapshot_attempt_number == 1
+    assert first.elapsed_ms == 1600
+    assert first.bid_present is False  # ASK arrived first -- BID still required
+    assert first.required_side == QuoteRequirement.BID  # closing a BUY leg
+    assert first.final_for_leg is False
+    assert second.snapshot_attempt_number == 2
+    assert second.bid_present is True
+    assert second.bid == Decimal("2.90")
+    assert second.final_for_leg is True
+    assert second.required_side == QuoteRequirement.BID
+
+    # Telemetry never touches the official fill.
+    exit_snapshot = db_session.query(ExitSnapshot).filter_by(settlement_attempt_id=attempt.id).one()
+    assert exit_snapshot.benchmark_exit_price == Decimal("2.90")
+
+
 def test_short_leg_uses_ask_at_exit(db_session):
     event, portfolio = _seed_event_and_portfolio(db_session)
     decision, _attempt, _legs = _seed_entered_decision(
-        db_session, event, portfolio, _single_short_call_leg(),
-        net_entry_cash=Decimal("-190.00"), initial_max_risk=Decimal("500.00"),
+        db_session,
+        event,
+        portfolio,
+        _single_short_call_leg(),
+        net_entry_cash=Decimal("-190.00"),
+        initial_max_risk=Decimal("500.00"),
     )
     quotes = [_exit_quote("222", "call", Decimal("100"), Decimal("0.90"), Decimal("1.10"))]
     provider = _FakeExitOptionsProvider(quotes)
 
     attempt = capture_benchmark_exit(
-        db_session, decision_snapshot=decision, portfolio=portfolio,
-        options_provider=provider, now=_due_now(),
+        db_session,
+        decision_snapshot=decision,
+        portfolio=portfolio,
+        options_provider=provider,
+        now=_due_now(),
     )
     db_session.flush()
 
@@ -350,15 +525,22 @@ def test_short_leg_uses_ask_at_exit(db_session):
 def test_realized_pnl_return_and_r_multiple_computed_from_frozen_entry_figures(db_session):
     event, portfolio = _seed_event_and_portfolio(db_session)
     decision, _attempt, _legs = _seed_entered_decision(
-        db_session, event, portfolio, _single_long_call_leg(),
-        net_entry_cash=Decimal("210.00"), initial_max_risk=Decimal("210.00"),
+        db_session,
+        event,
+        portfolio,
+        _single_long_call_leg(),
+        net_entry_cash=Decimal("210.00"),
+        initial_max_risk=Decimal("210.00"),
     )
     quotes = [_exit_quote("111", "call", Decimal("100"), Decimal("2.90"), Decimal("3.10"))]
     provider = _FakeExitOptionsProvider(quotes)
 
     attempt = capture_benchmark_exit(
-        db_session, decision_snapshot=decision, portfolio=portfolio,
-        options_provider=provider, now=_due_now(),
+        db_session,
+        decision_snapshot=decision,
+        portfolio=portfolio,
+        options_provider=provider,
+        now=_due_now(),
     )
 
     assert attempt.status == CaptureStatus.CAPTURED
@@ -374,15 +556,23 @@ def test_sizing_is_never_recalculated_at_settlement(db_session):
     (Phase 4.5 approved decision 3)."""
     event, portfolio = _seed_event_and_portfolio(db_session)
     decision, entry_attempt, _legs = _seed_entered_decision(
-        db_session, event, portfolio, _single_long_call_leg(),
-        net_entry_cash=Decimal("630.00"), initial_max_risk=Decimal("630.00"), contracts=3,
+        db_session,
+        event,
+        portfolio,
+        _single_long_call_leg(),
+        net_entry_cash=Decimal("630.00"),
+        initial_max_risk=Decimal("630.00"),
+        contracts=3,
     )
     quotes = [_exit_quote("111", "call", Decimal("100"), Decimal("2.90"), Decimal("3.10"))]
     provider = _FakeExitOptionsProvider(quotes)
 
     attempt = capture_benchmark_exit(
-        db_session, decision_snapshot=decision, portfolio=portfolio,
-        options_provider=provider, now=_due_now(),
+        db_session,
+        decision_snapshot=decision,
+        portfolio=portfolio,
+        options_provider=provider,
+        now=_due_now(),
     )
 
     assert attempt.status == CaptureStatus.CAPTURED
@@ -398,8 +588,12 @@ def test_sizing_is_never_recalculated_at_settlement(db_session):
 def test_butterfly_legs_each_get_their_own_exit_snapshot(db_session):
     event, portfolio = _seed_event_and_portfolio(db_session)
     decision, _attempt, _legs = _seed_entered_decision(
-        db_session, event, portfolio, _butterfly_legs(),
-        net_entry_cash=Decimal("100.00"), initial_max_risk=Decimal("400.00"),
+        db_session,
+        event,
+        portfolio,
+        _butterfly_legs(),
+        net_entry_cash=Decimal("100.00"),
+        initial_max_risk=Decimal("400.00"),
         strategy_type="butterfly",
     )
     quotes = [
@@ -410,8 +604,11 @@ def test_butterfly_legs_each_get_their_own_exit_snapshot(db_session):
     provider = _FakeExitOptionsProvider(quotes)
 
     attempt = capture_benchmark_exit(
-        db_session, decision_snapshot=decision, portfolio=portfolio,
-        options_provider=provider, now=_due_now(),
+        db_session,
+        decision_snapshot=decision,
+        portfolio=portfolio,
+        options_provider=provider,
+        now=_due_now(),
     )
     db_session.flush()
 
@@ -436,8 +633,12 @@ def test_missing_leg_quote_fails_the_whole_multi_leg_attempt(db_session):
     exit is never a real, honest closed position."""
     event, portfolio = _seed_event_and_portfolio(db_session)
     decision, _attempt, _legs = _seed_entered_decision(
-        db_session, event, portfolio, _butterfly_legs(),
-        net_entry_cash=Decimal("100.00"), initial_max_risk=Decimal("400.00"),
+        db_session,
+        event,
+        portfolio,
+        _butterfly_legs(),
+        net_entry_cash=Decimal("100.00"),
+        initial_max_risk=Decimal("400.00"),
         strategy_type="butterfly",
     )
     # the 105 strike's quote is missing entirely
@@ -448,8 +649,11 @@ def test_missing_leg_quote_fails_the_whole_multi_leg_attempt(db_session):
     provider = _FakeExitOptionsProvider(quotes)
 
     attempt = capture_benchmark_exit(
-        db_session, decision_snapshot=decision, portfolio=portfolio,
-        options_provider=provider, now=_due_now(),
+        db_session,
+        decision_snapshot=decision,
+        portfolio=portfolio,
+        options_provider=provider,
+        now=_due_now(),
     )
     db_session.flush()
 
@@ -470,16 +674,23 @@ def test_missing_leg_quote_fails_the_whole_multi_leg_attempt(db_session):
 def test_coherent_timestamps_accepted(db_session):
     event, portfolio = _seed_event_and_portfolio(db_session)
     decision, _attempt, _legs = _seed_entered_decision(
-        db_session, event, portfolio, _single_long_call_leg(),
-        net_entry_cash=Decimal("210.00"), initial_max_risk=Decimal("210.00"),
+        db_session,
+        event,
+        portfolio,
+        _single_long_call_leg(),
+        net_entry_cash=Decimal("210.00"),
+        initial_max_risk=Decimal("210.00"),
     )
     now = _due_now()
     quotes = [_exit_quote("111", "call", Decimal("100"), Decimal("2.90"), Decimal("3.10"), ts=now)]
     provider = _FakeExitOptionsProvider(quotes, underlying=_underlying(ts=now))
 
     attempt = capture_benchmark_exit(
-        db_session, decision_snapshot=decision, portfolio=portfolio,
-        options_provider=provider, now=now,
+        db_session,
+        decision_snapshot=decision,
+        portfolio=portfolio,
+        options_provider=provider,
+        now=now,
     )
 
     assert attempt.status == CaptureStatus.CAPTURED
@@ -489,8 +700,12 @@ def test_coherent_timestamps_accepted(db_session):
 def test_excessive_timestamp_skew_rejected(db_session):
     event, portfolio = _seed_event_and_portfolio(db_session)
     decision, _attempt, _legs = _seed_entered_decision(
-        db_session, event, portfolio, _single_long_call_leg(),
-        net_entry_cash=Decimal("210.00"), initial_max_risk=Decimal("210.00"),
+        db_session,
+        event,
+        portfolio,
+        _single_long_call_leg(),
+        net_entry_cash=Decimal("210.00"),
+        initial_max_risk=Decimal("210.00"),
     )
     now = _due_now()
     quotes = [_exit_quote("111", "call", Decimal("100"), Decimal("2.90"), Decimal("3.10"), ts=now)]
@@ -499,8 +714,11 @@ def test_excessive_timestamp_skew_rejected(db_session):
     )
 
     attempt = capture_benchmark_exit(
-        db_session, decision_snapshot=decision, portfolio=portfolio,
-        options_provider=provider, now=now,
+        db_session,
+        decision_snapshot=decision,
+        portfolio=portfolio,
+        options_provider=provider,
+        now=now,
     )
 
     assert attempt.status == CaptureStatus.FAILED
@@ -512,15 +730,22 @@ def test_unavailable_live_underlying_creates_failed_attempt(db_session):
     decision 1) -- a missing live underlying quote fails honestly."""
     event, portfolio = _seed_event_and_portfolio(db_session)
     decision, _attempt, _legs = _seed_entered_decision(
-        db_session, event, portfolio, _single_long_call_leg(),
-        net_entry_cash=Decimal("210.00"), initial_max_risk=Decimal("210.00"),
+        db_session,
+        event,
+        portfolio,
+        _single_long_call_leg(),
+        net_entry_cash=Decimal("210.00"),
+        initial_max_risk=Decimal("210.00"),
     )
     quotes = [_exit_quote("111", "call", Decimal("100"), Decimal("2.90"), Decimal("3.10"))]
     provider = _FakeExitOptionsProvider(quotes, underlying=None)
 
     attempt = capture_benchmark_exit(
-        db_session, decision_snapshot=decision, portfolio=portfolio,
-        options_provider=provider, now=_due_now(),
+        db_session,
+        decision_snapshot=decision,
+        portfolio=portfolio,
+        options_provider=provider,
+        now=_due_now(),
     )
 
     assert attempt.status == CaptureStatus.FAILED
@@ -553,8 +778,11 @@ def test_no_official_entry_fails_honestly(db_session):
     provider = _FakeExitOptionsProvider([])
 
     attempt = capture_benchmark_exit(
-        db_session, decision_snapshot=decision, portfolio=portfolio,
-        options_provider=provider, now=_due_now(),
+        db_session,
+        decision_snapshot=decision,
+        portfolio=portfolio,
+        options_provider=provider,
+        now=_due_now(),
     )
 
     assert attempt.status == CaptureStatus.FAILED
@@ -570,20 +798,30 @@ def test_no_official_entry_fails_honestly(db_session):
 def test_successful_duplicate_capture_does_not_duplicate_settlement(db_session):
     event, portfolio = _seed_event_and_portfolio(db_session)
     decision, _attempt, _legs = _seed_entered_decision(
-        db_session, event, portfolio, _single_long_call_leg(),
-        net_entry_cash=Decimal("210.00"), initial_max_risk=Decimal("210.00"),
+        db_session,
+        event,
+        portfolio,
+        _single_long_call_leg(),
+        net_entry_cash=Decimal("210.00"),
+        initial_max_risk=Decimal("210.00"),
     )
     quotes = [_exit_quote("111", "call", Decimal("100"), Decimal("2.90"), Decimal("3.10"))]
     provider = _FakeExitOptionsProvider(quotes)
 
     first = capture_benchmark_exit(
-        db_session, decision_snapshot=decision, portfolio=portfolio,
-        options_provider=provider, now=_due_now(),
+        db_session,
+        decision_snapshot=decision,
+        portfolio=portfolio,
+        options_provider=provider,
+        now=_due_now(),
     )
     db_session.flush()
     second = capture_benchmark_exit(
-        db_session, decision_snapshot=decision, portfolio=portfolio,
-        options_provider=provider, now=_due_now(),
+        db_session,
+        decision_snapshot=decision,
+        portfolio=portfolio,
+        options_provider=provider,
+        now=_due_now(),
     )
 
     assert first.id == second.id
@@ -598,14 +836,21 @@ def test_successful_duplicate_capture_does_not_duplicate_settlement(db_session):
 def test_failed_attempt_allows_a_new_retry_attempt(db_session):
     event, portfolio = _seed_event_and_portfolio(db_session)
     decision, _attempt, _legs = _seed_entered_decision(
-        db_session, event, portfolio, _single_long_call_leg(),
-        net_entry_cash=Decimal("210.00"), initial_max_risk=Decimal("210.00"),
+        db_session,
+        event,
+        portfolio,
+        _single_long_call_leg(),
+        net_entry_cash=Decimal("210.00"),
+        initial_max_risk=Decimal("210.00"),
     )
 
     failing_provider = _FakeExitOptionsProvider(raise_exc=IBKRGatewayUnavailableError("down"))
     first = capture_benchmark_exit(
-        db_session, decision_snapshot=decision, portfolio=portfolio,
-        options_provider=failing_provider, now=_due_now(),
+        db_session,
+        decision_snapshot=decision,
+        portfolio=portfolio,
+        options_provider=failing_provider,
+        now=_due_now(),
     )
     db_session.flush()
     assert first.status == CaptureStatus.FAILED
@@ -614,8 +859,11 @@ def test_failed_attempt_allows_a_new_retry_attempt(db_session):
         [_exit_quote("111", "call", Decimal("100"), Decimal("2.90"), Decimal("3.10"))]
     )
     second = capture_benchmark_exit(
-        db_session, decision_snapshot=decision, portfolio=portfolio,
-        options_provider=working_provider, now=_due_now(),
+        db_session,
+        decision_snapshot=decision,
+        portfolio=portfolio,
+        options_provider=working_provider,
+        now=_due_now(),
     )
     db_session.flush()
 
@@ -632,14 +880,21 @@ def test_failed_attempt_allows_a_new_retry_attempt(db_session):
 def test_failed_attempt_remains_immutable(db_session):
     event, portfolio = _seed_event_and_portfolio(db_session)
     decision, _attempt, _legs = _seed_entered_decision(
-        db_session, event, portfolio, _single_long_call_leg(),
-        net_entry_cash=Decimal("210.00"), initial_max_risk=Decimal("210.00"),
+        db_session,
+        event,
+        portfolio,
+        _single_long_call_leg(),
+        net_entry_cash=Decimal("210.00"),
+        initial_max_risk=Decimal("210.00"),
     )
     provider = _FakeExitOptionsProvider(raise_exc=IBKRGatewayUnavailableError("down"))
 
     attempt = capture_benchmark_exit(
-        db_session, decision_snapshot=decision, portfolio=portfolio,
-        options_provider=provider, now=_due_now(),
+        db_session,
+        decision_snapshot=decision,
+        portfolio=portfolio,
+        options_provider=provider,
+        now=_due_now(),
     )
     db_session.flush()
 
@@ -651,19 +906,68 @@ def test_failed_attempt_remains_immutable(db_session):
 def test_ibkr_gateway_unavailable_recorded_honestly(db_session):
     event, portfolio = _seed_event_and_portfolio(db_session)
     decision, _attempt, _legs = _seed_entered_decision(
-        db_session, event, portfolio, _single_long_call_leg(),
-        net_entry_cash=Decimal("210.00"), initial_max_risk=Decimal("210.00"),
+        db_session,
+        event,
+        portfolio,
+        _single_long_call_leg(),
+        net_entry_cash=Decimal("210.00"),
+        initial_max_risk=Decimal("210.00"),
     )
     provider = _FakeExitOptionsProvider(raise_exc=IBKRGatewayUnavailableError("gateway down"))
 
     attempt = capture_benchmark_exit(
-        db_session, decision_snapshot=decision, portfolio=portfolio,
-        options_provider=provider, now=_due_now(),
+        db_session,
+        decision_snapshot=decision,
+        portfolio=portfolio,
+        options_provider=provider,
+        now=_due_now(),
     )
 
     assert attempt.status == CaptureStatus.FAILED
     assert "gateway down" in (attempt.capture_error or "")
     assert db_session.query(ExitSnapshot).filter_by(settlement_attempt_id=attempt.id).count() == 0
+    # Phase 4 quote-observability hardening (2026-08-26), Section 10 --
+    # settlement's exception path must persist structured diagnostic
+    # evidence too, mirroring entry capture exactly.
+    rows = (
+        db_session.query(QuoteAcquisitionAttempt)
+        .filter_by(settlement_capture_attempt_id=attempt.id)
+        .all()
+    )
+    assert len(rows) == 1
+    assert rows[0].provider_error_category == "GATEWAY_UNREACHABLE"
+    assert rows[0].contract_resolved is True
+
+
+def test_ibkr_rate_limited_produces_structured_settlement_telemetry(db_session):
+    event, portfolio = _seed_event_and_portfolio(db_session)
+    decision, _attempt, _legs = _seed_entered_decision(
+        db_session,
+        event,
+        portfolio,
+        _single_long_call_leg(),
+        net_entry_cash=Decimal("210.00"),
+        initial_max_risk=Decimal("210.00"),
+    )
+    provider = _FakeExitOptionsProvider(raise_exc=IBKRRateLimitedError("rate-limited the request"))
+
+    attempt = capture_benchmark_exit(
+        db_session,
+        decision_snapshot=decision,
+        portfolio=portfolio,
+        options_provider=provider,
+        now=_due_now(),
+    )
+
+    assert attempt.status == CaptureStatus.FAILED
+    rows = (
+        db_session.query(QuoteAcquisitionAttempt)
+        .filter_by(settlement_capture_attempt_id=attempt.id)
+        .all()
+    )
+    assert len(rows) == 1
+    assert rows[0].provider_error_category == "RATE_LIMITED"
+    assert rows[0].rate_limited is True
 
 
 # --------------------------------------------------------------------------
@@ -674,15 +978,22 @@ def test_ibkr_gateway_unavailable_recorded_honestly(db_session):
 def test_capture_exactly_at_scheduled_exit_accepted(db_session):
     event, portfolio = _seed_event_and_portfolio(db_session)
     decision, _attempt, _legs = _seed_entered_decision(
-        db_session, event, portfolio, _single_long_call_leg(),
-        net_entry_cash=Decimal("210.00"), initial_max_risk=Decimal("210.00"),
+        db_session,
+        event,
+        portfolio,
+        _single_long_call_leg(),
+        net_entry_cash=Decimal("210.00"),
+        initial_max_risk=Decimal("210.00"),
     )
     quotes = [_exit_quote("111", "call", Decimal("100"), Decimal("2.90"), Decimal("3.10"))]
     provider = _FakeExitOptionsProvider(quotes)
 
     attempt = capture_benchmark_exit(
-        db_session, decision_snapshot=decision, portfolio=portfolio,
-        options_provider=provider, now=_due_now(),
+        db_session,
+        decision_snapshot=decision,
+        portfolio=portfolio,
+        options_provider=provider,
+        now=_due_now(),
     )
 
     assert attempt.status == CaptureStatus.CAPTURED
@@ -691,16 +1002,23 @@ def test_capture_exactly_at_scheduled_exit_accepted(db_session):
 def test_capture_slightly_inside_early_tolerance_accepted(db_session):
     event, portfolio = _seed_event_and_portfolio(db_session)
     decision, _attempt, _legs = _seed_entered_decision(
-        db_session, event, portfolio, _single_long_call_leg(),
-        net_entry_cash=Decimal("210.00"), initial_max_risk=Decimal("210.00"),
+        db_session,
+        event,
+        portfolio,
+        _single_long_call_leg(),
+        net_entry_cash=Decimal("210.00"),
+        initial_max_risk=Decimal("210.00"),
     )
     now = _due_now() - EXIT_EARLY_CAPTURE_TOLERANCE + timedelta(minutes=1)
     quotes = [_exit_quote("111", "call", Decimal("100"), Decimal("2.90"), Decimal("3.10"), ts=now)]
     provider = _FakeExitOptionsProvider(quotes, underlying=_underlying(ts=now))
 
     attempt = capture_benchmark_exit(
-        db_session, decision_snapshot=decision, portfolio=portfolio,
-        options_provider=provider, now=now,
+        db_session,
+        decision_snapshot=decision,
+        portfolio=portfolio,
+        options_provider=provider,
+        now=now,
     )
 
     assert attempt.status == CaptureStatus.CAPTURED
@@ -709,16 +1027,23 @@ def test_capture_slightly_inside_early_tolerance_accepted(db_session):
 def test_capture_before_early_tolerance_rejected(db_session):
     event, portfolio = _seed_event_and_portfolio(db_session)
     decision, _attempt, _legs = _seed_entered_decision(
-        db_session, event, portfolio, _single_long_call_leg(),
-        net_entry_cash=Decimal("210.00"), initial_max_risk=Decimal("210.00"),
+        db_session,
+        event,
+        portfolio,
+        _single_long_call_leg(),
+        net_entry_cash=Decimal("210.00"),
+        initial_max_risk=Decimal("210.00"),
     )
     now = _due_now() - EXIT_EARLY_CAPTURE_TOLERANCE - timedelta(minutes=1)
     quotes = [_exit_quote("111", "call", Decimal("100"), Decimal("2.90"), Decimal("3.10"), ts=now)]
     provider = _FakeExitOptionsProvider(quotes, underlying=_underlying(ts=now))
 
     attempt = capture_benchmark_exit(
-        db_session, decision_snapshot=decision, portfolio=portfolio,
-        options_provider=provider, now=now,
+        db_session,
+        decision_snapshot=decision,
+        portfolio=portfolio,
+        options_provider=provider,
+        now=now,
     )
 
     assert attempt.status == CaptureStatus.FAILED
@@ -729,16 +1054,23 @@ def test_capture_before_early_tolerance_rejected(db_session):
 def test_capture_slightly_inside_late_tolerance_accepted(db_session):
     event, portfolio = _seed_event_and_portfolio(db_session)
     decision, _attempt, _legs = _seed_entered_decision(
-        db_session, event, portfolio, _single_long_call_leg(),
-        net_entry_cash=Decimal("210.00"), initial_max_risk=Decimal("210.00"),
+        db_session,
+        event,
+        portfolio,
+        _single_long_call_leg(),
+        net_entry_cash=Decimal("210.00"),
+        initial_max_risk=Decimal("210.00"),
     )
     now = _due_now() + LATE_CUTOFF_GRACE - timedelta(minutes=1)
     quotes = [_exit_quote("111", "call", Decimal("100"), Decimal("2.90"), Decimal("3.10"), ts=now)]
     provider = _FakeExitOptionsProvider(quotes, underlying=_underlying(ts=now))
 
     attempt = capture_benchmark_exit(
-        db_session, decision_snapshot=decision, portfolio=portfolio,
-        options_provider=provider, now=now,
+        db_session,
+        decision_snapshot=decision,
+        portfolio=portfolio,
+        options_provider=provider,
+        now=now,
     )
 
     assert attempt.status == CaptureStatus.CAPTURED
@@ -747,16 +1079,23 @@ def test_capture_slightly_inside_late_tolerance_accepted(db_session):
 def test_capture_after_late_tolerance_rejected(db_session):
     event, portfolio = _seed_event_and_portfolio(db_session)
     decision, _attempt, _legs = _seed_entered_decision(
-        db_session, event, portfolio, _single_long_call_leg(),
-        net_entry_cash=Decimal("210.00"), initial_max_risk=Decimal("210.00"),
+        db_session,
+        event,
+        portfolio,
+        _single_long_call_leg(),
+        net_entry_cash=Decimal("210.00"),
+        initial_max_risk=Decimal("210.00"),
     )
     now = _due_now() + LATE_CUTOFF_GRACE + timedelta(minutes=1)
     quotes = [_exit_quote("111", "call", Decimal("100"), Decimal("2.90"), Decimal("3.10"), ts=now)]
     provider = _FakeExitOptionsProvider(quotes, underlying=_underlying(ts=now))
 
     attempt = capture_benchmark_exit(
-        db_session, decision_snapshot=decision, portfolio=portfolio,
-        options_provider=provider, now=now,
+        db_session,
+        decision_snapshot=decision,
+        portfolio=portfolio,
+        options_provider=provider,
+        now=now,
     )
 
     assert attempt.status == CaptureStatus.FAILED
@@ -772,7 +1111,9 @@ def test_capture_after_late_tolerance_rejected(db_session):
 def test_amc_example_earnings_monday_exit_tuesday(db_session):
     amc_earnings_date = date(2026, 9, 14)  # Monday
     event, portfolio = _seed_event_and_portfolio(
-        db_session, symbol="TESTAMCX", earnings_date=amc_earnings_date,
+        db_session,
+        symbol="TESTAMCX",
+        earnings_date=amc_earnings_date,
         earnings_time=EarningsTiming.AMC,
     )
     schedule = compute_entry_exit_schedule(amc_earnings_date, AnnouncementTime.AFTER_MARKET)
@@ -780,20 +1121,31 @@ def test_amc_example_earnings_monday_exit_tuesday(db_session):
     assert schedule.exit_date == date(2026, 9, 15)  # Tuesday
 
     decision, _attempt, _legs = _seed_entered_decision(
-        db_session, event, portfolio, _single_long_call_leg(),
-        net_entry_cash=Decimal("210.00"), initial_max_risk=Decimal("210.00"),
+        db_session,
+        event,
+        portfolio,
+        _single_long_call_leg(),
+        net_entry_cash=Decimal("210.00"),
+        initial_max_risk=Decimal("210.00"),
     )
     quotes = [
         _exit_quote(
-            "111", "call", Decimal("100"), Decimal("2.90"), Decimal("3.10"),
+            "111",
+            "call",
+            Decimal("100"),
+            Decimal("2.90"),
+            Decimal("3.10"),
             ts=schedule.exit_timestamp,
         )
     ]
     provider = _FakeExitOptionsProvider(quotes, underlying=_underlying(ts=schedule.exit_timestamp))
 
     attempt = capture_benchmark_exit(
-        db_session, decision_snapshot=decision, portfolio=portfolio,
-        options_provider=provider, now=schedule.exit_timestamp,
+        db_session,
+        decision_snapshot=decision,
+        portfolio=portfolio,
+        options_provider=provider,
+        now=schedule.exit_timestamp,
     )
 
     assert attempt.status == CaptureStatus.CAPTURED
@@ -806,7 +1158,9 @@ def test_bmo_example_earnings_tuesday_exit_same_tuesday(db_session):
     day as the earnings date)."""
     bmo_earnings_date = date(2026, 9, 15)  # Tuesday
     event, portfolio = _seed_event_and_portfolio(
-        db_session, symbol="TESTBMOX", earnings_date=bmo_earnings_date,
+        db_session,
+        symbol="TESTBMOX",
+        earnings_date=bmo_earnings_date,
         earnings_time=EarningsTiming.BMO,
     )
     schedule = compute_entry_exit_schedule(bmo_earnings_date, AnnouncementTime.BEFORE_MARKET)
@@ -814,20 +1168,31 @@ def test_bmo_example_earnings_tuesday_exit_same_tuesday(db_session):
     assert schedule.exit_date == date(2026, 9, 15)  # Tuesday -- the earnings date itself
 
     decision, _attempt, _legs = _seed_entered_decision(
-        db_session, event, portfolio, _single_long_call_leg(),
-        net_entry_cash=Decimal("210.00"), initial_max_risk=Decimal("210.00"),
+        db_session,
+        event,
+        portfolio,
+        _single_long_call_leg(),
+        net_entry_cash=Decimal("210.00"),
+        initial_max_risk=Decimal("210.00"),
     )
     quotes = [
         _exit_quote(
-            "111", "call", Decimal("100"), Decimal("2.90"), Decimal("3.10"),
+            "111",
+            "call",
+            Decimal("100"),
+            Decimal("2.90"),
+            Decimal("3.10"),
             ts=schedule.exit_timestamp,
         )
     ]
     provider = _FakeExitOptionsProvider(quotes, underlying=_underlying(ts=schedule.exit_timestamp))
 
     attempt = capture_benchmark_exit(
-        db_session, decision_snapshot=decision, portfolio=portfolio,
-        options_provider=provider, now=schedule.exit_timestamp,
+        db_session,
+        decision_snapshot=decision,
+        portfolio=portfolio,
+        options_provider=provider,
+        now=schedule.exit_timestamp,
     )
 
     assert attempt.status == CaptureStatus.CAPTURED

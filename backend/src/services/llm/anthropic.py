@@ -205,9 +205,7 @@ class AnthropicProvider(LLMProvider):
         ) as response:
             if response.status_code >= 400:
                 response.read()
-                raise LLMRequestError(
-                    f"anthropic returned {response.status_code}: {response.text}"
-                )
+                raise LLMRequestError(f"anthropic returned {response.status_code}: {response.text}")
             for line in response.iter_lines():
                 if not line.startswith("data: "):
                     continue

@@ -503,9 +503,7 @@ def test_options_chain_still_collects_with_no_known_earnings_date(db_session):
     assert len(persisted) == 2
     assert all(row.anchor == OptionsSnapshotAnchor.GENERAL_CURRENT for row in persisted)
 
-    volatility = (
-        db_session.query(VolatilitySnapshot).filter_by(company_id=company.id).one_or_none()
-    )
+    volatility = db_session.query(VolatilitySnapshot).filter_by(company_id=company.id).one_or_none()
     assert volatility is not None
     assert volatility.anchor == OptionsSnapshotAnchor.GENERAL_CURRENT
     assert volatility.target_earnings_date is None
@@ -703,3 +701,75 @@ def test_sec_filings_step_ignores_fresh_8k_rows_from_the_earnings_date_step(db_s
         .count()
         == 1
     )
+
+
+def test_filing_embeddings_step_never_embeds_8k_rows_from_the_earnings_date_step(db_session):
+    """Pre-live hardening (2026-08-25) -- a real, live-observed cost
+    driver: the historical-earnings step (_backfill_earnings_dates) can
+    leave dozens of real 8-K Filing rows on a company (one per matched
+    quarter, purely to record which filing confirmed each earnings
+    date) -- generate_decision()'s own RAG evidence step only ever
+    searches for "business overview"/"risk factors" content, which lives
+    in the 10-K/10-Q, never a press-release-style 8-K. Before this fix,
+    FILING_EMBEDDINGS queried every Filing row regardless of type and
+    fetched+embedded all of them, confirmed live to dominate real
+    per-company preparation time. This locks in that only 10-K/10-Q rows
+    are ever embedded."""
+    company = Company(ticker="ZZ8K", name="ZZ EightK Co", cik="0009999908")
+    db_session.add(company)
+    db_session.flush()
+    db_session.add_all(
+        [
+            Filing(
+                company_id=company.id,
+                filing_type=FilingType.FORM_10K,
+                filing_date=date(2026, 3, 1),
+                accession_number="0000000000-26-000010",
+                cik="0009999908",
+                source_url="https://example.com/10k.htm",
+                title="ZZ8K 10-K",
+                retrieved_at=NOW,
+            ),
+            *[
+                Filing(
+                    company_id=company.id,
+                    filing_type=FilingType.FORM_8K,
+                    filing_date=date(2020, 1, i + 1),
+                    accession_number=f"0000000000-20-00000{i}",
+                    cik="0009999908",
+                    source_url=f"https://example.com/8k-{i}.htm",
+                    title=f"ZZ8K 8-K #{i}",
+                    retrieved_at=NOW,
+                )
+                for i in range(5)
+            ],
+        ]
+    )
+    db_session.commit()
+
+    from services.research_orchestration import _prepare_filing_embeddings
+
+    edgar = _FakeEdgar()
+    status, detail = _prepare_filing_embeddings(db_session, edgar, _FakeEmbedder(), company)
+
+    assert status == StepStatus.DONE
+    assert "1 filings" in detail  # only the 10-K, never the 5 real 8-Ks
+    chunked_filing_ids = {
+        row[0]
+        for row in db_session.query(DocumentChunk.filing_id)
+        .filter(DocumentChunk.company_id == company.id)
+        .distinct()
+        .all()
+    }
+    ten_k = (
+        db_session.query(Filing)
+        .filter(Filing.company_id == company.id, Filing.filing_type == FilingType.FORM_10K)
+        .one()
+    )
+    eight_ks = (
+        db_session.query(Filing)
+        .filter(Filing.company_id == company.id, Filing.filing_type == FilingType.FORM_8K)
+        .all()
+    )
+    assert chunked_filing_ids == {ten_k.id}
+    assert not chunked_filing_ids.intersection({f.id for f in eight_ks})

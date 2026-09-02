@@ -15,7 +15,12 @@ from api.deps import DbSession
 from api.exceptions import NotFoundError
 from models.decision_snapshot import DecisionSnapshot
 from models.entry_capture_attempt import EntryCaptureAttempt
-from schemas.api import DecisionSnapshotResponse, EntryCaptureAttemptResponse
+from schemas.api import (
+    DecisionSnapshotResponse,
+    EntryCaptureAttemptResponse,
+    ForwardTestDatasetResponse,
+)
+from services.forward_test_dataset import MAX_DATASET_ROWS, list_forward_test_dataset
 
 router = APIRouter(prefix="/decision-snapshots", tags=["decision-snapshots"])
 
@@ -33,8 +38,24 @@ def list_decision_snapshots(
         query = query.filter(DecisionSnapshot.ticker == ticker.upper())
     if status:
         query = query.filter(DecisionSnapshot.status == status.upper())
-    return (
-        query.order_by(DecisionSnapshot.generated_at.desc()).offset(offset).limit(limit).all()
+    return query.order_by(DecisionSnapshot.generated_at.desc()).offset(offset).limit(limit).all()
+
+
+@router.get("/forward-test-dataset", response_model=ForwardTestDatasetResponse)
+def get_forward_test_dataset(
+    db: DbSession,
+    limit: int = Query(default=MAX_DATASET_ROWS, ge=1, le=MAX_DATASET_ROWS),
+) -> ForwardTestDatasetResponse:
+    """Phase 4 forward-test evaluation dataset (2026-08-26), Section
+    32-33 -- a canonical, READ-ONLY view over the existing official
+    evidence, built for future evaluation/modeling work. Registered
+    before ``/{snapshot_id}`` so this static path is never shadowed by
+    that dynamic one. Does NOT itself train, fit, or calibrate anything
+    -- see services/forward_test_dataset.py's own module docstring and
+    this phase's final report Section L (model training explicitly
+    deferred -- insufficient real settled sample size today)."""
+    return ForwardTestDatasetResponse(
+        rows=list_forward_test_dataset(db, limit=limit)  # type: ignore[arg-type]
     )
 
 

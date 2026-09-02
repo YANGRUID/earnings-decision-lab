@@ -112,6 +112,46 @@ class TestAdminEndpointsInDevelopment:
             "settlement_capture_attempts_after": before,
         }
 
+    def test_run_research_preparation_enqueues_only_and_returns_202_with_real_counts(
+        self, client, monkeypatch
+    ):
+        """Pre-live hardening (2026-08-25): this endpoint no longer owns
+        the lifetime of any long-running preparation work -- it only
+        enqueues durable ResearchPreparationJob rows (services/
+        earnings_research_preparation.py::enqueue_preparation_
+        candidates, via run_earnings_research_preparation_job) and
+        returns immediately with the real per-candidate outcome counts,
+        HTTP 202 (accepted, not yet done), never 200 (implying the real
+        preparation work itself already finished)."""
+        import api.routers.admin as admin_module
+        from services.earnings_research_preparation import EnqueueResult
+
+        called = []
+        fake_results = [
+            EnqueueResult(1, "TESTQ", "queued", None),
+            EnqueueResult(2, "TESTQ2", "queued", None),
+            EnqueueResult(3, "TESTREADY", "already_ready", None),
+            EnqueueResult(4, "TESTSMALL", "filtered_out", "market cap too low"),
+            EnqueueResult(5, "TESTWARN", "preparation_warning", "options chain lookup failed"),
+        ]
+        monkeypatch.setattr(
+            admin_module,
+            "run_earnings_research_preparation_job",
+            lambda: (called.append(True), fake_results)[1],
+        )
+
+        response = client.post("/api/v1/admin/run-research-preparation")
+
+        assert called == [True]
+        assert response.status_code == 202
+        body = response.json()
+        assert body == {
+            "queued": 2,
+            "already_ready": 1,
+            "filtered_out": 1,
+            "preparation_warning": 1,
+        }
+
     def test_a_job_that_actually_adds_rows_is_reflected_in_the_after_count(
         self, client, db_session, monkeypatch
     ):

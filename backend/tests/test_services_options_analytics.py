@@ -371,9 +371,7 @@ class TestComputeAndPersistVolatilitySnapshotGeneralMode:
     2026-08-18 -- see services/research_orchestration.py).
     """
 
-    def test_uses_nearest_expiration_on_or_after_snapshot_date_and_labels_general(
-        self, db_session
-    ):
+    def test_uses_nearest_expiration_on_or_after_snapshot_date_and_labels_general(self, db_session):
         company = _seed_company(db_session)
         _seed_price_bar(db_session, company.ticker, date(2025, 9, 12), Decimal("114.50"))
         # Snapshot taken 2025-09-15 (SNAPSHOT_TS); an expiration exactly on
@@ -1150,8 +1148,7 @@ class TestComputeActionability:
         as_of = datetime(2026, 3, 18, 11, 0, tzinfo=EASTERN)
         snapshot_ts = datetime(2026, 3, 16, 15, 58, tzinfo=EASTERN)  # Monday -- 2 sessions back
         assert (
-            compute_actionability("previous_priceable", snapshot_ts, as_of)
-            == "stale_research_only"
+            compute_actionability("previous_priceable", snapshot_ts, as_of) == "stale_research_only"
         )
 
 

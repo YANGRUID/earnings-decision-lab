@@ -50,6 +50,12 @@ Outcome = Literal[
     "created",
     "already_frozen",
     "skipped_ineligible",
+    # V4 consolidation, Section 14: a provider/transport failure while
+    # resolving the option chain is NOT a business eligibility judgement.
+    # Observed live 2026-09-01: BF.A and BF.B (dotted class tickers) drew
+    # TWS error 200 and were recorded as skipped_ineligible, permanently
+    # excluding two companies for what was a symbol-format problem.
+    "contract_resolution_failed",
     "skipped_not_due",
     "skipped_too_late",
     "skipped_no_company",
@@ -110,15 +116,23 @@ def run_decision_pipeline_for_event(
 
     eligibility = check_eligibility(calendar_event, options_provider)
     if not eligibility.eligible:
+        # `retryable` is set ONLY on the branch where the provider call
+        # itself failed (see EligibilityResult). Every other rejection is a
+        # real, data-driven business rule -- market cap, listing country,
+        # empty chain -- and stays skipped_ineligible.
+        outcome: Outcome = (
+            "contract_resolution_failed" if eligibility.retryable else "skipped_ineligible"
+        )
         log.info(
-            "decision pipeline: %s skipped (ineligible: %s)",
+            "decision pipeline: %s skipped (%s: %s)",
             calendar_event.symbol,
+            outcome,
             eligibility.reason,
         )
         return DecisionPipelineOutcome(
             calendar_event.id,
             calendar_event.symbol,
-            "skipped_ineligible",
+            outcome,
             reason=eligibility.reason,
         )
 
@@ -179,9 +193,7 @@ def run_decision_pipeline_for_event(
             result=result,
         )
     except Exception as exc:
-        log.error(
-            "decision pipeline: %s failed to freeze", calendar_event.symbol, exc_info=True
-        )
+        log.error("decision pipeline: %s failed to freeze", calendar_event.symbol, exc_info=True)
         return DecisionPipelineOutcome(
             calendar_event.id, calendar_event.symbol, "failed", reason=str(exc)
         )
@@ -191,6 +203,4 @@ def run_decision_pipeline_for_event(
         calendar_event.symbol,
         snapshot.id,
     )
-    return DecisionPipelineOutcome(
-        calendar_event.id, calendar_event.symbol, "created", snapshot.id
-    )
+    return DecisionPipelineOutcome(calendar_event.id, calendar_event.symbol, "created", snapshot.id)

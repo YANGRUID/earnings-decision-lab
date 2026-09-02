@@ -39,9 +39,7 @@ def bars_as_of_or_before(bars: dict[date, Decimal], as_of: date) -> date | None:
     return max(candidates) if candidates else None
 
 
-def nth_trading_day_close(
-    bars: dict[date, Decimal], anchor: date, n: int
-) -> tuple[date, Decimal]:
+def nth_trading_day_close(bars: dict[date, Decimal], anchor: date, n: int) -> tuple[date, Decimal]:
     """The close ``n`` trading days after (n>0) or before (n<0) ``anchor``.
 
     ``bars`` must be a {trade_date: close} map. ``anchor`` itself need not be

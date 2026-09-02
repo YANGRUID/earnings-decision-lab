@@ -53,8 +53,7 @@ def main() -> None:
                 log.info("%s: provider has no upcoming earnings date", ticker)
             else:
                 log.info(
-                    "%s: snapshot for period ending %s (report date %s), "
-                    "eps_avg=%s revenue_avg=%s",
+                    "%s: snapshot for period ending %s (report date %s), eps_avg=%s revenue_avg=%s",
                     ticker,
                     row.fiscal_period_end_date,
                     row.estimated_report_date,

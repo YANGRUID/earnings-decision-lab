@@ -231,6 +231,14 @@ def _set_step(
             steps[i] = _step_record(step, status, detail, now, retryable)
             break
     job.steps = steps
+    # Pre-live hardening (2026-08-25): every real step transition is also
+    # a real heartbeat -- this is the only signal services/research_
+    # preparation_queue.py's stale-lease recovery has for "is the worker
+    # behind this RUNNING row still alive", so it must land on the exact
+    # same commit as the step update itself, not a separate best-effort
+    # write that could be skipped. A row from the on-demand (Search page)
+    # path updates this too, harmlessly -- nothing reads it there.
+    job.heartbeat_at = datetime.now(UTC)
     db.add(job)
     db.commit()
 
@@ -399,10 +407,32 @@ def _prepare_sec_filings(
     return StepStatus.DONE, f"{len(filings)} recent 10-K/10-Q filings on record"
 
 
+# The only filing types _prepare_sec_filings actually fetches and that
+# generate_decision()'s own RAG evidence step (FilingsSearchTool, see
+# services/decision_engine.py::_gather_evidence) queries for -- "business
+# overview" and "risk factors" content lives in the 10-K/10-Q, not a
+# press-release-style 8-K. Real bug this scoping fixes (pre-live
+# hardening, 2026-08-25): _backfill_earnings_dates (ingestion/backfill_
+# earnings_dates.py, called by the HISTORICAL_EARNINGS step just before
+# this one) persists a real Filing row for every matched 8-K -- up to
+# several dozen for an established company -- purely to record which
+# filing confirmed each quarter's real earnings date. Before this fix,
+# this step queried *every* Filing row for the company regardless of
+# type, so it unintentionally fetched and embedded every one of those
+# 8-Ks too, dominating this step's real cost (confirmed live: one
+# company's preparation made ~30-45 real SEC document fetches here alone,
+# vs. the 4 filings _prepare_sec_filings itself actually intends).
+_EMBEDDABLE_FILING_TYPES = (FilingType.FORM_10K, FilingType.FORM_10Q)
+
+
 def _prepare_filing_embeddings(
     db: Session, edgar: SECEdgarProvider, embedder: EmbeddingProvider, company: Company
 ) -> _StepResult:
-    company_filings = db.query(Filing).filter(Filing.company_id == company.id).all()
+    company_filings = (
+        db.query(Filing)
+        .filter(Filing.company_id == company.id, Filing.filing_type.in_(_EMBEDDABLE_FILING_TYPES))
+        .all()
+    )
     if not company_filings:
         return StepStatus.SKIPPED, "no filings on record yet"
     chunked_filing_ids = {
@@ -496,6 +526,7 @@ def prepare_company_research(
     providers: ResearchProviders,
     now: datetime | None = None,
     force: bool = False,
+    existing_job: ResearchPreparationJob | None = None,
 ) -> ResearchPreparationJob:
     """Runs the full on-demand preparation pipeline for ``symbol`` and
     returns the finished (or failed) job row. Raises ``UnsupportedSymbolError``
@@ -508,19 +539,40 @@ def prepare_company_research(
     -- otherwise this call is identical to a normal freshness-gated
     preparation run, including still deduplicating same-day snapshots (see
     services.options_analytics.collect_options_snapshot_now).
+
+    ``existing_job`` (pre-live hardening, 2026-08-25): when given, this
+    call updates and reuses THAT row instead of creating a new one --
+    the durable-queue worker (services/research_preparation_queue.py,
+    workers/research_preparation_worker.py) already has a claimed queue
+    row (with its own earnings_calendar_event_id, attempt_count, lease
+    columns) and needs the step-level detail written onto that SAME row
+    so Operations can show live progress for one real, single, coherent
+    row per queued candidate -- not a second, disconnected row. The
+    on-demand Search-page path never passes this (stays None), so its
+    behavior -- always a fresh row -- is completely unchanged.
     """
     as_of = now if now is not None else datetime.now(UTC)
     resolution: SymbolResolution = resolve_symbol(db, providers.edgar, symbol)
     if not resolution.supported:
         raise UnsupportedSymbolError(resolution.reason or f"{symbol!r} is not supported")
 
-    job = ResearchPreparationJob(
-        ticker=resolution.ticker,
-        company_id=resolution.existing_company.id if resolution.existing_company else None,
-        status=JobStatus.RUNNING,
-        steps=[_step_record(s, StepStatus.PENDING, None, as_of) for s in PreparationStep],
-        started_at=as_of,
-    )
+    if existing_job is not None:
+        job = existing_job
+        job.ticker = resolution.ticker
+        job.company_id = resolution.existing_company.id if resolution.existing_company else None
+        job.status = JobStatus.RUNNING
+        job.steps = [_step_record(s, StepStatus.PENDING, None, as_of) for s in PreparationStep]
+        job.completed_at = None
+        job.error = None
+        job.heartbeat_at = as_of
+    else:
+        job = ResearchPreparationJob(
+            ticker=resolution.ticker,
+            company_id=resolution.existing_company.id if resolution.existing_company else None,
+            status=JobStatus.RUNNING,
+            steps=[_step_record(s, StepStatus.PENDING, None, as_of) for s in PreparationStep],
+            started_at=as_of,
+        )
     db.add(job)
     db.commit()
 
@@ -597,6 +649,14 @@ def prepare_company_research(
 
     warnings = False
     for step, required, fn in steps:
+        # Pre-live hardening (2026-08-25): a real, persisted "this step is
+        # in flight right now" marker, overwritten by the real outcome the
+        # instant fn() returns -- purely additive (every existing test
+        # only ever inspects the job's FINAL steps, unaffected), and the
+        # only way Operations can show real live progress ("Stage: SEC
+        # filings") for a run still in progress rather than only after
+        # the fact.
+        _set_step(db, job, step, StepStatus.RUNNING, None, datetime.now(UTC))
         try:
             status, detail = fn()
         except Exception as exc:  # noqa: BLE001 -- boundary: one step's real failure must not crash the run

@@ -80,9 +80,7 @@ class TrackRecordSummary:
     confidence_calibration: list[ConfidenceBucket]
 
 
-def _fetch_settled(
-    db: Session, *, ticker: str | None, window: Window
-) -> list[AIDecisionVersion]:
+def _fetch_settled(db: Session, *, ticker: str | None, window: Window) -> list[AIDecisionVersion]:
     query = (
         db.query(AIDecisionVersion)
         .join(Company, AIDecisionVersion.company_id == Company.id)

@@ -176,9 +176,7 @@ def resolve_manual_expiration(
     warning: str | None = None
     alternatives: list[ExpirationCandidate] = []
     if selected.contract_count == 0:
-        warning = (
-            "This expiration has no real listed contracts near the current underlying price."
-        )
+        warning = "This expiration has no real listed contracts near the current underlying price."
     elif selected.excluded_pre_earnings:
         warning = (
             "This expiration is on or before the earnings date -- it will not cover the event."

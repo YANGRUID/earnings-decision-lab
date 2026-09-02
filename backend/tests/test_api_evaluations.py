@@ -34,8 +34,13 @@ def _sample_run() -> EvaluationRun:
             mean_mrr=1.0,
             items=[
                 RetrievalItemResult(
-                    id="ret-01", query="test", recall_at_3=1.0, recall_at_5=1.0,
-                    recall_at_10=1.0, mrr=1.0, retrieved_count=5,
+                    id="ret-01",
+                    query="test",
+                    recall_at_3=1.0,
+                    recall_at_5=1.0,
+                    recall_at_10=1.0,
+                    mrr=1.0,
+                    retrieved_count=5,
                 )
             ],
         ),

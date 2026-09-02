@@ -55,8 +55,10 @@ from sqlalchemy.orm import Session
 from analytics.decision.budget import compute_budget_fit
 from analytics.decision.risk_profile import DEFAULT_MAX_RISK_UTILIZATION_PCT
 from analytics.earnings_timing import compute_entry_exit_schedule
+from analytics.market_data_policy import enforce_market_data_quality_policy
 from analytics.options.payoff import Action, OptionLeg, analyze
 from analytics.options.strategy_candidates import StrategyCandidate, StrategyCategory
+from core.config import get_settings
 from models.benchmark_portfolio import BenchmarkPortfolio
 from models.decision_snapshot import DecisionSnapshot
 from models.entry_capture_attempt import EntryCaptureAttempt
@@ -70,9 +72,14 @@ from models.enums import (
     OptionType,
 )
 from providers.base import OptionsDataProvider
-from providers.types import OptionQuote, UnderlyingQuote
+from providers.types import OptionQuote, SelectedLeg, SnapshotAttempt, UnderlyingQuote
 from services.decision_pipeline import LATE_CUTOFF_GRACE
+from services.entry_failure_taxonomy import classify_provider_exception
 from services.options_reconstruction import MAX_UNDERLYING_OPTION_SKEW
+from services.quote_telemetry import (
+    persist_entry_exception_telemetry,
+    persist_entry_quote_telemetry,
+)
 
 log = logging.getLogger("services.benchmark_entry_capture")
 
@@ -191,10 +198,16 @@ def _resolve_underlying(
 
     skew = abs(option_market_timestamp - underlying.timestamp)
     if skew > MAX_UNDERLYING_OPTION_SKEW:
-        return None, None, None, None, (
-            f"underlying/option quote timestamp skew ({skew}) exceeds "
-            f"{MAX_UNDERLYING_OPTION_SKEW} -- refusing to combine a stale underlying "
-            "observation with a fresh option quote in one official entry"
+        return (
+            None,
+            None,
+            None,
+            None,
+            (
+                f"underlying/option quote timestamp skew ({skew}) exceeds "
+                f"{MAX_UNDERLYING_OPTION_SKEW} -- refusing to combine a stale underlying "
+                "observation with a fresh option quote in one official entry"
+            ),
         )
     return underlying.price, underlying.bid, underlying.ask, underlying.timestamp, None
 
@@ -246,6 +259,44 @@ def _price_leg(leg: _LegQuote) -> None:
         leg.pricing_assumption = "SELL_TO_OPEN_AT_BID"
 
 
+def _describe_sizing_refusal(budget_fit, portfolio) -> str:
+    """Names the BINDING constraint (V4 consolidation, Section 15).
+
+    Diagnostics only -- the sizing methodology is untouched, and this text
+    applies prospectively: historical capture_error rows keep the wording
+    they were written with.
+
+    The old message, "$2000 Moderate budget cannot size even one contract",
+    quoted the CAPITAL base for every refusal. On 2026-09-01 that made a
+    real PANW refusal read as a budget problem when one contract ($1,155)
+    fit the $2,000 budget comfortably and was refused by the 30% RISK CAP
+    ($600). Two genuinely different situations were indistinguishable in
+    the evidence, and the audit had to reproduce the arithmetic by hand to
+    tell them apart.
+    """
+    per_contract = budget_fit.capital_at_risk_per_contract
+    budget = budget_fit.trade_budget
+    usable = budget_fit.usable_risk_budget
+    profile = portfolio.risk_profile.value.title()
+    cap_pct = budget_fit.risk_cap
+
+    if per_contract is None or per_contract <= 0:
+        return (
+            f"Cannot size: this structure has no bounded, priceable maximum loss "
+            f"per contract, so it cannot be checked against the {profile} risk cap"
+        )
+    if per_contract > budget:
+        return (
+            f"Capital insufficient: one contract requires ${per_contract:,.2f} defined "
+            f"risk, above the ${budget:,.0f} standardized capital base"
+        )
+    return (
+        f"Risk cap exceeded: one contract requires ${per_contract:,.2f} defined risk; "
+        f"{profile} permits ${usable:,.2f}"
+        + (f" ({cap_pct}% of ${budget:,.0f} standardized capital)" if cap_pct is not None else "")
+    )
+
+
 def capture_benchmark_entry(
     db: Session,
     *,
@@ -292,9 +343,53 @@ def capture_benchmark_entry(
         db.flush()
         return attempt
 
+    selected_expiration = decision_snapshot.selected_expiration
+    if selected_expiration is None:
+        # Architecturally always set together with legs (see
+        # services/decision_snapshot_freezing.py) -- checked explicitly
+        # anyway rather than assumed, since this is real financial record
+        # data, not an internal-only invariant.
+        attempt = EntryCaptureAttempt(
+            decision_snapshot_id=decision_snapshot.id,
+            benchmark_portfolio_id=portfolio.id,
+            status=CaptureStatus.FAILED,
+            capture_error="decision_snapshot has legs but no selected_expiration",
+        )
+        db.add(attempt)
+        db.flush()
+        return attempt
+
+    # IBKR execution-observability hardening (2026-08-26), Section 7 --
+    # collects every real per-poll observation the provider's warm-up
+    # makes so it can be persisted below (see services/quote_telemetry.py)
+    # once this attempt has a real id -- purely an observation, never
+    # consulted for pricing or the CAPTURED/FAILED decision itself.
+    collected_attempts: list[SnapshotAttempt] = []
+
     try:
-        quotes = options_provider.get_option_chain(
-            decision_snapshot.ticker, now, expiration=decision_snapshot.selected_expiration
+        # Live market-data validation (2026-08-26), Section 7: quotes
+        # exactly the legs Decision Engine already selected instead of
+        # rediscovering an entire ATM-window option chain around them --
+        # decision_snapshot.legs carries strike/option_type/action (never
+        # a conid, see SelectedLeg's own docstring), which is exactly
+        # what this narrower request needs. ``action`` (execution-
+        # observability hardening, 2026-08-26) is what lets the provider
+        # wait for the real executable side this leg needs (ASK for a
+        # BUY leg, BID for a SELL leg) instead of stopping on LAST alone.
+        selected_legs = [
+            SelectedLeg(
+                strike=Decimal(leg["strike"]),
+                option_type=leg["option_type"],
+                action=leg.get("action"),
+            )
+            for leg in decision_snapshot.legs
+        ]
+        quotes = options_provider.get_quotes_for_selected_legs(
+            decision_snapshot.ticker,
+            selected_legs,
+            expiration=selected_expiration,
+            as_of=now,
+            on_attempt=collected_attempts.append,
         )
         # Fetched in the same try/except as the option chain: a real
         # provider failure fetching either one must produce the same
@@ -317,6 +412,21 @@ def capture_benchmark_entry(
         )
         db.add(attempt)
         db.flush()
+        # Phase 4 quote-observability hardening (2026-08-26), Section 10 --
+        # persists real, structured diagnostic evidence for this exception
+        # BEFORE returning, so a future rate-limit/permission/gateway
+        # failure is diagnosable from QuoteAcquisitionAttempt rows, not
+        # only from capture_error's free text above. Never changes the
+        # FAILED outcome or capture_error already decided -- purely
+        # additional, honest observation.
+        persist_entry_exception_telemetry(
+            db,
+            entry_capture_attempt_id=attempt.id,
+            ticker=decision_snapshot.ticker,
+            expiration=selected_expiration,
+            decision_legs=decision_snapshot.legs,
+            classification=classify_provider_exception(exc),
+        )
         return attempt
 
     leg_quotes = _match_leg_quotes(decision_snapshot, quotes)
@@ -339,6 +449,21 @@ def capture_benchmark_entry(
                 f"leg {leg.leg_index} ({leg.option_type.value} {leg.strike}): {leg.error}"
                 for leg in failed_legs
             )
+
+    # Phase 4 market-data-quality hardening (2026-08-26), Section 16 --
+    # checked only once every other real failure reason is ruled out, so
+    # a genuine quote/underlying failure is never masked by this policy
+    # check. A no-op under the default ALLOW_DELAYED_WITH_LABEL policy.
+    if failure_reason is None:
+        quality_values = [
+            leg.quote.market_data_quality if leg.quote else None for leg in leg_quotes
+        ]
+        quality_values.append(
+            underlying_quote.market_data_quality if underlying_quote is not None else None
+        )
+        failure_reason = enforce_market_data_quality_policy(
+            get_settings().market_data_quality_policy, quality_values
+        )
 
     budget_fit = None
     candidate: StrategyCandidate | None = None
@@ -374,10 +499,7 @@ def capture_benchmark_entry(
             risk_cap_is_percent=True,
         )
         if not budget_fit.feasible or budget_fit.max_feasible_quantity < 1:
-            failure_reason = (
-                f"${portfolio.cash_balance} {portfolio.risk_profile.value.title()} budget "
-                "cannot size even one contract of this structure"
-            )
+            failure_reason = _describe_sizing_refusal(budget_fit, portfolio)
         elif budget_fit.remaining_budget is not None and budget_fit.remaining_budget < 0:
             failure_reason = "sizing produced a negative remaining budget -- refusing to enter"
         elif (
@@ -410,14 +532,27 @@ def capture_benchmark_entry(
         net_entry_cash=(budget_fit.total_net_premium if budget_fit is not None else None),
         contracts=(budget_fit.max_feasible_quantity if budget_fit is not None else None),
         initial_max_risk=(budget_fit.total_max_loss if budget_fit is not None else None),
-        capital_utilization=(
-            budget_fit.budget_utilization_pct if budget_fit is not None else None
-        ),
+        capital_utilization=(budget_fit.budget_utilization_pct if budget_fit is not None else None),
         source_provider=quotes[0].source_provider if quotes else None,
         captured_at=now if status == CaptureStatus.CAPTURED else None,
     )
     db.add(attempt)
     db.flush()
+
+    # IBKR execution-observability hardening (2026-08-26), Section 7 --
+    # real, honest, append-only diagnostic evidence for a future failure
+    # to be readable from Operations, never a source of truth for the
+    # capture outcome above (already decided) or the per-leg fill price
+    # below (computed by _price_leg, unaffected by this).
+    persist_entry_quote_telemetry(
+        db,
+        entry_capture_attempt_id=attempt.id,
+        ticker=decision_snapshot.ticker,
+        expiration=selected_expiration,
+        decision_legs=decision_snapshot.legs,
+        attempts=collected_attempts,
+        quotes=quotes,
+    )
 
     for leg in leg_quotes:
         quote = leg.quote

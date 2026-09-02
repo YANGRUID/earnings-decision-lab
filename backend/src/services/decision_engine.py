@@ -55,6 +55,7 @@ from models.enums import (
 )
 from prompts.decision_view import SYSTEM_PROMPT, build_user_prompt
 from providers.factory import get_options_provider
+from providers.types import OptionQuote
 from rag.context import Citation
 from rag.embeddings import EmbeddingProvider
 from schemas.decision import DecisionView
@@ -135,15 +136,42 @@ class DecisionResult:
     # instead of "not feasible for $X budget" in that case -- budget must
     # never determine whether market data exists.
     no_market_data_reason: str | None = None
+    # Phase 4 reproducibility hardening (2026-08-26), Section 7 -- the
+    # exact quotes candidate generation was built from (``selection.quotes``
+    # at the point ``generate_strategy_candidates`` was called), kept
+    # around only so a caller freezing an immutable snapshot can look up
+    # each recommended leg's real ``external_contract_id`` by
+    # (strike, option_type) after the fact -- never used to change which
+    # candidate was selected or how it was scored (that already happened
+    # by the time this field is populated).
+    option_quotes: list[OptionQuote] = field(default_factory=list)
 
 
-def leg_to_dict(leg: OptionLeg) -> dict:
+def leg_to_dict(
+    leg: OptionLeg,
+    *,
+    expiration: date | None = None,
+    external_contract_id: str | None = None,
+) -> dict:
+    """``expiration``/``external_contract_id`` are Phase 4 reproducibility
+    hardening additions (2026-08-26), Section 7 -- optional and default to
+    None so every existing caller (services/decision_history.py, which
+    persists the older, mutable ``ai_decision_version`` table this phase
+    does not touch) keeps producing exactly the dict shape it always has.
+    ``multiplier`` is always the standard US equity option multiplier this
+    project already hardcodes at entry capture (see EntrySnapshot.multiplier)
+    -- there is no per-leg concept of a non-standard multiplier anywhere in
+    this codebase, so it's never conditional.
+    """
     return {
         "option_type": leg.option_type.value,
         "action": leg.action.value,
         "strike": str(leg.strike),
         "premium": str(leg.premium),
         "quantity": leg.quantity,
+        "multiplier": "100",
+        "expiration": expiration.isoformat() if expiration is not None else None,
+        "external_contract_id": external_contract_id,
     }
 
 
@@ -430,8 +458,15 @@ def generate_decision(
             snapshot_timestamp=now,
         )
     else:
+        # V4.1 source-coherence fix (2026-08-31): real decision generation
+        # is the one caller that actually commits a trade, so it always
+        # prefers a fresh live read over a same-day-but-hours-old
+        # persisted snapshot when the market is open -- see
+        # resolve_best_actionable_option_market's own docstring for the
+        # real DY evidence this fixes. Every other caller of this shared
+        # resolver (Strategy Lab, Upcoming Earnings) is unaffected.
         resolution = resolve_best_actionable_option_market(
-            db, company, now, earnings_date_for_resolution
+            db, company, now, earnings_date_for_resolution, force_live_refresh=True
         )
         selection = resolution.selection
     if selection.quotes and (
@@ -622,6 +657,7 @@ def generate_decision(
         risk_profile=effective_risk_profile,
         recommended=recommended,
         alternatives=alternatives,
+        option_quotes=selection.quotes,
         trade_budget=trade_budget,
         risk_cap=effective_risk_cap,
         risk_cap_is_percent=effective_risk_cap_is_percent,

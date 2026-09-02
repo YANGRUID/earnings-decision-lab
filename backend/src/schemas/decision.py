@@ -46,9 +46,7 @@ class DecisionView(BaseModel):
         description="Real, cited events or factors from the evidence that could move the "
         "stock -- not generic market catalysts."
     )
-    key_risks: str = Field(
-        description="Real, cited risks to this view from the evidence provided."
-    )
+    key_risks: str = Field(description="Real, cited risks to this view from the evidence provided.")
     disclaimer: str = Field(
         description="A plain statement that this is not investment advice, no direction or "
         "outcome is guaranteed, and options trading involves real risk of loss. Must never "

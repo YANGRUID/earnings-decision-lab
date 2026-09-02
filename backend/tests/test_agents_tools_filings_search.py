@@ -62,3 +62,70 @@ def test_search_filings_unknown_ticker_returns_empty(db_session):
     assert outcome.success
     assert outcome.data["chunks"] == []
     assert outcome.citations == []
+
+
+class TestPointInTimeCutoff:
+    """Phase 4 point-in-time hardening (2026-08-26), Section 43 -- a real
+    filing published after the replay cutoff must never be retrieved."""
+
+    def test_filing_after_cutoff_never_retrieved(self, db_session):
+        company = Company(ticker="ZZAGTA", name="ZZ Agent Test A", cik="000999000A")
+        db_session.add(company)
+        db_session.flush()
+        old_filing = Filing(
+            company_id=company.id,
+            filing_type=FilingType.FORM_10Q,
+            filing_date=date(2025, 12, 18),
+            accession_number="TEST-AGT-0002",
+            source_url="https://example.com/zzagta-old.htm",
+            retrieved_at=NOW,
+        )
+        future_filing = Filing(
+            company_id=company.id,
+            filing_type=FilingType.FORM_10Q,
+            filing_date=date(2026, 6, 1),
+            accession_number="TEST-AGT-0003",
+            source_url="https://example.com/zzagta-future.htm",
+            retrieved_at=NOW,
+        )
+        db_session.add_all([old_filing, future_filing])
+        db_session.flush()
+        db_session.add_all(
+            [
+                DocumentChunk(
+                    filing_id=old_filing.id,
+                    company_id=company.id,
+                    chunk_index=0,
+                    section="Item 1A",
+                    text="A distinctive sentence about zzagta shared risk topic.",
+                    token_count=8,
+                    embedding=[1.0] + [0.0] * (EMBEDDING_DIM - 1),
+                    embedding_model="stub",
+                    retrieved_at=NOW,
+                ),
+                DocumentChunk(
+                    filing_id=future_filing.id,
+                    company_id=company.id,
+                    chunk_index=0,
+                    section="Item 1A",
+                    text="A distinctive sentence about zzagta shared risk topic, future edition.",
+                    token_count=9,
+                    embedding=[1.0] + [0.0] * (EMBEDDING_DIM - 1),
+                    embedding_model="stub",
+                    retrieved_at=NOW,
+                ),
+            ]
+        )
+        db_session.flush()
+
+        tool = FilingsSearchTool(db_session, _StubEmbedder())
+        outcome = tool.run(
+            FilingsSearchArgs(
+                query="zzagta shared risk topic", ticker="ZZAGTA", as_of=date(2026, 1, 1)
+            )
+        )
+
+        assert outcome.success
+        assert len(outcome.citations) == 1
+        assert all(c.filing_date <= date(2026, 1, 1) for c in outcome.citations)
+        assert "future edition" not in outcome.data["context_text"]

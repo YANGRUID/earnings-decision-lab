@@ -125,9 +125,7 @@ def compute_settlement_totals(
         )
     net_exit_cash = net_exit_price_per_share * CONTRACT_MULTIPLIER * contracts
 
-    return_pct = (
-        (realized_pnl / net_entry_cash) * 100 if net_entry_cash != 0 else None
-    )
+    return_pct = (realized_pnl / net_entry_cash) * 100 if net_entry_cash != 0 else None
     r_multiple = (
         realized_pnl / initial_max_risk
         if initial_max_risk is not None and initial_max_risk != 0

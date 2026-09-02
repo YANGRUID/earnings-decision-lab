@@ -211,9 +211,7 @@ class TestFilterAndSizeByBudget:
         # budget filtering unchanged (filtering never re-ranks).
         first = _ranked(1, _debit_candidate(Decimal("2")))
         second = _ranked(2, _debit_candidate(Decimal("3")))
-        feasible, _, _ = filter_and_size_by_budget(
-            [first, second], trade_budget=Decimal("10000")
-        )
+        feasible, _, _ = filter_and_size_by_budget([first, second], trade_budget=Decimal("10000"))
         assert [r.rank for r in feasible] == [1, 2]
 
 
@@ -239,8 +237,12 @@ def _multi_leg_candidates() -> dict[str, StrategyCandidate]:
         # middle_premium, upper_strike, upper_premium)
         "long_call_butterfly": _candidate(
             s.long_call_butterfly(
-                Decimal("95"), Decimal("6.5"), Decimal("100"), Decimal("2.8"),
-                Decimal("105"), Decimal("0.6")
+                Decimal("95"),
+                Decimal("6.5"),
+                Decimal("100"),
+                Decimal("2.8"),
+                Decimal("105"),
+                Decimal("0.6"),
             ),
             StrategyCategory.LONG_CALL_BUTTERFLY,
         ),
@@ -248,8 +250,13 @@ def _multi_leg_candidates() -> dict[str, StrategyCandidate]:
         # put_short_premium, call_short_premium, call_long_strike, call_long_premium)
         "iron_butterfly": _candidate(
             s.iron_butterfly(
-                Decimal("95"), Decimal("1.0"), Decimal("100"),
-                Decimal("2.5"), Decimal("2.6"), Decimal("105"), Decimal("1.1")
+                Decimal("95"),
+                Decimal("1.0"),
+                Decimal("100"),
+                Decimal("2.5"),
+                Decimal("2.6"),
+                Decimal("105"),
+                Decimal("1.1"),
             ),
             StrategyCategory.IRON_BUTTERFLY,
         ),
@@ -258,8 +265,14 @@ def _multi_leg_candidates() -> dict[str, StrategyCandidate]:
         # call_long_strike, call_long_premium)
         "iron_condor": _candidate(
             s.iron_condor(
-                Decimal("90"), Decimal("0.8"), Decimal("95"), Decimal("1.5"),
-                Decimal("105"), Decimal("1.4"), Decimal("110"), Decimal("0.7")
+                Decimal("90"),
+                Decimal("0.8"),
+                Decimal("95"),
+                Decimal("1.5"),
+                Decimal("105"),
+                Decimal("1.4"),
+                Decimal("110"),
+                Decimal("0.7"),
             ),
             StrategyCategory.IRON_CONDOR,
         ),
@@ -346,8 +359,12 @@ class TestBudgetInvariants:
 
         candidate = _candidate(
             s.long_call_butterfly(
-                Decimal("222.50"), Decimal("8.70"), Decimal("225.00"), Decimal("7.425"),
-                Decimal("227.50"), Decimal("6.25")
+                Decimal("222.50"),
+                Decimal("8.70"),
+                Decimal("225.00"),
+                Decimal("7.425"),
+                Decimal("227.50"),
+                Decimal("6.25"),
             ),
             StrategyCategory.LONG_CALL_BUTTERFLY,
         )

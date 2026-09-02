@@ -70,3 +70,57 @@ def test_respects_limit(db_session):
     outcome = tool.run(EarningsHistoryArgs(ticker="ZZAGT2", limit=2))
 
     assert len(outcome.data["events"]) == 2
+
+
+class TestPointInTimeCutoff:
+    """Phase 4 point-in-time hardening (2026-08-26), Section 43 -- a real
+    earnings event dated after the replay cutoff must never be returned,
+    for a historical/replay caller's no-look-ahead safety."""
+
+    def test_earnings_event_after_cutoff_never_retrieved(self, db_session):
+        company = Company(ticker="ZZAGT8", name="ZZ Agent Test 8", cik="0009990008")
+        db_session.add(company)
+        db_session.flush()
+        db_session.add_all(
+            [
+                EarningsEvent(
+                    company_id=company.id,
+                    fiscal_year=2026,
+                    fiscal_quarter=1,
+                    earnings_date=date(2026, 1, 15),
+                ),
+                EarningsEvent(
+                    company_id=company.id,
+                    fiscal_year=2026,
+                    fiscal_quarter=3,
+                    earnings_date=date(2026, 7, 15),
+                ),
+            ]
+        )
+        db_session.flush()
+
+        tool = EarningsHistoryTool(db_session)
+        outcome = tool.run(EarningsHistoryArgs(ticker="ZZAGT8", as_of=date(2026, 3, 1)))
+
+        assert outcome.success
+        assert len(outcome.data["events"]) == 1
+        assert outcome.data["events"][0]["earnings_date"] == "2026-01-15"
+
+    def test_no_as_of_is_unrestricted_current_behavior(self, db_session):
+        company = Company(ticker="ZZAGT9", name="ZZ Agent Test 9", cik="0009990009")
+        db_session.add(company)
+        db_session.flush()
+        db_session.add(
+            EarningsEvent(
+                company_id=company.id,
+                fiscal_year=2026,
+                fiscal_quarter=3,
+                earnings_date=date(2026, 7, 15),
+            )
+        )
+        db_session.flush()
+
+        tool = EarningsHistoryTool(db_session)
+        outcome = tool.run(EarningsHistoryArgs(ticker="ZZAGT9"))
+
+        assert len(outcome.data["events"]) == 1

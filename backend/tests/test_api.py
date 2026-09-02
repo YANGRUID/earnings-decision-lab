@@ -464,16 +464,34 @@ def test_research_query_persists_a_real_history_row(client, db_session):
 
 
 def test_research_query_with_ticker_scopes_the_history_row_to_that_company(client, db_session):
+    from datetime import UTC, datetime
+
     from models.company import Company
+    from models.research_preparation_job import JobStatus, ResearchPreparationJob
 
     company = Company(ticker="ZZRQAPI", name="ZZ Research Query Co", cik="0009999920")
     db_session.add(company)
     db_session.flush()
+    # A completed research-preparation job is what makes this ticker
+    # "ready" under the real readiness check (api/routers/research.py's
+    # research_query, Part A4) -- without one, the request would honestly
+    # come back status="preparing" instead of running the agent.
+    db_session.add(
+        ResearchPreparationJob(
+            ticker="ZZRQAPI",
+            company_id=company.id,
+            status=JobStatus.COMPLETED,
+            steps=[],
+            started_at=datetime.now(UTC),
+        )
+    )
+    db_session.commit()
 
     response = client.post(
         "/api/v1/research/query", json={"question": "what changed?", "ticker": "zzrqapi"}
     )
     assert response.status_code == 200
+    assert response.json()["status"] == "completed"
 
     history = client.get("/api/v1/research/history", params={"ticker": "ZZRQAPI"})
     assert history.status_code == 200
@@ -522,6 +540,78 @@ def test_research_history_item_can_be_deleted(client, db_session):
 
     second_delete = client.delete(f"/api/v1/research/history/{item_id}")
     assert second_delete.status_code == 404
+
+
+def test_research_query_for_an_unprepared_company_returns_preparing_status(client, db_session):
+    """Part A4/A11 -- a real company that has never been through research
+    preparation must never be answered from nothing; it's enqueued
+    through the same durable queue the scheduler uses and reported
+    honestly as still preparing."""
+    from models.company import Company
+    from models.research_preparation_job import JobStatus, ResearchPreparationJob
+
+    company = Company(ticker="ZZRQPREP", name="ZZ Unprepared Test Co", cik="0009999921")
+    db_session.add(company)
+    db_session.commit()
+
+    response = client.post(
+        "/api/v1/research/query",
+        json={"question": "What's the latest?", "ticker": "zzrqprep"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "preparing"
+    assert body["answer"] is None
+    assert body["preparing"] == [
+        {"ticker": "ZZRQPREP", "job_id": body["preparing"][0]["job_id"], "job_status": "pending"}
+    ]
+
+    job = db_session.query(ResearchPreparationJob).filter_by(ticker="ZZRQPREP").one()
+    assert job.status == JobStatus.PENDING
+    assert job.earnings_calendar_event_id is None
+
+
+def test_research_query_with_unresolvable_explicit_ticker_returns_company_not_found(
+    client, httpx_mock
+):
+    import re
+
+    httpx_mock.add_response(
+        url=re.compile(r"https://www\.sec\.gov/files/company_tickers\.json"), json={}
+    )
+
+    response = client.post(
+        "/api/v1/research/query",
+        json={"question": "What's going on?", "ticker": "ZZRQNO"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "company_not_found"
+    assert body["answer"] is None
+    assert body["unresolved_tickers"] == ["ZZRQNO"]
+
+
+def test_research_query_ignores_an_unresolvable_ticker_mentioned_only_in_text(client, httpx_mock):
+    """A stray all-caps word in the question that isn't a real, resolvable
+    ticker must not block an otherwise-general answer -- only an explicit
+    ticker is treated as a hard requirement."""
+    import re
+
+    httpx_mock.add_response(
+        url=re.compile(r"https://www\.sec\.gov/files/company_tickers\.json"), json={}
+    )
+
+    response = client.post(
+        "/api/v1/research/query", json={"question": "Tell me about ZZRQGH please"}
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "completed"
+    assert body["answer"] == "Stub answer, no tools needed."
+    assert body["unresolved_tickers"] == ["ZZRQGH"]
 
 
 def test_search_documents_unknown_ticker_returns_empty(client):
@@ -1708,9 +1798,7 @@ def test_decision_no_market_data_reason_is_independent_of_budget(client, db_sess
     db_session.add(Company(ticker="ZZDECNMD", name="ZZ Decision No Data Co", cik="0009999933"))
     db_session.flush()
 
-    response = client.post(
-        "/api/v1/research/zzdecnmd/decision", json={"trade_budget": "3000"}
-    )
+    response = client.post("/api/v1/research/zzdecnmd/decision", json={"trade_budget": "3000"})
 
     assert response.status_code == 200
     body = response.json()
@@ -1731,9 +1819,7 @@ def test_decision_generation_persists_a_real_row(client, db_session):
     assert response.status_code == 200
 
     rows = (
-        db_session.query(AIDecisionVersion)
-        .filter(AIDecisionVersion.company_id == company.id)
-        .all()
+        db_session.query(AIDecisionVersion).filter(AIDecisionVersion.company_id == company.id).all()
     )
     assert len(rows) == 1
     assert rows[0].provider == "stub"

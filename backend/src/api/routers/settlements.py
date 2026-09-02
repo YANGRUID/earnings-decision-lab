@@ -36,9 +36,7 @@ def list_all_settlements(
     query = db.query(SettlementCaptureAttempt)
     if status:
         query = query.filter(SettlementCaptureAttempt.status == status.upper())
-    return (
-        query.order_by(SettlementCaptureAttempt.id.desc()).offset(offset).limit(limit).all()
-    )
+    return query.order_by(SettlementCaptureAttempt.id.desc()).offset(offset).limit(limit).all()
 
 
 @router.get("/{decision_id}", response_model=list[SettlementCaptureAttemptResponse])

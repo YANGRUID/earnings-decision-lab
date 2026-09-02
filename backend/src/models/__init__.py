@@ -23,10 +23,20 @@ from models.price_reaction import PriceReaction
 from models.provider_credential import ProviderCredential
 from models.provider_health_event import ProviderHealthEvent
 from models.provider_usage_event import ProviderUsageEvent
+from models.quote_acquisition_attempt import QuoteAcquisitionAttempt
 from models.research_preparation_job import ResearchPreparationJob
+from models.scheduler_run import SchedulerRun, SchedulerRunEvent
 from models.settlement_capture_attempt import SettlementCaptureAttempt
 from models.settlement_snapshot import SettlementSnapshot
 from models.strategy_replay import StrategyReplay
+from models.v4_shadow import (
+    V4ShadowCandidate,
+    V4ShadowCandidateLeg,
+    V4ShadowDecision,
+    V4ShadowObservation,
+    V4ShadowRunEvent,
+    V4ShadowSettlement,
+)
 from models.volatility_snapshot import VolatilitySnapshot
 
 __all__ = [
@@ -55,9 +65,18 @@ __all__ = [
     "ProviderCredential",
     "ProviderHealthEvent",
     "ProviderUsageEvent",
+    "QuoteAcquisitionAttempt",
     "ResearchPreparationJob",
+    "SchedulerRun",
+    "SchedulerRunEvent",
     "SettlementCaptureAttempt",
     "SettlementSnapshot",
     "StrategyReplay",
+    "V4ShadowCandidate",
+    "V4ShadowCandidateLeg",
+    "V4ShadowDecision",
+    "V4ShadowObservation",
+    "V4ShadowRunEvent",
+    "V4ShadowSettlement",
     "VolatilitySnapshot",
 ]

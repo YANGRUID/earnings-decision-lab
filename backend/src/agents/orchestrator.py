@@ -20,6 +20,7 @@ the gap instead of the whole request crashing.
 
 import json
 import time
+from datetime import date
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -31,7 +32,7 @@ from agents.tools.types import ToolOutcome
 from agents.types import AgentResponse, ExecutionTrace, ToolCallRecord
 from observability.redact import redact
 from prompts.agent_intent import SYSTEM_PROMPT as INTENT_SYSTEM_PROMPT
-from prompts.agent_planning import TOOL_CALLING_SYSTEM_PROMPT, build_structured_planner_prompt
+from prompts.agent_planning import build_structured_planner_prompt, build_tool_calling_system_prompt
 from prompts.agent_synthesis import SYSTEM_PROMPT as SYNTHESIS_SYSTEM_PROMPT
 from prompts.agent_synthesis import build_synthesis_user_prompt
 from prompts.agent_verification import SYSTEM_PROMPT as VERIFICATION_SYSTEM_PROMPT
@@ -52,7 +53,29 @@ class AgentOrchestrator:
         self._llm = llm
         self._tools: dict[str, Tool[Any]] = build_tool_registry(db, embedder)
 
-    def run(self, question: str) -> AgentResponse:
+    def run(
+        self,
+        question: str,
+        *,
+        resolved_tickers: list[str] | None = None,
+        as_of: date | None = None,
+    ) -> AgentResponse:
+        """``resolved_tickers``: real, already-known company ticker(s) this
+        question concerns (services/research_query_resolution.py -- never
+        a guess; empty/None means a genuinely general question, or one the
+        deterministic resolver couldn't confidently resolve). Injected as
+        an authoritative hint into the planning prompt (Part A -- fixes
+        the real root cause of AI Research claiming only NVDA/AMD/MU/SNDK
+        exist, see prompts/agent_planning.py's own docstring) and used as
+        a deterministic default for any tool-call argument the LLM leaves
+        out, exactly one resolved company at a time (Part A5 -- company-
+        scoped RAG must never silently fall back to an unscoped search).
+
+        ``as_of``: real point-in-time cutoff (Part A8), when the caller is
+        a historical/replay context -- defaulted onto any tool argument
+        the LLM leaves out, same mechanism as ``resolved_tickers``. None
+        (every real caller today) means "as of now", unchanged behavior.
+        """
         start = time.monotonic()
         input_tokens = 0
         output_tokens = 0
@@ -61,10 +84,14 @@ class AgentOrchestrator:
 
         if self._llm.capabilities.supports_tool_calling:
             planning_method = "native_tool_calling"
-            tool_results, draft_answer, tokens = self._run_native_tool_calling(question)
+            tool_results, draft_answer, tokens = self._run_native_tool_calling(
+                question, resolved_tickers, as_of
+            )
         else:
             planning_method = "structured_planner"
-            tool_results, draft_answer, tokens = self._run_structured_planner(question)
+            tool_results, draft_answer, tokens = self._run_structured_planner(
+                question, resolved_tickers, as_of
+            )
         input_tokens += tokens[0]
         output_tokens += tokens[1]
 
@@ -119,10 +146,13 @@ class AgentOrchestrator:
     # --- Stage 2a: planning + execution via native tool calling ---------
 
     def _run_native_tool_calling(
-        self, question: str
+        self,
+        question: str,
+        resolved_tickers: list[str] | None,
+        as_of: date | None,
     ) -> tuple[list[tuple[ToolCallRecord, ToolOutcome | None]], str, tuple[int, int]]:
         messages = [
-            ChatMessage(role="system", content=TOOL_CALLING_SYSTEM_PROMPT),
+            ChatMessage(role="system", content=build_tool_calling_system_prompt(resolved_tickers)),
             ChatMessage(role="user", content=question),
         ]
         try:
@@ -142,7 +172,8 @@ class AgentOrchestrator:
             return [], result.content or "", (input_tokens, output_tokens)
 
         tool_results = [
-            self._execute_tool(tc.name, tc.arguments) for tc in result.tool_calls[:MAX_TOOL_CALLS]
+            self._execute_tool(tc.name, tc.arguments, resolved_tickers, as_of)
+            for tc in result.tool_calls[:MAX_TOOL_CALLS]
         ]
         evidence_text, _ = _assemble_evidence(tool_results)
         draft_answer, synth_tokens = self._synthesize(question, evidence_text)
@@ -155,7 +186,10 @@ class AgentOrchestrator:
     # --- Stage 2b: structured-planner fallback ---------------------------
 
     def _run_structured_planner(
-        self, question: str
+        self,
+        question: str,
+        resolved_tickers: list[str] | None,
+        as_of: date | None,
     ) -> tuple[list[tuple[ToolCallRecord, ToolOutcome | None]], str, tuple[int, int]]:
         catalog = "\n".join(
             f"- {t.name}: {t.description}\n"
@@ -163,7 +197,10 @@ class AgentOrchestrator:
             for t in self._tools.values()
         )
         messages = [
-            ChatMessage(role="system", content=build_structured_planner_prompt(catalog)),
+            ChatMessage(
+                role="system",
+                content=build_structured_planner_prompt(catalog, resolved_tickers),
+            ),
             ChatMessage(role="user", content=question),
         ]
         try:
@@ -174,7 +211,7 @@ class AgentOrchestrator:
             return [], f"The research assistant is temporarily unavailable ({exc}).", (0, 0)
 
         tool_results = [
-            self._execute_tool(item.tool_name, item.arguments)
+            self._execute_tool(item.tool_name, item.arguments, resolved_tickers, as_of)
             for item in plan.items[:MAX_TOOL_CALLS]
         ]
         evidence_text, _ = _assemble_evidence(tool_results)
@@ -184,7 +221,11 @@ class AgentOrchestrator:
     # --- Tool execution (shared by both planning paths) ------------------
 
     def _execute_tool(
-        self, name: str, arguments: dict
+        self,
+        name: str,
+        arguments: dict,
+        resolved_tickers: list[str] | None = None,
+        as_of: date | None = None,
     ) -> tuple[ToolCallRecord, ToolOutcome | None]:
         start = time.monotonic()
         tool = self._tools.get(name)
@@ -201,6 +242,7 @@ class AgentOrchestrator:
                 ),
                 None,
             )
+        arguments = _apply_deterministic_defaults(tool, arguments, resolved_tickers, as_of)
         try:
             args_obj = tool.args_schema.model_validate(arguments)
             outcome = tool.run(args_obj)
@@ -287,6 +329,43 @@ class AgentOrchestrator:
 
         usage = (result.usage.input_tokens, result.usage.output_tokens) if result.usage else (0, 0)
         return verification, (result.content or None), usage
+
+
+def _apply_deterministic_defaults(
+    tool: Tool[Any],
+    arguments: dict,
+    resolved_tickers: list[str] | None,
+    as_of: date | None,
+) -> dict:
+    """Post-live correction (2026-08-25) Part A5/A8 -- a real, deterministic
+    safety net, not just a prompt hint: if this question was already
+    resolved to exactly one real company, a tool call that takes a
+    ``ticker`` argument but the LLM left blank is scoped to that company
+    rather than silently searching unscoped (which is exactly how a
+    single-company question could otherwise let semantically-similar
+    documents from an unrelated company become primary evidence -- the
+    real Part A5 concern). Deliberately does NOT override a ticker the
+    LLM DID supply, even if it differs from the resolved one -- a
+    genuinely multi-company question (Part A6) must still let the LLM
+    call the same tool once per company. Same mechanism for ``as_of``
+    (Part A8), applied whenever the tool schema has that field, since a
+    missing point-in-time cutoff is never itself evidence of intent to
+    ignore it -- an omitted arg and an intentional "no cutoff" look
+    identical to the LLM either way, so this project's own real caller
+    (not the LLM) is the source of truth for whether one applies at all.
+    """
+    fields = tool.args_schema.model_fields
+    result = dict(arguments)
+    if (
+        resolved_tickers
+        and len(resolved_tickers) == 1
+        and "ticker" in fields
+        and not result.get("ticker")
+    ):
+        result["ticker"] = resolved_tickers[0]
+    if as_of is not None and "as_of" in fields and not result.get("as_of"):
+        result["as_of"] = as_of.isoformat()
+    return result
 
 
 def _assemble_evidence(

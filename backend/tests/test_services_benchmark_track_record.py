@@ -241,8 +241,12 @@ def test_calibration_zero_settled_returns_empty_buckets(db_session):
 def test_single_win_computes_all_portfolio_metrics(db_session):
     portfolio = _seed_portfolio(db_session, "TESTTR46D")
     _seed_settled_decision(
-        db_session, portfolio, "TESTTR46D1",
-        realized_pnl=Decimal("80.00"), r_multiple=Decimal("0.5"), is_win=True,
+        db_session,
+        portfolio,
+        "TESTTR46D1",
+        realized_pnl=Decimal("80.00"),
+        r_multiple=Decimal("0.5"),
+        is_win=True,
     )
 
     summary = compute_benchmark_track_record(db_session, portfolio, TrackRecordFilters())
@@ -263,19 +267,31 @@ def test_single_win_computes_all_portfolio_metrics(db_session):
 def test_win_rate_and_average_median_r_across_multiple_decisions(db_session):
     portfolio = _seed_portfolio(db_session, "TESTTR46E")
     _seed_settled_decision(
-        db_session, portfolio, "TESTTR46E1",
-        realized_pnl=Decimal("100"), r_multiple=Decimal("1.0"),
-        is_win=True, settled_at=datetime(2026, 9, 17, 15, 55, tzinfo=UTC),
+        db_session,
+        portfolio,
+        "TESTTR46E1",
+        realized_pnl=Decimal("100"),
+        r_multiple=Decimal("1.0"),
+        is_win=True,
+        settled_at=datetime(2026, 9, 17, 15, 55, tzinfo=UTC),
     )
     _seed_settled_decision(
-        db_session, portfolio, "TESTTR46E2",
-        realized_pnl=Decimal("-50"), r_multiple=Decimal("-0.5"),
-        is_win=False, settled_at=datetime(2026, 9, 18, 15, 55, tzinfo=UTC),
+        db_session,
+        portfolio,
+        "TESTTR46E2",
+        realized_pnl=Decimal("-50"),
+        r_multiple=Decimal("-0.5"),
+        is_win=False,
+        settled_at=datetime(2026, 9, 18, 15, 55, tzinfo=UTC),
     )
     _seed_settled_decision(
-        db_session, portfolio, "TESTTR46E3",
-        realized_pnl=Decimal("60"), r_multiple=Decimal("0.6"),
-        is_win=True, settled_at=datetime(2026, 9, 19, 15, 55, tzinfo=UTC),
+        db_session,
+        portfolio,
+        "TESTTR46E3",
+        realized_pnl=Decimal("60"),
+        r_multiple=Decimal("0.6"),
+        is_win=True,
+        settled_at=datetime(2026, 9, 19, 15, 55, tzinfo=UTC),
     )
 
     summary = compute_benchmark_track_record(db_session, portfolio, TrackRecordFilters())
@@ -297,19 +313,31 @@ def test_max_drawdown_uses_real_dollar_equity_curve_ordered_by_settlement(db_ses
     captured_at, not insertion order."""
     portfolio = _seed_portfolio(db_session, "TESTTR46F")
     _seed_settled_decision(
-        db_session, portfolio, "TESTTR46F2",
-        realized_pnl=Decimal("-300"), r_multiple=Decimal("-1.5"),
-        is_win=False, settled_at=datetime(2026, 9, 18, 15, 55, tzinfo=UTC),
+        db_session,
+        portfolio,
+        "TESTTR46F2",
+        realized_pnl=Decimal("-300"),
+        r_multiple=Decimal("-1.5"),
+        is_win=False,
+        settled_at=datetime(2026, 9, 18, 15, 55, tzinfo=UTC),
     )
     _seed_settled_decision(
-        db_session, portfolio, "TESTTR46F1",
-        realized_pnl=Decimal("100"), r_multiple=Decimal("0.5"),
-        is_win=True, settled_at=datetime(2026, 9, 17, 15, 55, tzinfo=UTC),
+        db_session,
+        portfolio,
+        "TESTTR46F1",
+        realized_pnl=Decimal("100"),
+        r_multiple=Decimal("0.5"),
+        is_win=True,
+        settled_at=datetime(2026, 9, 17, 15, 55, tzinfo=UTC),
     )
     _seed_settled_decision(
-        db_session, portfolio, "TESTTR46F3",
-        realized_pnl=Decimal("50"), r_multiple=Decimal("0.25"),
-        is_win=True, settled_at=datetime(2026, 9, 19, 15, 55, tzinfo=UTC),
+        db_session,
+        portfolio,
+        "TESTTR46F3",
+        realized_pnl=Decimal("50"),
+        r_multiple=Decimal("0.25"),
+        is_win=True,
+        settled_at=datetime(2026, 9, 19, 15, 55, tzinfo=UTC),
     )
 
     summary = compute_benchmark_track_record(db_session, portfolio, TrackRecordFilters())
@@ -327,9 +355,12 @@ def test_max_drawdown_uses_real_dollar_equity_curve_ordered_by_settlement(db_ses
 def test_directional_accuracy_correct_bullish_call(db_session):
     portfolio = _seed_portfolio(db_session, "TESTTR46G")
     _seed_settled_decision(
-        db_session, portfolio, "TESTTR46G1",
+        db_session,
+        portfolio,
+        "TESTTR46G1",
         strategy_direction=DecisionDirection.BULLISH,
-        entry_underlying_price=Decimal("100"), exit_underlying_price=Decimal("110"),
+        entry_underlying_price=Decimal("100"),
+        exit_underlying_price=Decimal("110"),
     )
 
     summary = compute_benchmark_track_record(db_session, portfolio, TrackRecordFilters())
@@ -341,9 +372,12 @@ def test_directional_accuracy_correct_bullish_call(db_session):
 def test_directional_accuracy_incorrect_when_move_is_opposite(db_session):
     portfolio = _seed_portfolio(db_session, "TESTTR46H")
     _seed_settled_decision(
-        db_session, portfolio, "TESTTR46H1",
+        db_session,
+        portfolio,
+        "TESTTR46H1",
         strategy_direction=DecisionDirection.BULLISH,
-        entry_underlying_price=Decimal("100"), exit_underlying_price=Decimal("90"),
+        entry_underlying_price=Decimal("100"),
+        exit_underlying_price=Decimal("90"),
     )
 
     summary = compute_benchmark_track_record(db_session, portfolio, TrackRecordFilters())
@@ -355,9 +389,12 @@ def test_directional_accuracy_incorrect_when_move_is_opposite(db_session):
 def test_directional_accuracy_excludes_neutral_calls(db_session):
     portfolio = _seed_portfolio(db_session, "TESTTR46I")
     _seed_settled_decision(
-        db_session, portfolio, "TESTTR46I1",
+        db_session,
+        portfolio,
+        "TESTTR46I1",
         strategy_direction=DecisionDirection.NEUTRAL,
-        entry_underlying_price=Decimal("100"), exit_underlying_price=Decimal("110"),
+        entry_underlying_price=Decimal("100"),
+        exit_underlying_price=Decimal("110"),
     )
 
     summary = compute_benchmark_track_record(db_session, portfolio, TrackRecordFilters())
@@ -371,9 +408,14 @@ def test_breakeven_accuracy_long_call_cleared(db_session):
     clears it -- correct."""
     portfolio = _seed_portfolio(db_session, "TESTTR46J")
     _seed_settled_decision(
-        db_session, portfolio, "TESTTR46J1",
-        entry_underlying_price=Decimal("100"), exit_underlying_price=Decimal("110"),
-        leg_action=OptionAction.BUY, leg_strike=Decimal("100"), leg_entry_price=Decimal("2.10"),
+        db_session,
+        portfolio,
+        "TESTTR46J1",
+        entry_underlying_price=Decimal("100"),
+        exit_underlying_price=Decimal("110"),
+        leg_action=OptionAction.BUY,
+        leg_strike=Decimal("100"),
+        leg_entry_price=Decimal("2.10"),
     )
 
     summary = compute_benchmark_track_record(db_session, portfolio, TrackRecordFilters())
@@ -386,9 +428,14 @@ def test_breakeven_accuracy_long_call_not_cleared(db_session):
     """Exit underlying 101 does not clear the 102.10 breakeven -- incorrect."""
     portfolio = _seed_portfolio(db_session, "TESTTR46K")
     _seed_settled_decision(
-        db_session, portfolio, "TESTTR46K1",
-        entry_underlying_price=Decimal("100"), exit_underlying_price=Decimal("101"),
-        leg_action=OptionAction.BUY, leg_strike=Decimal("100"), leg_entry_price=Decimal("2.10"),
+        db_session,
+        portfolio,
+        "TESTTR46K1",
+        entry_underlying_price=Decimal("100"),
+        exit_underlying_price=Decimal("101"),
+        leg_action=OptionAction.BUY,
+        leg_strike=Decimal("100"),
+        leg_entry_price=Decimal("2.10"),
     )
 
     summary = compute_benchmark_track_record(db_session, portfolio, TrackRecordFilters())
@@ -401,8 +448,11 @@ def test_range_accuracy_within_implied_move(db_session):
     """Implied move 8%, actual move 5% -- stayed within range -- correct."""
     portfolio = _seed_portfolio(db_session, "TESTTR46L")
     _seed_settled_decision(
-        db_session, portfolio, "TESTTR46L1",
-        entry_underlying_price=Decimal("100"), exit_underlying_price=Decimal("105"),
+        db_session,
+        portfolio,
+        "TESTTR46L1",
+        entry_underlying_price=Decimal("100"),
+        exit_underlying_price=Decimal("105"),
         implied_move_pct=Decimal("0.08"),
     )
 
@@ -416,8 +466,11 @@ def test_range_accuracy_exceeded_implied_move(db_session):
     """Implied move 3%, actual move 10% -- exceeded the range -- incorrect."""
     portfolio = _seed_portfolio(db_session, "TESTTR46M")
     _seed_settled_decision(
-        db_session, portfolio, "TESTTR46M1",
-        entry_underlying_price=Decimal("100"), exit_underlying_price=Decimal("110"),
+        db_session,
+        portfolio,
+        "TESTTR46M1",
+        entry_underlying_price=Decimal("100"),
+        exit_underlying_price=Decimal("110"),
         implied_move_pct=Decimal("0.03"),
     )
 
@@ -431,8 +484,11 @@ def test_range_accuracy_excluded_when_no_volatility_snapshot(db_session):
     """No option_snapshot_reference on record -- excluded, never guessed."""
     portfolio = _seed_portfolio(db_session, "TESTTR46N")
     _seed_settled_decision(
-        db_session, portfolio, "TESTTR46N1",
-        entry_underlying_price=Decimal("100"), exit_underlying_price=Decimal("105"),
+        db_session,
+        portfolio,
+        "TESTTR46N1",
+        entry_underlying_price=Decimal("100"),
+        exit_underlying_price=Decimal("105"),
         implied_move_pct=None,
     )
 
@@ -615,3 +671,129 @@ def test_resolve_portfolio_by_explicit_id(db_session):
 
 def test_resolve_portfolio_returns_none_for_unknown_id(db_session):
     assert resolve_portfolio(db_session, 999_999_999) is None
+
+
+# --------------------------------------------------------------------------
+# Post-live correction (2026-08-25) -- pre-settlement action summary.
+# Real Aug 25 shape: 8 real decisions, 1 real captured entry, 0 settled.
+# _seed_settled_decision above never sets decision_snapshot.legs (only
+# EntrySnapshot rows, a separate table) -- these tests construct the
+# real, minimal shapes directly instead, matching what services/
+# decision_snapshot_freezing.py actually freezes.
+# --------------------------------------------------------------------------
+
+
+def _seed_event(db_session, symbol: str) -> EarningsCalendarEvent:
+    event = EarningsCalendarEvent(
+        symbol=symbol,
+        company_name=f"{symbol} Co",
+        earnings_date=EARNINGS_DATE,
+        earnings_time=EarningsTiming.AMC,
+    )
+    db_session.add(event)
+    db_session.flush()
+    return event
+
+
+def _seed_decision(
+    db_session,
+    portfolio: BenchmarkPortfolio,
+    symbol: str,
+    *,
+    legs: list[dict] | None,
+) -> DecisionSnapshot:
+    event = _seed_event(db_session, symbol)
+    decision = DecisionSnapshot(
+        earnings_calendar_event_id=event.id,
+        benchmark_portfolio_id=portfolio.id,
+        ticker=symbol,
+        company_name=event.company_name,
+        strategy_direction=DecisionDirection.NEUTRAL,
+        strategy_type="long_call_butterfly" if legs else None,
+        generated_at=datetime(2026, 9, 16, 15, 55, tzinfo=UTC),
+        status=DecisionSnapshotStatus.PENDING_ENTRY,
+        legs=legs,
+        engine_version="options-decision-engine-v3",
+        prompt_version="v1",
+        expiration_source="v3_auto_resolver",
+    )
+    db_session.add(decision)
+    db_session.flush()
+    return decision
+
+
+_A_LEG = [
+    {
+        "option_type": "call",
+        "action": "buy",
+        "strike": "100.00",
+        "premium": "5.00",
+        "quantity": 1,
+    }
+]
+
+
+def test_action_summary_splits_actionable_from_no_action_decisions(db_session):
+    portfolio = _seed_portfolio(db_session, "TESTTR46AS1")
+    _seed_decision(db_session, portfolio, "TESTASACT1", legs=_A_LEG)
+    _seed_decision(db_session, portfolio, "TESTASACT2", legs=_A_LEG)
+    _seed_decision(db_session, portfolio, "TESTASNOACT", legs=None)
+
+    summary = compute_benchmark_track_record(db_session, portfolio, TrackRecordFilters())
+
+    assert summary.total_decisions == 3
+    assert summary.actionable_decisions == 2
+    assert summary.no_action_decisions == 1
+
+
+def test_a_no_action_decisions_failed_attempt_never_counts_as_entry_capture_failed(db_session):
+    """The real Aug 25 SJM shape: a no-action decision still gets a real
+    FAILED EntryCaptureAttempt ("no recommended strategy legs to enter",
+    see services/benchmark_entry_capture.py), but that must never be
+    counted the same as a genuine infrastructure entry-capture failure."""
+    portfolio = _seed_portfolio(db_session, "TESTTR46AS2")
+    no_action = _seed_decision(db_session, portfolio, "TESTASNOACT2", legs=None)
+    db_session.add(
+        EntryCaptureAttempt(
+            decision_snapshot_id=no_action.id,
+            benchmark_portfolio_id=portfolio.id,
+            status=CaptureStatus.FAILED,
+            capture_error="decision_snapshot has no recommended strategy legs to enter",
+        )
+    )
+    db_session.flush()
+
+    summary = compute_benchmark_track_record(db_session, portfolio, TrackRecordFilters())
+
+    assert summary.no_action_decisions == 1
+    assert summary.entries_captured == 0
+    assert summary.entries_capture_failed == 0
+
+
+def test_entries_captured_and_capture_failed_count_only_actionable_decisions(db_session):
+    portfolio = _seed_portfolio(db_session, "TESTTR46AS3")
+    captured = _seed_decision(db_session, portfolio, "TESTASCAP", legs=_A_LEG)
+    db_session.add(
+        EntryCaptureAttempt(
+            decision_snapshot_id=captured.id,
+            benchmark_portfolio_id=portfolio.id,
+            status=CaptureStatus.CAPTURED,
+            captured_at=datetime(2026, 9, 16, 15, 55, tzinfo=UTC),
+        )
+    )
+    failed = _seed_decision(db_session, portfolio, "TESTASFAIL", legs=_A_LEG)
+    db_session.add(
+        EntryCaptureAttempt(
+            decision_snapshot_id=failed.id,
+            benchmark_portfolio_id=portfolio.id,
+            status=CaptureStatus.FAILED,
+            capture_error="no ask quote available for a long leg",
+        )
+    )
+    db_session.flush()
+
+    summary = compute_benchmark_track_record(db_session, portfolio, TrackRecordFilters())
+
+    assert summary.actionable_decisions == 2
+    assert summary.entries_captured == 1
+    assert summary.entries_capture_failed == 1

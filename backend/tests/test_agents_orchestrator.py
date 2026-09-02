@@ -143,6 +143,203 @@ def test_native_tool_calling_full_pipeline_success(db_session):
     assert response.trace.intent_category == "options_analytics"
 
 
+def test_resolved_ticker_defaults_onto_a_tool_call_that_omits_it(db_session):
+    """Post-live correction (2026-08-25) Part A5 -- a real, deterministic
+    safety net: when the question has already been resolved to exactly
+    one real company, a tool call that omits ``ticker`` is scoped to it
+    rather than silently searching unscoped. This is exactly what
+    prevents a single-company question from letting an unrelated
+    company's documents become primary evidence."""
+    tool_call = ToolCall(id="call_1", name="get_historical_earnings", arguments={})
+    llm = _ScriptedLLM(
+        structured_responses={
+            **_default_intent(),
+            VerificationResult: [VerificationResult(supported=True)],
+        },
+        generate_responses=[
+            GenerateResult(tool_calls=[tool_call]),
+            GenerateResult(content="No history on record for INTU yet."),
+        ],
+    )
+    orchestrator = AgentOrchestrator(db_session, llm, _StubEmbedder())
+
+    response = orchestrator.run(
+        "What were INTU's last two earnings results?", resolved_tickers=["INTU"]
+    )
+
+    assert response.trace.tool_calls[0].arguments == {"ticker": "INTU"}
+
+
+def test_resolved_ticker_never_overrides_a_ticker_the_llm_did_supply(db_session):
+    """Part A6 -- a genuinely multi-company question must still let the
+    LLM call the same tool once per company; the deterministic default
+    must never clobber a real, explicit choice."""
+    tool_call = ToolCall(id="call_1", name="get_historical_earnings", arguments={"ticker": "AVGO"})
+    llm = _ScriptedLLM(
+        structured_responses={
+            **_default_intent(),
+            VerificationResult: [VerificationResult(supported=True)],
+        },
+        generate_responses=[
+            GenerateResult(tool_calls=[tool_call]),
+            GenerateResult(content="answer"),
+        ],
+    )
+    orchestrator = AgentOrchestrator(db_session, llm, _StubEmbedder())
+
+    response = orchestrator.run("Compare INTU and AVGO", resolved_tickers=["INTU", "AVGO"])
+
+    assert response.trace.tool_calls[0].arguments == {"ticker": "AVGO"}
+
+
+def test_no_default_applied_when_more_than_one_company_resolved(db_session):
+    """Ambiguous by construction: with more than one resolved company,
+    silently picking one would be a guess, not a deterministic fact --
+    the omitted argument is left exactly as the LLM produced it."""
+    tool_call = ToolCall(id="call_1", name="get_historical_earnings", arguments={})
+    llm = _ScriptedLLM(
+        structured_responses={
+            **_default_intent(),
+            VerificationResult: [VerificationResult(supported=True)],
+        },
+        generate_responses=[
+            GenerateResult(tool_calls=[tool_call]),
+            GenerateResult(content="answer"),
+        ],
+    )
+    orchestrator = AgentOrchestrator(db_session, llm, _StubEmbedder())
+
+    response = orchestrator.run("Compare CRM and NOW", resolved_tickers=["CRM", "NOW"])
+
+    assert response.trace.tool_calls[0].arguments == {}
+
+
+def test_as_of_cutoff_defaults_onto_a_tool_call_that_omits_it(db_session):
+    """Part A8 -- point-in-time safety, same deterministic-default
+    mechanism as the ticker case above."""
+    tool_call = ToolCall(id="call_1", name="get_historical_earnings", arguments={"ticker": "MU"})
+    llm = _ScriptedLLM(
+        structured_responses={
+            **_default_intent(),
+            VerificationResult: [VerificationResult(supported=True)],
+        },
+        generate_responses=[
+            GenerateResult(tool_calls=[tool_call]),
+            GenerateResult(content="answer"),
+        ],
+    )
+    orchestrator = AgentOrchestrator(db_session, llm, _StubEmbedder())
+
+    response = orchestrator.run(
+        "What did MU report that quarter?", resolved_tickers=["MU"], as_of=date(2033, 1, 1)
+    )
+
+    assert response.trace.tool_calls[0].arguments == {"ticker": "MU", "as_of": "2033-01-01"}
+
+
+def test_as_of_cutoff_independently_enforced_per_company_in_a_multi_company_question(db_session):
+    """Phase 4 point-in-time hardening (2026-08-26), Section 21/43 -- a
+    genuinely multi-company replay question calls the same tool once per
+    real company (Part A6's own precedent); every one of those calls
+    must independently receive the SAME real cutoff, never silently
+    dropped for the second/third company."""
+    tool_calls = [
+        ToolCall(id="call_1", name="get_historical_earnings", arguments={"ticker": "INTU"}),
+        ToolCall(id="call_2", name="get_historical_earnings", arguments={"ticker": "AVGO"}),
+    ]
+    llm = _ScriptedLLM(
+        structured_responses={
+            **_default_intent(),
+            VerificationResult: [VerificationResult(supported=True)],
+        },
+        generate_responses=[
+            GenerateResult(tool_calls=tool_calls),
+            GenerateResult(content="answer"),
+        ],
+    )
+    orchestrator = AgentOrchestrator(db_session, llm, _StubEmbedder())
+
+    response = orchestrator.run(
+        "Compare INTU and AVGO's last reported quarter",
+        resolved_tickers=["INTU", "AVGO"],
+        as_of=date(2033, 1, 1),
+    )
+
+    assert response.trace.tool_calls[0].arguments == {"ticker": "INTU", "as_of": "2033-01-01"}
+    assert response.trace.tool_calls[1].arguments == {"ticker": "AVGO", "as_of": "2033-01-01"}
+
+
+def test_as_of_cutoff_defaults_onto_compare_guidance_tool_call(db_session):
+    """The same deterministic-default mechanism must apply to every tool
+    with a real as_of field -- Phase 4 point-in-time hardening
+    (2026-08-26), Section 20 added it to compare_guidance; this proves
+    the orchestrator doesn't need its own per-tool wiring for that."""
+    tool_call = ToolCall(id="call_1", name="compare_guidance", arguments={"ticker": "MU"})
+    llm = _ScriptedLLM(
+        structured_responses={
+            **_default_intent(),
+            VerificationResult: [VerificationResult(supported=True)],
+        },
+        generate_responses=[
+            GenerateResult(tool_calls=[tool_call]),
+            GenerateResult(content="answer"),
+        ],
+    )
+    orchestrator = AgentOrchestrator(db_session, llm, _StubEmbedder())
+
+    response = orchestrator.run(
+        "What guidance did MU give last quarter?", resolved_tickers=["MU"], as_of=date(2033, 1, 1)
+    )
+
+    assert response.trace.tool_calls[0].arguments == {"ticker": "MU", "as_of": "2033-01-01"}
+
+
+def test_current_research_remains_unrestricted_without_as_of(db_session):
+    """Section 43 -- current (non-replay) AI Research must remain fully
+    unrestricted to currently-public evidence: omitting as_of entirely
+    must never add a cutoff argument that wasn't asked for."""
+    tool_call = ToolCall(id="call_1", name="get_historical_earnings", arguments={"ticker": "MU"})
+    llm = _ScriptedLLM(
+        structured_responses={
+            **_default_intent(),
+            VerificationResult: [VerificationResult(supported=True)],
+        },
+        generate_responses=[
+            GenerateResult(tool_calls=[tool_call]),
+            GenerateResult(content="answer"),
+        ],
+    )
+    orchestrator = AgentOrchestrator(db_session, llm, _StubEmbedder())
+
+    response = orchestrator.run("What did MU report that quarter?", resolved_tickers=["MU"])
+
+    assert response.trace.tool_calls[0].arguments == {"ticker": "MU"}
+    assert "as_of" not in response.trace.tool_calls[0].arguments
+
+
+def test_resolved_ticker_hint_reaches_the_real_system_prompt(db_session):
+    """Part A1's own root-cause fix: the LLM must actually receive the
+    real, resolved company as an authoritative hint, not just have the
+    orchestrator silently know about it."""
+    llm = _ScriptedLLM(
+        structured_responses={
+            IntentClassification: [
+                IntentClassification(category=IntentCategory.GENERAL, reasoning="test")
+            ]
+        },
+        generate_responses=[GenerateResult(content="answer")],
+    )
+    orchestrator = AgentOrchestrator(db_session, llm, _StubEmbedder())
+
+    orchestrator.run("Analyze the latest INTU earnings report", resolved_tickers=["INTU"])
+
+    system_message = llm.generate_calls[0][0][0]
+    assert system_message.role == "system"
+    assert "INTU" in system_message.content
+    # The real, historical root cause -- must never resurface.
+    assert "NVDA, AMD, MU" not in system_message.content
+
+
 def test_no_tool_needed_returns_direct_answer(db_session):
     llm = _ScriptedLLM(
         structured_responses={

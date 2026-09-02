@@ -115,8 +115,7 @@ class TestBuildExpirationCandidate:
     def test_zero_priceable_contracts_is_untradeable_even_with_real_contracts(self):
         exp = date(2026, 9, 4)
         contracts_only = [
-            _quote(exp, Decimal("100"), bid=None, ask=None, last_price=None)
-            for _ in range(3)
+            _quote(exp, Decimal("100"), bid=None, ask=None, last_price=None) for _ in range(3)
         ]
         candidate = build_expiration_candidate(
             expiration=exp,

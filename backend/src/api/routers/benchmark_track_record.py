@@ -20,6 +20,7 @@ from schemas.api import (
     BenchmarkCalibrationResponse,
     BenchmarkTrackRecordResponse,
     RateResponse,
+    StandardizedCohortSummaryResponse,
 )
 from services.benchmark_track_record import (
     CalibrationBucket,
@@ -53,6 +54,12 @@ def get_benchmark_track_record(
     dte_bucket: str | None = Query(default=None, pattern="^(0-3|4-7|8-14|15-30|30\\+)$"),
     risk_profile: RiskProfile | None = None,
     iv_regime: str | None = None,
+    engine_version: str | None = Query(
+        default=None,
+        description="V4.1 cohort isolation -- e.g. 'options-decision-engine-v3' or "
+        "'options-decision-engine-v4'. Omitted (default) means every real engine version, "
+        "never a silent mix presented as one cohort without the caller asking for that.",
+    ),
 ) -> BenchmarkTrackRecordResponse:
     portfolio = resolve_portfolio(db, portfolio_id)
     if portfolio is None:
@@ -67,11 +74,16 @@ def get_benchmark_track_record(
             dte_bucket=dte_bucket,
             risk_profile=risk_profile,
             iv_regime=iv_regime,
+            engine_version=engine_version,
         ),
     )
     return BenchmarkTrackRecordResponse(
         portfolio_id=summary.portfolio_id,
         total_decisions=summary.total_decisions,
+        actionable_decisions=summary.actionable_decisions,
+        no_action_decisions=summary.no_action_decisions,
+        entries_captured=summary.entries_captured,
+        entries_capture_failed=summary.entries_capture_failed,
         settled_decisions=summary.settled_decisions,
         win_rate=_rate_response(summary.win_rate),
         average_r=summary.average_r,
@@ -83,6 +95,21 @@ def get_benchmark_track_record(
         directional_accuracy=_rate_response(summary.directional_accuracy),
         breakeven_accuracy=_rate_response(summary.breakeven_accuracy),
         range_accuracy=_rate_response(summary.range_accuracy),
+        legacy_capital_caveat=summary.legacy_capital_caveat,
+        standardized=StandardizedCohortSummaryResponse(
+            n=summary.standardized.n,
+            wins=summary.standardized.wins,
+            losses=summary.standardized.losses,
+            mean_return_on_standardized_capital=(
+                summary.standardized.mean_return_on_standardized_capital
+            ),
+            median_return_on_standardized_capital=(
+                summary.standardized.median_return_on_standardized_capital
+            ),
+            total_realized_pnl=summary.standardized.total_realized_pnl,
+            portfolio_drawdown_available=summary.standardized.portfolio_drawdown_available,
+            portfolio_drawdown_reason=summary.standardized.portfolio_drawdown_reason,
+        ),
     )
 
 

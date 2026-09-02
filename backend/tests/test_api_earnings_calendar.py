@@ -32,11 +32,20 @@ def client(test_client, db_session) -> Iterator[TestClient]:
 
 
 def test_calendar_endpoint_returns_upcoming_earnings(client, db_session):
+    # earnings_date=2020-01-01: this suite runs against a real, shared
+    # dev Postgres instance that already has real, permanently-committed
+    # UPCOMING rows from real syncs (see tests/conftest.py::
+    # clean_provider_state's own docstring on this exact category of
+    # fragility) -- the endpoint orders by earnings_date ascending with a
+    # max limit of 200, and real near-term data has already grown past
+    # that. A date safely before the earliest real committed row (real
+    # syncs only ever populate 2026 onward) guarantees this fixture
+    # always sorts first, regardless of how much real data accumulates.
     db_session.add(
         EarningsCalendarEvent(
             symbol="TESTAAPL",
             company_name="Test Apple Co",
-            earnings_date=date(2026, 10, 29),
+            earnings_date=date(2020, 1, 1),
             earnings_time=EarningsTiming.AMC,
             status=EarningsCalendarEventStatus.UPCOMING,
         )
@@ -45,7 +54,7 @@ def test_calendar_endpoint_returns_upcoming_earnings(client, db_session):
         EarningsCalendarEvent(
             symbol="TESTOLD",
             company_name="Test Already Reported Co",
-            earnings_date=date(2025, 1, 1),
+            earnings_date=date(2019, 1, 1),
             earnings_time=EarningsTiming.BMO,
             status=EarningsCalendarEventStatus.COMPLETED,
         )

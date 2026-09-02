@@ -50,9 +50,10 @@ from core.config import Settings, get_settings
 from models.company import Company
 from models.enums import GreeksSource, OptionType
 from models.options_snapshot import OptionsSnapshot
-from providers.ibkr_client import IBKRClient, IBKRError
-from providers.ibkr_historical import fetch_historical_bars, last_bar_at_or_before
-from providers.ibkr_options import IBKROptionsProvider
+from providers.base import OptionsDataProvider
+from providers.factory import get_options_provider
+from providers.ibkr_client import IBKRError
+from providers.ibkr_historical import last_bar_at_or_before
 from providers.types import OptionQuote
 from services.options_analytics import (
     PricingSnapshotSelection,
@@ -351,16 +352,41 @@ def recompute_deterministic_greeks(
 def reconstruct_close_snapshot(
     db: Session,
     company: Company,
-    provider: IBKROptionsProvider,
-    client: IBKRClient,
+    provider: OptionsDataProvider,
     target_session_date: date,
     earnings_date: date | None,
+    source_provider_tag: str = "ibkr_web",
 ) -> ReconstructionResult:
     """Rebuilds ``target_session_date``'s option-market close state from
     real IBKR historical bars (Phase 14.13 Part 4-11). Never invents a
     contract, a bid/ask, or a Greek -- every value traces back either to a
     real historical bar or a deterministic recomputation clearly tagged as
     such (GreeksSource.BLACK_SCHOLES).
+
+    ``provider`` is any ``OptionsDataProvider`` that implements the three
+    reconstruction methods declared on the ABC (see providers/base.py) --
+    IBKR TWS Migration Phase 3 readiness: this used to require a concrete
+    ``IBKROptionsProvider`` plus a separate ``IBKRClient`` for historical
+    bars specifically, hard-coupling reconstruction to the Web transport
+    even when the app's configured IBKR transport was TWS. Both providers/
+    ibkr_options.py and providers/ibkr_tws_options.py now implement all
+    three methods identically in shape (real conids/strikes/bars, honest
+    ``None``/empty on failure) -- this function itself never changed how
+    it interprets or scores what comes back.
+
+    ``source_provider_tag`` (Section 8, source provenance) -- honestly
+    records which real transport actually produced these reconstructed
+    quotes ("ibkr_web" or "ibkr_tws", matching the same values providers/
+    ibkr_options.py and providers/ibkr_tws_options.py write on their own
+    live-collected quotes) on every ``OptionQuote`` this function builds.
+    Deliberately a caller-supplied string rather than something this
+    function derives itself via an isinstance check on ``provider`` --
+    the caller (``_resolve_via_previous_session_close`` below) already
+    knows which transport it resolved from ``settings.ibkr_provider``,
+    and this keeps ``provider`` genuinely provider-neutral in type here.
+    Defaults to "ibkr_web" (this function's only real caller today) so a
+    test or script that constructs a Web provider directly and omits this
+    argument keeps getting the pre-Section-8 tag.
     """
     window_end_et = datetime.combine(target_session_date, CLOSE_WINDOW_END, tzinfo=EASTERN)
     window_end_utc = window_end_et.astimezone(UTC)
@@ -414,8 +440,8 @@ def reconstruct_close_snapshot(
     # this same observation (Part 10), so option reconstruction below
     # depends on this having succeeded.
     try:
-        underlying_bars = fetch_historical_bars(
-            client, underlying_conid, bar="1min", period="1d", end_time=window_end_utc
+        underlying_bars = provider.get_historical_bars(
+            underlying_conid, bar="1min", period="1d", end_time=window_end_utc
         )
     except IBKRError as exc:
         return ReconstructionResult(
@@ -450,8 +476,8 @@ def reconstruct_close_snapshot(
     skipped_no_data = 0
     for strike, right, option_conid in contracts:
         try:
-            bars = fetch_historical_bars(
-                client, option_conid, bar="1min", period="1d", end_time=window_end_utc
+            bars = provider.get_historical_bars(
+                option_conid, bar="1min", period="1d", end_time=window_end_utc
             )
         except IBKRError:
             skipped_no_data += 1
@@ -484,7 +510,7 @@ def reconstruct_close_snapshot(
                 vega=greeks[4] if greeks else None,
                 market_data_quality="frozen",
                 external_contract_id=str(option_conid),
-                source_provider="ibkr",
+                source_provider=source_provider_tag,
                 retrieved_at=reconstructed_at,
                 anchor="earnings_anchored" if earnings_date is not None else "general_current",
                 underlying_price=underlying_price,
@@ -565,7 +591,11 @@ def persist_reconstruction(
                 ),
                 market_data_quality=None,
                 external_contract_id=q.external_contract_id,
-                source_provider="ibkr",
+                # Section 8 -- inherits whatever tag reconstruct_close_
+                # snapshot already stamped on this quote ("ibkr_web" or
+                # "ibkr_tws"), rather than re-hardcoding a literal here
+                # that could silently disagree with it.
+                source_provider=q.source_provider,
                 retrieved_at=q.retrieved_at,
                 anchor=q.anchor or "general_current",
                 purpose="RECONSTRUCTED_CLOSE",
@@ -647,24 +677,31 @@ def _resolve_via_previous_session_close(
             target_session_date=target_session_date,
         )
 
-    provider = IBKROptionsProvider(base_url=settings.ibkr_base_url)
-    client = IBKRClient(base_url=settings.ibkr_base_url)
-    try:
-        client.ensure_authenticated()
-    except IBKRError:
-        return MarketResolution(
-            selection=select_pricing_snapshot(db, company),
-            reconstruction_attempted=False,
-            reconstruction_result=None,
-            target_session_date=target_session_date,
-        )
-
+    # IBKR TWS Migration Phase 3 readiness -- routes through providers/
+    # factory.py rather than constructing a concrete IBKROptionsProvider
+    # directly, so this resolves to whichever real transport (Web or TWS)
+    # settings.ibkr_provider currently selects. The former standalone
+    # IBKRClient().ensure_authenticated() pre-check is gone: every
+    # OptionsDataProvider method reconstruct_close_snapshot calls already
+    # performs its own real readiness check first (self._client.ensure_
+    # authenticated() on the Web adapter, self._connection.ensure_
+    # connected() on the TWS adapter) and reports an honest, typed
+    # IBKRError-derived ReconstructionResult.reason on failure -- strictly
+    # more informative than the old short-circuit, which discarded the
+    # real failure reason entirely.
+    provider = get_options_provider(settings, override="ibkr", db=db)
+    source_provider_tag = "ibkr_tws" if settings.ibkr_provider.lower() == "tws" else "ibkr_web"
     result = reconstruct_close_snapshot(
-        db, company, provider, client, target_session_date, earnings_date
+        db, company, provider, target_session_date, earnings_date, source_provider_tag
     )
-    if result.succeeded and result.quality is not None and result.quality.quality in (
-        "good",
-        "acceptable",
+    if (
+        result.succeeded
+        and result.quality is not None
+        and result.quality.quality
+        in (
+            "good",
+            "acceptable",
+        )
     ):
         persist_reconstruction(db, company, result, target_session_date)
         return MarketResolution(
@@ -701,6 +738,8 @@ def resolve_best_actionable_option_market(
     as_of: datetime,
     earnings_date: date | None,
     settings: Settings | None = None,
+    *,
+    force_live_refresh: bool = False,
 ) -> MarketResolution:
     """The single canonical resolver (Phase 14.13/14.14) every caller that
     needs "the best real option market state for this company right now"
@@ -713,9 +752,11 @@ def resolve_best_actionable_option_market(
     happened to be open).
 
       CASE 1: market open, current snapshot already GOOD/ACCEPTABLE and
-        priceable -> use it directly, no retry, no reconstruction.
+        priceable, and the caller hasn't demanded a fresh read -> use it
+        directly, no retry, no reconstruction.
       CASE 2: market open, current snapshot CONTRACTS_ONLY/UNTRADEABLE (or
-        no chain at all) -> retry a real live IBKR fetch once. If that
+        no chain at all) -- OR force_live_refresh=True and CASE 1 would
+        otherwise have fired -> retry a real live IBKR fetch once. If that
         still isn't priceable -> fall through to the immediately-previous
         completed session's close (persisted or reconstructed), used as
         an explicitly labeled fallback (is_fallback=True,
@@ -727,6 +768,32 @@ def resolve_best_actionable_option_market(
         to select_pricing_snapshot's own actionability gate, which
         reports NO ACTIONABLE OPTIONS RECOMMENDATION (contracts_only /
         stale_research_only) rather than fabricating anything.
+
+    ``force_live_refresh`` (V4.1 source-coherence fix, 2026-08-31) --
+    real, confirmed root cause of an 8.6% decision-vs-entry underlying
+    price gap on a real settled trade (DY, 2026-08-25): CASE 1's own
+    "current_priceable" check is purely about PRICEABILITY, never about
+    how long ago the snapshot was actually collected (see
+    compute_actionability's own docstring in services/options_analytics.py,
+    which already documents this exact gap for its own, coarser,
+    date-level check) -- a same-session-day snapshot collected hours
+    earlier by an unrelated periodic collection job passes it exactly the
+    same as one collected seconds ago. services/benchmark_entry_capture.py
+    always re-fetches live moments later regardless, so decision
+    generation's own strike/target selection can silently anchor to a
+    materially stale intraday price while the position it enters does not.
+    Deliberately NOT a new numeric minutes-old threshold (no such
+    established rule exists anywhere in this codebase -- see
+    analytics/data_state.py's own day-and-session-boundary-only
+    granularity): real, official decision generation
+    (services/decision_engine.py's AUTO path, the only caller that
+    actually commits a trade) instead simply always prefers a fresh live
+    read when the market is open, by skipping straight to CASE 2's
+    already-existing, already-tested live-retry-then-previous-session-
+    fallback logic. Defaults to False so every other real caller (Strategy
+    Lab, Upcoming Earnings, and any other read-only research view in
+    api/routers/research.py) keeps its exact current "avoid an
+    unnecessary live call" behavior, unchanged.
     """
     settings = settings or get_settings()
     market = get_market_session(as_of)
@@ -736,7 +803,7 @@ def resolve_best_actionable_option_market(
         current_selection.quotes
     )
 
-    if market.session == MarketSession.REGULAR and current_is_good:
+    if market.session == MarketSession.REGULAR and current_is_good and not force_live_refresh:
         return MarketResolution(
             selection=current_selection,
             reconstruction_attempted=False,
@@ -753,10 +820,14 @@ def resolve_best_actionable_option_market(
         # the session (e.g. captured before quotes settled) -- worth one
         # fresh attempt, never a loop.
         if effective_provider == "ibkr":
-            client = IBKRClient(base_url=settings.ibkr_base_url)
+            # IBKR TWS Migration Phase 3 readiness -- see the identical
+            # factory-resolution comment in _resolve_via_previous_session_
+            # close above; _fetch_and_persist_options_snapshot's own
+            # get_option_chain call already performs the real readiness
+            # check for whichever transport this resolves to, so no
+            # separate pre-check is needed here either.
             try:
-                client.ensure_authenticated()
-                provider = IBKROptionsProvider(base_url=settings.ibkr_base_url)
+                provider = get_options_provider(settings, override="ibkr", db=db)
                 _fetch_and_persist_options_snapshot(db, provider, company, earnings_date, as_of)
                 retried_selection = select_pricing_snapshot(db, company)
                 if retried_selection.tier == "current_priceable" and _is_good_or_acceptable(

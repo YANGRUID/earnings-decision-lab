@@ -54,7 +54,12 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from db.base import Base
-from models.enums import DecisionDirection, DecisionSnapshotStatus
+from models.enums import (
+    DecisionDirection,
+    DecisionSnapshotStatus,
+    DecisionVolatilityView,
+    RiskProfile,
+)
 
 if TYPE_CHECKING:
     from models.ai_thesis_version import AIThesisVersion
@@ -155,6 +160,51 @@ class DecisionSnapshot(Base):
     why_these_strikes: Mapped[list | None] = mapped_column(JSON)
     why_not_alternatives: Mapped[list | None] = mapped_column(JSON)
 
+    # --- Reproducibility (Phase 4 hardening, 2026-08-26) -------------
+    # Additive and nullable, per the same "never guessed or backfilled"
+    # rule as every other nullable column above: NULL on every historical
+    # (including every Aug 25) row, where this input was generated but
+    # never frozen. Populated from here forward by
+    # services/decision_snapshot_freezing.py, straight off the real
+    # DecisionResult these were already computed onto -- never re-derived
+    # or inferred after the fact.
+    #
+    # The structured LLM classification of direction/volatility used for
+    # THIS decision (DecisionResult.view.volatility_view) -- previously
+    # only the deterministic ``direction`` survived onto this table;
+    # volatility_view materially feeds strategy_scoring's volatility_fit
+    # component and was silently unrecoverable for a frozen decision.
+    volatility_view: Mapped[DecisionVolatilityView | None] = mapped_column(
+        Enum(DecisionVolatilityView, name="decision_volatility_view", create_type=False)
+    )
+    # The real risk profile actually used to generate this decision
+    # (DecisionResult.risk_profile) -- a frozen copy, independent of
+    # BenchmarkPortfolio.risk_profile, which is mutable and must never
+    # change how an old decision is interpreted (see benchmark_portfolio's
+    # own risk_profile column docstring for why it's mutable at all).
+    effective_risk_profile: Mapped[RiskProfile | None] = mapped_column(
+        Enum(RiskProfile, name="risk_profile", create_type=False)
+    )
+    # The real deterministic evidence-confidence total (DecisionResult.
+    # confidence.total, analytics/decision/confidence.py) -- EVIDENCE
+    # STRENGTH, never probability of profit, strategy score, or LLM
+    # self-reported confidence (see that module's own docstring). The
+    # breakdown preserves the same five named components
+    # (ConfidenceComponents.as_dict()) that produced the total.
+    deterministic_confidence_score: Mapped[int | None] = mapped_column(Integer)
+    deterministic_confidence_breakdown: Mapped[dict | None] = mapped_column(JSON)
+    # The real provider/model identity of the LLM call that generated
+    # THIS decision's DecisionView (services/decision_engine.py's
+    # ``llm.name``/``llm.model`` at the point the structured DecisionView
+    # call actually happened) -- distinct from whatever LLM generated the
+    # underlying Earnings Thesis. ``decision_pipeline.py`` (the only real
+    # caller of freeze_decision_snapshot) never passes a manual direction/
+    # volatility override to generate_decision(), so for every real
+    # DecisionSnapshot this is always the genuine DecisionView-generation
+    # call, never a manually-overridden view misattributed to the LLM.
+    decision_llm_provider: Mapped[str | None] = mapped_column(String(64))
+    decision_llm_model: Mapped[str | None] = mapped_column(String(128))
+
     # --- Metadata -------------------------------------------------
     # Version stamps for the deterministic engine / LLM prompt that
     # produced this row -- no existing versioning mechanism for either
@@ -169,9 +219,7 @@ class DecisionSnapshot(Base):
     # changing that behavior now.
     expiration_source: Mapped[str] = mapped_column(String(32))
 
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now()
-    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     earnings_calendar_event: Mapped["EarningsCalendarEvent"] = relationship()  # noqa: F821
     benchmark_portfolio: Mapped["BenchmarkPortfolio"] = relationship()  # noqa: F821

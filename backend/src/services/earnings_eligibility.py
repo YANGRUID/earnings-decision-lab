@@ -29,6 +29,16 @@ class EligibilityResult:
     symbol: str
     eligible: bool
     reason: str | None = None
+    # Post-live correction (2026-08-25): real Aug 25 evidence -- WSM's
+    # preparation-time options-chain probe hit a genuine, transient IBKR
+    # rate limit and was recorded exactly like a permanent hard filter
+    # (market cap, non-US listing), even though WSM's own later,
+    # independent execution-time check_eligibility call succeeded and
+    # produced a real DecisionSnapshot minutes afterward. True only for
+    # the one branch below that represents an operational failure of the
+    # provider call itself, never a genuine, data-driven business-rule
+    # rejection -- those are never worth retrying and stay False.
+    retryable: bool = False
 
 
 def check_eligibility(
@@ -43,9 +53,7 @@ def check_eligibility(
     if event.market_cap is None:
         return EligibilityResult(event.symbol, False, "market cap unknown")
     if event.market_cap < MIN_MARKET_CAP:
-        return EligibilityResult(
-            event.symbol, False, f"market cap below ${MIN_MARKET_CAP:,.0f}"
-        )
+        return EligibilityResult(event.symbol, False, f"market cap below ${MIN_MARKET_CAP:,.0f}")
 
     if event.country is None:
         return EligibilityResult(event.symbol, False, "listing country unknown")
@@ -58,7 +66,9 @@ def check_eligibility(
     try:
         expirations = options_provider.list_available_expirations(event.symbol, after=date.today())
     except Exception as exc:
-        return EligibilityResult(event.symbol, False, f"options chain lookup failed: {exc}")
+        return EligibilityResult(
+            event.symbol, False, f"options chain lookup failed: {exc}", retryable=True
+        )
 
     if not expirations:
         return EligibilityResult(event.symbol, False, "no tradable option chain")

@@ -3,7 +3,6 @@ both DeepSeekProvider and OpenAIProvider — since they're the same wire
 format, duplicating these tests per-subclass would just be noise.
 """
 
-
 import pytest
 from pydantic import BaseModel
 

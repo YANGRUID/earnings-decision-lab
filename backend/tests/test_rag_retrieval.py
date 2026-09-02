@@ -194,3 +194,62 @@ def test_hybrid_search_combines_and_dedupes(db_session):
     assert both.text in result_texts
     # the chunk matching both signals should outrank the vector-only one
     assert result_texts.index(both.text) < result_texts.index(vector_only.text)
+
+
+def test_hybrid_search_reranker_is_opt_in(db_session):
+    """Phase 4 RAG hardening (2026-08-26), Section 25 -- RRF-only remains
+    the default; a caller must explicitly pass a real reranker for it to
+    run at all. Fake reranker only -- never the real network-downloading
+    model (same convention as test_rag_reranking.py)."""
+    company, filing = _seed(db_session, "ZZTEST7", "TEST-0000000007")
+    first = DocumentChunk(
+        filing_id=filing.id,
+        company_id=company.id,
+        chunk_index=0,
+        section="Item 7",
+        text="First real quarterly revenue commentary.",
+        token_count=5,
+        embedding=_zero_vector({0: 0.95}),
+        embedding_model="test",
+        retrieved_at=NOW,
+    )
+    second = DocumentChunk(
+        filing_id=filing.id,
+        company_id=company.id,
+        chunk_index=1,
+        section="Item 7",
+        text="Second real quarterly revenue commentary.",
+        token_count=5,
+        embedding=_zero_vector({0: 0.9}),
+        embedding_model="test",
+        retrieved_at=NOW,
+    )
+    db_session.add_all([first, second])
+    db_session.flush()
+
+    default_results = hybrid_search(
+        db_session,
+        query_text="revenue",
+        query_embedding=_zero_vector({0: 1.0}),
+        filters=RetrievalFilters(company_ids=[company.id]),
+        k=5,
+    )
+    assert [r.text for r in default_results] == [first.text, second.text]
+
+    class _ReverseReranker:
+        model_name = "fake"
+        version = "test-v1"
+
+        def score(self, query, documents):
+            # Ascending index-based scores -> descending sort reverses order.
+            return [float(i) for i in range(len(documents))]
+
+    reranked_results = hybrid_search(
+        db_session,
+        query_text="revenue",
+        query_embedding=_zero_vector({0: 1.0}),
+        filters=RetrievalFilters(company_ids=[company.id]),
+        k=5,
+        reranker=_ReverseReranker(),
+    )
+    assert [r.text for r in reranked_results] == [second.text, first.text]

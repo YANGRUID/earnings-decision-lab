@@ -742,9 +742,7 @@ def compute_options_market_state(
     has_bid_ask = len(priceable) > 0
     has_iv = any(q.implied_volatility is not None for q in raw_chain)
     has_greeks = any(q.delta is not None for q in raw_chain)
-    bid_ask_contract_count = sum(
-        1 for q in raw_chain if q.bid is not None and q.ask is not None
-    )
+    bid_ask_contract_count = sum(1 for q in raw_chain if q.bid is not None and q.ask is not None)
     iv_contract_count = sum(1 for q in raw_chain if q.implied_volatility is not None)
     greeks_contract_count = sum(1 for q in raw_chain if q.delta is not None)
     volume_coverage = sum(1 for q in raw_chain if q.volume is not None) / contract_count
@@ -787,9 +785,7 @@ def compute_options_market_state(
                 "recommendations can be generated."
             )
         else:
-            label = (
-                "Previous close" if snapshot_purpose == "close" else "Previous-session snapshot"
-            )
+            label = "Previous close" if snapshot_purpose == "close" else "Previous-session snapshot"
             time_et = snapshot_timestamp.astimezone(EASTERN).strftime("%H:%M ET")
             reason = (
                 f"{label}, {time_et} ({age.label} ago) used because the current chain has no "

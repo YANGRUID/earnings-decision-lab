@@ -29,12 +29,25 @@ class MarketDataQuality(enum.StrEnum):
     (frozen, e.g. last recorded at market close) data -- only ever set from
     a real signal a provider actually returned (see
     providers/ibkr_client.py's decoding of IBKR's own market-data-
-    availability flag), never guessed."""
+    availability flag), never guessed.
+
+    ``UNAVAILABLE`` (Phase 4 market-data-quality hardening, 2026-08-26,
+    Section 15) -- a real, previously-unrepresentable value:
+    decode_market_data_quality() already returns the string "unavailable"
+    for IBKR's own "N" (Not Subscribed) availability code, but this enum
+    had no matching member, so any real "N" response would have raised
+    ValueError the moment a caller tried MarketDataQuality(quote.
+    market_data_quality) (see services/benchmark_entry_capture.py,
+    services/benchmark_exit_capture.py, services/options_analytics.py --
+    all three do exactly that cast). Distinct from UNKNOWN: UNAVAILABLE
+    means the provider positively said "no subscription for this data,"
+    UNKNOWN means no quality signal was returned at all."""
 
     LIVE = "live"
     DELAYED = "delayed"
     FROZEN = "frozen"
     UNKNOWN = "unknown"
+    UNAVAILABLE = "unavailable"
 
 
 class FilingType(enum.StrEnum):
@@ -260,12 +273,17 @@ class EarningsTiming(enum.StrEnum):
 
 
 class EarningsSource(enum.StrEnum):
-    """Provenance of an earnings_calendar_event row (Phase 4.2). A single
-    member today (only Finnhub is wired up), kept as a real enum rather
-    than a bare string so a second calendar provider added later is a
-    one-line addition with a real migration, not a silent convention."""
+    """Provenance of an earnings_calendar_event row (Phase 4.2). Kept as a
+    real enum rather than a bare string so a second calendar provider
+    added later is a one-line addition with a real migration, not a
+    silent convention -- EARNINGSAPI is exactly that: EarningsAPI.com
+    became the primary source, Finnhub the fallback, once Finnhub's free
+    tier was confirmed (live, against this project's own real data) to
+    return far-future placeholder dates instead of erroring. See
+    EARNINGS_CALENDAR_PROVIDER_ARCHITECTURE_REVIEW.md."""
 
     FINNHUB = "finnhub"
+    EARNINGSAPI = "earningsapi"
 
 
 class EarningsCalendarEventStatus(enum.StrEnum):
@@ -326,3 +344,56 @@ class ExitPolicy(enum.StrEnum):
     computes (its ``exit_timestamp``)."""
 
     FIRST_POST_EARNINGS_TRADING_DAY_CLOSE = "first_post_earnings_trading_day_close"
+
+
+class QuoteRequirement(enum.StrEnum):
+    """What a snapshot warm-up caller actually needs before treating a
+    quote as ready (IBKR execution-observability hardening, 2026-08-26)
+    -- distinct from merely having *some* field populated. ``ASK``/``BID``
+    name the specific NBBO side a real executable transaction needs (see
+    OptionAction's own docstring for which side each real action reads:
+    BUY reads ASK, SELL reads BID -- entry capture uses that mapping
+    directly; exit capture uses its inverse, since closing a BUY leg
+    means selling it at BID and closing a SELL leg means buying it back
+    at ASK). ``BID_ASK`` is for a caller that genuinely needs both sides.
+    ``ANALYTICAL`` is the pre-existing, unchanged default (a real last
+    price is enough) for a caller that isn't pricing a specific
+    transaction at all -- e.g. research chain collection, Strategy Lab's
+    own ranking display -- and must never be forced into requiring a
+    specific executable side it has no real use for."""
+
+    ASK = "ask"
+    BID = "bid"
+    BID_ASK = "bid_ask"
+    ANALYTICAL = "analytical"
+
+
+class QuoteAcquisitionCaptureType(enum.StrEnum):
+    """Which official capture workflow a QuoteAcquisitionAttempt row's
+    telemetry belongs to (IBKR execution-observability hardening,
+    2026-08-26) -- the discriminator between its two nullable FKs
+    (entry_capture_attempt_id / settlement_capture_attempt_id)."""
+
+    ENTRY = "entry"
+    SETTLEMENT = "settlement"
+
+
+class MarketDataQualityPolicy(enum.StrEnum):
+    """Phase 4 market-data-quality hardening (2026-08-26), Section 16 --
+    an explicit, app-wide policy (core.config.Settings.market_data_
+    quality_policy), not a per-row DB column: no existing doc or code
+    anywhere in this project states the official benchmark requires LIVE
+    market data, and this account's own real, documented entitlement
+    (docs/ibkr_integration.md) is delayed-only for options -- every real
+    Aug 25 capture that ever succeeded necessarily used DELAYED data,
+    since that is the only thing this account's subscription has ever
+    returned. ``ALLOW_DELAYED_WITH_LABEL`` (the default) preserves this
+    exact, already-real behavior -- captures continue to succeed on
+    delayed data, honestly labeled as such, never silently upgraded to
+    "live" anywhere in Operations or Track Record. ``LIVE_ONLY`` is
+    available for an account/environment where a true live options
+    subscription exists and the owner wants official captures to refuse
+    anything less."""
+
+    LIVE_ONLY = "live_only"
+    ALLOW_DELAYED_WITH_LABEL = "allow_delayed_with_label"

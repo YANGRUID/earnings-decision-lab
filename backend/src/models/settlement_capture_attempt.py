@@ -150,9 +150,7 @@ class SettlementCaptureAttempt(Base):
     source_provider: Mapped[str | None] = mapped_column(String(64))
     captured_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now()
-    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     decision_snapshot: Mapped["DecisionSnapshot"] = relationship()  # noqa: F821
     benchmark_portfolio: Mapped["BenchmarkPortfolio"] = relationship()  # noqa: F821
@@ -160,6 +158,18 @@ class SettlementCaptureAttempt(Base):
     legs: Mapped[list["ExitSnapshot"]] = relationship(  # noqa: F821
         back_populates="settlement_attempt"
     )
+
+    @property
+    def market_data_quality_label(self) -> str:
+        """Settlement's mirror of EntryCaptureAttempt.market_data_quality_
+        label -- see that property's own docstring (Phase 4
+        market-data-quality hardening, 2026-08-26, Section 17)."""
+        from analytics.market_data_policy import derive_capture_quality_label
+
+        values = [
+            leg.market_data_quality.value if leg.market_data_quality else None for leg in self.legs
+        ]
+        return derive_capture_quality_label(values)
 
     def __repr__(self) -> str:
         return (

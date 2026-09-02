@@ -175,7 +175,12 @@ def test_pipeline_creates_snapshot_for_eligible_and_due_event(db_session, monkey
     _stub_generate_decision(monkeypatch, calls)
 
     outcome = decision_pipeline.run_decision_pipeline_for_event(
-        db_session, event, portfolio, _FakeOptionsProvider(), llm=object(), embedder=object(),
+        db_session,
+        event,
+        portfolio,
+        _FakeOptionsProvider(),
+        llm=object(),
+        embedder=object(),
         now=_due_now(),
     )
     db_session.flush()
@@ -193,13 +198,19 @@ def test_pipeline_creates_snapshot_for_eligible_and_due_event(db_session, monkey
 def test_pipeline_skips_ineligible_event_without_generating(db_session, monkeypatch):
     _seed_company(db_session)
     event, portfolio = _seed_event_and_portfolio(
-        db_session, market_cap=Decimal("5000000000")  # $5B, below the $10B floor
+        db_session,
+        market_cap=Decimal("5000000000"),  # $5B, below the $10B floor
     )
     calls: list = []
     _stub_generate_decision(monkeypatch, calls)
 
     outcome = decision_pipeline.run_decision_pipeline_for_event(
-        db_session, event, portfolio, _FakeOptionsProvider(), llm=object(), embedder=object(),
+        db_session,
+        event,
+        portfolio,
+        _FakeOptionsProvider(),
+        llm=object(),
+        embedder=object(),
         now=_due_now(),
     )
 
@@ -217,7 +228,12 @@ def test_pipeline_skips_not_yet_due_event(db_session, monkeypatch):
 
     too_early = _due_now().replace(hour=9, minute=0)
     outcome = decision_pipeline.run_decision_pipeline_for_event(
-        db_session, event, portfolio, _FakeOptionsProvider(), llm=object(), embedder=object(),
+        db_session,
+        event,
+        portfolio,
+        _FakeOptionsProvider(),
+        llm=object(),
+        embedder=object(),
         now=too_early,
     )
 
@@ -236,7 +252,12 @@ def test_pipeline_skips_too_late_event(db_session, monkeypatch):
 
     too_late = _due_now() + timedelta(hours=3)
     outcome = decision_pipeline.run_decision_pipeline_for_event(
-        db_session, event, portfolio, _FakeOptionsProvider(), llm=object(), embedder=object(),
+        db_session,
+        event,
+        portfolio,
+        _FakeOptionsProvider(),
+        llm=object(),
+        embedder=object(),
         now=too_late,
     )
 
@@ -251,7 +272,12 @@ def test_pipeline_skips_when_no_company_researched(db_session, monkeypatch):
     _stub_generate_decision(monkeypatch, calls)
 
     outcome = decision_pipeline.run_decision_pipeline_for_event(
-        db_session, event, portfolio, _FakeOptionsProvider(), llm=object(), embedder=object(),
+        db_session,
+        event,
+        portfolio,
+        _FakeOptionsProvider(),
+        llm=object(),
+        embedder=object(),
         now=_due_now(),
     )
 
@@ -266,7 +292,12 @@ def test_pipeline_is_idempotent_for_an_already_frozen_event(db_session, monkeypa
     _stub_generate_decision(monkeypatch, calls)
 
     first = decision_pipeline.run_decision_pipeline_for_event(
-        db_session, event, portfolio, _FakeOptionsProvider(), llm=object(), embedder=object(),
+        db_session,
+        event,
+        portfolio,
+        _FakeOptionsProvider(),
+        llm=object(),
+        embedder=object(),
         now=_due_now(),
     )
     db_session.flush()
@@ -274,7 +305,12 @@ def test_pipeline_is_idempotent_for_an_already_frozen_event(db_session, monkeypa
     assert calls == [company.ticker]
 
     second = decision_pipeline.run_decision_pipeline_for_event(
-        db_session, event, portfolio, _FakeOptionsProvider(), llm=object(), embedder=object(),
+        db_session,
+        event,
+        portfolio,
+        _FakeOptionsProvider(),
+        llm=object(),
+        embedder=object(),
         now=_due_now(),
     )
 

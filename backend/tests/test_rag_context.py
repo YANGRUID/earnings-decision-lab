@@ -4,7 +4,9 @@ from rag.context import assemble_context
 from rag.retrieval import RetrievedChunk
 
 
-def _chunk(ticker="MU", section="Item 7", text="Revenue grew.") -> RetrievedChunk:
+def _chunk(
+    ticker="MU", section="Item 7", text="Revenue grew.", accession_number=None
+) -> RetrievedChunk:
     return RetrievedChunk(
         chunk_id=1,
         filing_id=1,
@@ -17,6 +19,7 @@ def _chunk(ticker="MU", section="Item 7", text="Revenue grew.") -> RetrievedChun
         chunk_index=0,
         text=text,
         score=0.9,
+        accession_number=accession_number,
     )
 
 
@@ -50,3 +53,29 @@ def test_assemble_context_empty_input():
     assembled = assemble_context([])
     assert assembled.context_text == ""
     assert assembled.citations == []
+
+
+class TestSourceTransparency:
+    """Phase 4 AI Research source-transparency hardening (2026-08-26),
+    Section 28 -- real, already-known provenance, never fabricated."""
+
+    def test_accession_number_carried_onto_the_citation(self):
+        assembled = assemble_context([_chunk(accession_number="0000320193-26-000001")])
+
+        assert assembled.citations[0].accession_number == "0000320193-26-000001"
+
+    def test_accession_number_none_when_not_known(self):
+        assembled = assemble_context([_chunk(accession_number=None)])
+
+        assert assembled.citations[0].accession_number is None
+
+    def test_evidence_cutoff_none_for_ordinary_as_of_now_research(self):
+        assembled = assemble_context([_chunk()])
+
+        assert assembled.citations[0].evidence_cutoff is None
+
+    def test_evidence_cutoff_carried_onto_every_citation_for_a_replay_query(self):
+        cutoff = date(2025, 6, 1)
+        assembled = assemble_context([_chunk(), _chunk()], evidence_cutoff=cutoff)
+
+        assert all(c.evidence_cutoff == cutoff for c in assembled.citations)

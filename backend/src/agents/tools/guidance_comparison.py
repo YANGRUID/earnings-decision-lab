@@ -1,3 +1,5 @@
+from datetime import date
+
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
@@ -13,6 +15,18 @@ from services.extraction import EXTRACTION_TYPE_GUIDANCE
 
 class GuidanceComparisonArgs(BaseModel):
     ticker: str = Field(description="Stock ticker, e.g. 'MU'")
+    # Phase 4 point-in-time hardening (2026-08-26), Section 20 -- this
+    # tool queries real, already-extracted guidance filings with no
+    # cutoff at all until now: a historical/replay caller could see
+    # guidance filed AFTER the moment being analyzed. Mirrors agents/
+    # tools/earnings_history.py's and filings_search.py's own as_of
+    # field exactly. None (the default, every real caller today) means
+    # "as of now" -- unchanged behavior.
+    as_of: date | None = Field(
+        default=None,
+        description="Optional point-in-time cutoff (YYYY-MM-DD) -- excludes filings after this "
+        "date.",
+    )
 
 
 class GuidanceComparisonTool(Tool[GuidanceComparisonArgs]):
@@ -39,17 +53,17 @@ class GuidanceComparisonTool(Tool[GuidanceComparisonArgs]):
                 data={},
             )
 
-        rows = (
+        query = (
             self._db.query(AIExtraction, Filing)
             .join(Filing, Filing.id == AIExtraction.filing_id)
             .filter(
                 AIExtraction.company_id == company.id,
                 AIExtraction.extraction_type == EXTRACTION_TYPE_GUIDANCE,
             )
-            .order_by(Filing.filing_date.desc())
-            .limit(2)
-            .all()
         )
+        if args.as_of is not None:
+            query = query.filter(Filing.filing_date <= args.as_of)
+        rows = query.order_by(Filing.filing_date.desc()).limit(2).all()
 
         if len(rows) < 2:
             return ToolOutcome(

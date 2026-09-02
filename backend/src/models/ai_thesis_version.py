@@ -49,9 +49,7 @@ class AIThesisVersion(TimestampMixin, Base):
     earnings_estimate_snapshot_id: Mapped[int | None] = mapped_column(
         ForeignKey("earnings_estimate_snapshot.id")
     )
-    volatility_snapshot_id: Mapped[int | None] = mapped_column(
-        ForeignKey("volatility_snapshot.id")
-    )
+    volatility_snapshot_id: Mapped[int | None] = mapped_column(ForeignKey("volatility_snapshot.id"))
 
     company: Mapped["Company"] = relationship()  # noqa: F821
     earnings_estimate_snapshot: Mapped["EarningsEstimateSnapshot | None"] = relationship()  # noqa: F821

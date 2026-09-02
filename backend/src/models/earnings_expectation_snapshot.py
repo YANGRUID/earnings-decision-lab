@@ -34,9 +34,7 @@ class EarningsExpectationSnapshot(TimestampMixin, Base):
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    earnings_event_id: Mapped[int] = mapped_column(
-        ForeignKey("earnings_event.id"), index=True
-    )
+    earnings_event_id: Mapped[int] = mapped_column(ForeignKey("earnings_event.id"), index=True)
 
     snapshot_timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
 

@@ -8,6 +8,8 @@ from sqlalchemy.orm import Session
 from agents.orchestrator import AgentOrchestrator
 from core.config import get_settings
 from db.session import SessionLocal
+from providers.ibkr_tws_health import TwsHealthProbe
+from providers.ibkr_tws_options import IBKRTWSProvider
 from rag.embeddings import EmbeddingProvider
 from services.llm.base import LLMProvider
 from services.llm.errors import LLMError, MissingAPIKeyError, UnknownProviderError
@@ -67,9 +69,38 @@ def get_scheduler(request: Request) -> AsyncIOScheduler | None:
     return request.app.state.scheduler
 
 
+def get_tws_health_probe(request: Request) -> TwsHealthProbe | None:
+    """IBKR TWS Migration Phase 2, Section 11 -- the one persistent TWS
+    health-check connection, owned by api/main.py's lifespan(). None
+    when ibkr_provider != "tws" (the real, current default) -- never
+    raises, mirrors get_scheduler's own honest-None precedent above;
+    services/system_status.py::get_tws_status handles a None probe by
+    falling back to Phase 1's original bounded one-shot probe."""
+    return request.app.state.tws_health_probe
+
+
+def get_tws_provider(request: Request) -> IBKRTWSProvider | None:
+    """IBKR TWS Migration, production cutover (2026-09-01) -- the ONE
+    long-lived, market-data-serving IBKRTWSProvider owned by
+    api/main.py's lifespan() (distinct from get_tws_health_probe above,
+    which owns a separate connection at a separate client id, purely for
+    health checks). None when ibkr_provider != "tws" -- never raises,
+    same honest-None precedent as get_scheduler/get_tws_health_probe.
+
+    Exists so a caller INSIDE this FastAPI process can reach the real
+    shared singleton. A separate process (a script, a `docker compose
+    exec python ...`) importing providers/factory.py does NOT share this
+    -- its module-level _shared_tws_provider is None there, so it would
+    silently construct a SECOND connection at the same client id and
+    collide with this one (confirmed live during this cutover)."""
+    return request.app.state.tws_provider
+
+
 LLM = Annotated[LLMProvider, Depends(get_llm)]
 Embedder = Annotated[EmbeddingProvider, Depends(get_embedder)]
 Scheduler = Annotated[AsyncIOScheduler | None, Depends(get_scheduler)]
+TwsHealthProbeDep = Annotated[TwsHealthProbe | None, Depends(get_tws_health_probe)]
+TwsProviderDep = Annotated[IBKRTWSProvider | None, Depends(get_tws_provider)]
 
 
 def get_orchestrator(db: DbSession, llm: LLM, embedder: Embedder) -> AgentOrchestrator:

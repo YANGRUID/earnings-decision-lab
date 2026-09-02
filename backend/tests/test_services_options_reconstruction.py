@@ -251,9 +251,7 @@ class TestResolveBestActionableOptionMarket:
         assert resolution.target_session_date == date(2026, 3, 17)
         assert resolution.selection.tier == "none"
 
-    def test_market_open_with_good_current_snapshot_never_attempts_reconstruction(
-        self, db_session
-    ):
+    def test_market_open_with_good_current_snapshot_never_attempts_reconstruction(self, db_session):
         company = _seed_company(db_session, "ZZRECON7")
         as_of = datetime(2026, 3, 18, 15, 0, tzinfo=UTC)
         _seed_snapshot(
@@ -270,6 +268,139 @@ class TestResolveBestActionableOptionMarket:
         assert resolution.reconstruction_attempted is False
         assert resolution.target_session_date is None
         assert resolution.selection.tier == "current_priceable"
+
+    def test_force_live_refresh_false_still_defaults_to_the_persisted_snapshot(self, db_session):
+        """Explicit False behaves identically to the default -- every
+        existing caller of this resolver (Strategy Lab, Upcoming
+        Earnings) that never passes this parameter must see zero
+        behavior change."""
+        company = _seed_company(db_session, "ZZRECON7B")
+        as_of = datetime(2026, 3, 18, 15, 0, tzinfo=UTC)
+        _seed_snapshot(
+            db_session,
+            company,
+            snapshot_timestamp=as_of,
+            bid=Decimal("1.00"),
+            ask=Decimal("1.10"),
+            last_price=Decimal("1.05"),
+        )
+        resolution = resolve_best_actionable_option_market(
+            db_session, company, as_of, earnings_date=None, force_live_refresh=False
+        )
+        assert resolution.reconstruction_attempted is False
+        assert resolution.selection.tier == "current_priceable"
+
+    def test_force_live_refresh_skips_a_stale_but_priceable_persisted_snapshot(
+        self, db_session, monkeypatch
+    ):
+        """V4.1 source-coherence regression test, modeled directly on the
+        real DY failure mode: a persisted "current_priceable" snapshot
+        exists from hours earlier the same session (exactly what CASE 1's
+        own priceability-only check accepts as-is) -- decision generation
+        must not silently anchor to it when a live refresh is available;
+        it must skip straight to CASE 2's live-fetch-then-retry path
+        instead. Real DY evidence: decision-time underlying $380.95 vs.
+        entry-time (live) underlying $348.25 minutes later, an 8.6% gap."""
+        company = _seed_company(db_session, "ZZRECON7C")
+        as_of = datetime(2026, 3, 18, 15, 0, tzinfo=UTC)  # Wed 11:00 ET -- regular session
+        stale_ts = datetime(2026, 3, 18, 11, 0, tzinfo=UTC)  # same session day, 4h earlier
+        _seed_snapshot(
+            db_session,
+            company,
+            snapshot_timestamp=stale_ts,
+            bid=Decimal("1.00"),
+            ask=Decimal("1.10"),
+            last_price=Decimal("1.05"),
+        )
+        settings = get_settings()
+        monkeypatch.setattr(settings, "options_provider", "ibkr")
+        monkeypatch.setattr(
+            "providers.ibkr_client.IBKRClient.ensure_authenticated",
+            lambda self: None,
+        )
+
+        fresh_ts = as_of
+
+        def _fake_fetch_and_persist(db, provider, company, earnings_date, as_of):
+            _seed_snapshot(
+                db,
+                company,
+                snapshot_timestamp=fresh_ts,
+                bid=Decimal("2.00"),
+                ask=Decimal("2.10"),
+                last_price=Decimal("2.05"),
+            )
+
+        monkeypatch.setattr(
+            "services.options_reconstruction._fetch_and_persist_options_snapshot",
+            _fake_fetch_and_persist,
+        )
+
+        default_resolution = resolve_best_actionable_option_market(
+            db_session, company, as_of, earnings_date=None, settings=settings
+        )
+        assert default_resolution.reconstruction_attempted is False
+        assert default_resolution.selection.snapshot_timestamp == stale_ts
+
+        refreshed_resolution = resolve_best_actionable_option_market(
+            db_session,
+            company,
+            as_of,
+            earnings_date=None,
+            settings=settings,
+            force_live_refresh=True,
+        )
+        assert refreshed_resolution.selection.tier == "current_priceable"
+        assert refreshed_resolution.selection.snapshot_timestamp == fresh_ts
+        assert refreshed_resolution.selection.quotes[0].last_price == Decimal("2.05")
+
+    def test_force_live_refresh_still_falls_back_gracefully_when_the_live_fetch_fails(
+        self, db_session, monkeypatch
+    ):
+        """force_live_refresh must never turn a graceful previous-close
+        fallback into a hard failure -- a real live-fetch error still
+        defers to the exact same previous-session-close path CASE 1 would
+        have avoided needing."""
+        company = _seed_company(db_session, "ZZRECON7D")
+        as_of = datetime(2026, 3, 18, 15, 0, tzinfo=UTC)
+        stale_ts = datetime(2026, 3, 18, 11, 0, tzinfo=UTC)
+        _seed_snapshot(
+            db_session,
+            company,
+            snapshot_timestamp=stale_ts,
+            bid=Decimal("1.00"),
+            ask=Decimal("1.10"),
+            last_price=Decimal("1.05"),
+        )
+        close_ts = datetime(2026, 3, 17, 19, 58, tzinfo=UTC)
+        _seed_snapshot(
+            db_session,
+            company,
+            snapshot_timestamp=close_ts,
+            purpose=OptionsSnapshotPurpose.CLOSE,
+            bid=Decimal("1.90"),
+            ask=Decimal("2.10"),
+        )
+        settings = get_settings()
+        monkeypatch.setattr(settings, "options_provider", "ibkr")
+
+        def _raise_not_authenticated(self):
+            raise IBKRNotAuthenticatedError("not authenticated")
+
+        monkeypatch.setattr(
+            "providers.ibkr_client.IBKRClient.ensure_authenticated",
+            _raise_not_authenticated,
+        )
+        resolution = resolve_best_actionable_option_market(
+            db_session,
+            company,
+            as_of,
+            earnings_date=None,
+            settings=settings,
+            force_live_refresh=True,
+        )
+        assert resolution.selection.tier == "previous_priceable"
+        assert resolution.selection.purpose == "close"
 
     def test_market_open_with_contracts_only_current_snapshot_falls_back_to_previous_close(
         self, db_session
@@ -329,6 +460,18 @@ class TestResolveBestActionableOptionMarket:
     def test_market_closed_ibkr_configured_but_unauthenticated_defers_gracefully(
         self, db_session, monkeypatch
     ):
+        """IBKR TWS Migration Phase 3 readiness -- reconstruction now
+        routes through providers/factory.py rather than a standalone
+        IBKRClient().ensure_authenticated() pre-check that short-circuited
+        before reconstruct_close_snapshot was ever called (see services/
+        options_reconstruction.py::_resolve_via_previous_session_close's
+        own comment). An auth failure is still caught, but now surfaces as
+        a real, honest ReconstructionResult.reason from inside
+        reconstruct_close_snapshot itself -- reconstruction_attempted is
+        therefore True here (a real attempt was made and failed), not
+        False (no attempt was ever made), the one intentional, harmless
+        behavior change from this refactor; nothing outside this test
+        reads either field."""
         company = _seed_company(db_session, "ZZRECON9")
         as_of = datetime(2026, 3, 18, 12, 0, tzinfo=UTC)
         settings = get_settings()
@@ -338,13 +481,15 @@ class TestResolveBestActionableOptionMarket:
             raise IBKRNotAuthenticatedError("not authenticated")
 
         monkeypatch.setattr(
-            "services.options_reconstruction.IBKRClient.ensure_authenticated",
+            "providers.ibkr_client.IBKRClient.ensure_authenticated",
             _raise_not_authenticated,
         )
         resolution = resolve_best_actionable_option_market(
             db_session, company, as_of, earnings_date=None, settings=settings
         )
-        assert resolution.reconstruction_attempted is False
+        assert resolution.reconstruction_attempted is True
+        assert resolution.reconstruction_result is not None
+        assert resolution.reconstruction_result.succeeded is False
         assert resolution.selection.tier in ("contracts_only", "none")
 
     def test_successful_reconstruction_is_persisted_and_used(self, db_session, monkeypatch):
@@ -353,7 +498,7 @@ class TestResolveBestActionableOptionMarket:
         settings = get_settings()
         monkeypatch.setattr(settings, "options_provider", "ibkr")
         monkeypatch.setattr(
-            "services.options_reconstruction.IBKRClient.ensure_authenticated",
+            "providers.ibkr_client.IBKRClient.ensure_authenticated",
             lambda self: None,
         )
 
@@ -409,9 +554,7 @@ class TestResolveBestActionableOptionMarket:
         assert len(resolution.selection.quotes) == 1
 
         persisted = (
-            db_session.query(OptionsSnapshot)
-            .filter(OptionsSnapshot.company_id == company.id)
-            .all()
+            db_session.query(OptionsSnapshot).filter(OptionsSnapshot.company_id == company.id).all()
         )
         assert len(persisted) == 1
         assert persisted[0].purpose == OptionsSnapshotPurpose.RECONSTRUCTED_CLOSE
@@ -425,7 +568,7 @@ class TestResolveBestActionableOptionMarket:
         settings = get_settings()
         monkeypatch.setattr(settings, "options_provider", "ibkr")
         monkeypatch.setattr(
-            "services.options_reconstruction.IBKRClient.ensure_authenticated",
+            "providers.ibkr_client.IBKRClient.ensure_authenticated",
             lambda self: None,
         )
         failed_result = ReconstructionResult(
@@ -451,8 +594,6 @@ class TestResolveBestActionableOptionMarket:
         assert resolution.reconstruction_result.succeeded is False
         # Nothing was persisted for a failed reconstruction.
         persisted = (
-            db_session.query(OptionsSnapshot)
-            .filter(OptionsSnapshot.company_id == company.id)
-            .all()
+            db_session.query(OptionsSnapshot).filter(OptionsSnapshot.company_id == company.id).all()
         )
         assert persisted == []

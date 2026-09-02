@@ -55,6 +55,8 @@ from analytics.decision.settlement_math import (
     leg_realized_pnl_per_share,
 )
 from analytics.earnings_timing import compute_entry_exit_schedule
+from analytics.market_data_policy import enforce_market_data_quality_policy
+from core.config import get_settings
 from models.benchmark_portfolio import BenchmarkPortfolio
 from models.decision_snapshot import DecisionSnapshot
 from models.entry_capture_attempt import EntryCaptureAttempt
@@ -69,11 +71,16 @@ from models.enums import (
 from models.exit_snapshot import ExitSnapshot
 from models.settlement_capture_attempt import SettlementCaptureAttempt
 from providers.base import OptionsDataProvider
-from providers.types import KnownContract, OptionQuote
+from providers.types import KnownContract, OptionQuote, SnapshotAttempt
 from services.benchmark_entry_capture import (  # noqa: PLC2701 -- shared private helper, coherence check identical for entry and exit
     _resolve_underlying,
 )
 from services.decision_pipeline import LATE_CUTOFF_GRACE
+from services.entry_failure_taxonomy import classify_provider_exception
+from services.quote_telemetry import (
+    persist_settlement_exception_telemetry,
+    persist_settlement_quote_telemetry,
+)
 
 log = logging.getLogger("services.benchmark_exit_capture")
 
@@ -279,11 +286,18 @@ def capture_benchmark_exit(
         db.flush()
         return attempt
 
+    # ``action`` here is the leg's ORIGINAL entry action (execution-
+    # observability hardening, 2026-08-26) -- what lets the provider wait
+    # for the real executable side an EXIT actually needs (BID to close a
+    # BUY leg, ASK to close a SELL leg; see KnownContract's own docstring
+    # for the exact inverse-of-entry rule), instead of stopping on LAST
+    # alone the way _price_exit_leg below still has to guard against.
     contracts = [
         KnownContract(
             strike=leg.strike,
             option_type=leg.option_type.value,
             external_contract_id=leg.external_contract_id,
+            action=leg.action.value if leg.action is not None else None,
         )
         for leg in entry_legs
         if leg.strike is not None
@@ -291,12 +305,20 @@ def capture_benchmark_exit(
         and leg.external_contract_id is not None
     ]
 
+    # IBKR execution-observability hardening (2026-08-26), Section 6/7 --
+    # collects every real per-poll observation the provider's warm-up
+    # makes so it can be persisted below (see services/quote_telemetry.py)
+    # once this attempt has a real id -- purely an observation, never
+    # consulted for pricing or the CAPTURED/FAILED decision itself.
+    collected_attempts: list[SnapshotAttempt] = []
+
     try:
         quotes = options_provider.get_quotes_for_known_contracts(
             decision_snapshot.ticker,
             contracts,
             decision_snapshot.selected_expiration,  # type: ignore[arg-type]
             now,
+            on_attempt=collected_attempts.append,
         )
         # Fetched in the same try/except as the option quotes, mirroring
         # entry capture's own precedent: a real provider failure
@@ -318,6 +340,18 @@ def capture_benchmark_exit(
         )
         db.add(attempt)
         db.flush()
+        # Phase 4 quote-observability hardening (2026-08-26), Section 10 --
+        # mirrors benchmark_entry_capture.py's own exception-path telemetry
+        # exactly: structured diagnostic evidence persisted before
+        # returning, never affecting the FAILED outcome already decided.
+        persist_settlement_exception_telemetry(
+            db,
+            settlement_capture_attempt_id=attempt.id,
+            ticker=decision_snapshot.ticker,
+            expiration=decision_snapshot.selected_expiration,  # type: ignore[arg-type]
+            entry_legs=entry_legs,
+            classification=classify_provider_exception(exc),
+        )
         return attempt
 
     leg_quotes = _match_exit_quotes(entry_legs, quotes)
@@ -345,6 +379,20 @@ def capture_benchmark_exit(
                 f"leg {leg.entry_snapshot.leg_index} ({_leg_label(leg)}): {leg.error}"
                 for leg in failed_legs
             )
+
+    # Phase 4 market-data-quality hardening (2026-08-26), Section 16 --
+    # mirrors benchmark_entry_capture.py's own policy check exactly. A
+    # no-op under the default ALLOW_DELAYED_WITH_LABEL policy.
+    if failure_reason is None:
+        quality_values = [
+            leg.quote.market_data_quality if leg.quote else None for leg in leg_quotes
+        ]
+        quality_values.append(
+            underlying_quote.market_data_quality if underlying_quote is not None else None
+        )
+        failure_reason = enforce_market_data_quality_policy(
+            get_settings().market_data_quality_policy, quality_values
+        )
 
     totals = None
     if failure_reason is None and entry_attempt.net_entry_cash is not None:
@@ -391,6 +439,21 @@ def capture_benchmark_exit(
     )
     db.add(attempt)
     db.flush()
+
+    # IBKR execution-observability hardening (2026-08-26), Section 6/7 --
+    # real, honest, append-only diagnostic evidence for a future failure
+    # to be readable from Operations, never a source of truth for the
+    # capture outcome above (already decided) or the per-leg fill price
+    # below (computed by _price_exit_leg, unaffected by this).
+    persist_settlement_quote_telemetry(
+        db,
+        settlement_capture_attempt_id=attempt.id,
+        ticker=decision_snapshot.ticker,
+        expiration=decision_snapshot.selected_expiration,  # type: ignore[arg-type]
+        entry_legs=entry_legs,
+        attempts=collected_attempts,
+        quotes=quotes,
+    )
 
     for leg in leg_quotes:
         quote = leg.quote
