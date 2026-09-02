@@ -1,9 +1,7 @@
 import { useState } from "react";
-import { Link } from "react-router-dom";
-import { useAsync } from "../../hooks/useAsync";
 import { api, ApiError } from "../../api/client";
 import { formatMoney, formatPercent, providerLabel } from "../../lib/format";
-import { LoadingState } from "../StatusStates";
+import {  } from "../StatusStates";
 import type { OptionsMarketState, ResearchOverview } from "../../types/api";
 
 function formatPlainPercent(value: string | null): string {
@@ -165,21 +163,14 @@ export function UpcomingEarningsTab({
   overview: ResearchOverview;
   onOverviewChanged: () => void;
 }) {
-  const replay = useAsync(() => api.getReplaySummary(), []);
   const est = overview.latest_earnings_estimate;
   const iv = overview.latest_volatility_snapshot;
-  const companyReplay = replay.data?.companies.find((c) => c.company.ticker === ticker);
-  const hist = companyReplay?.historical_moves ?? null;
 
   return (
     <div>
       <p className="text-sm text-muted" style={{ marginTop: 0 }}>
         What the market currently expects for {ticker}'s <strong>next, unreported</strong>{" "}
-        earnings report — separate from any specific past event. See{" "}
-        <Link className="text-link" to="#historical">
-          Historical Events
-        </Link>{" "}
-        for what actually happened before.
+        earnings report — the same evidence the V4 expected-move and strike geometry are built on.
       </p>
 
       <div className="grid grid-2">
@@ -263,39 +254,6 @@ export function UpcomingEarningsTab({
         </div>
       </div>
 
-      <div className="card">
-        <h2>Historical move compatibility check</h2>
-        {replay.loading && <LoadingState label="Loading historical moves…" />}
-        {hist ? (
-          <>
-            <div className="grid grid-2" style={{ gap: 10 }}>
-              <div className="stat">
-                <span className="stat-label">Average |move| ({hist.sample_size} past events)</span>
-                <span className="stat-value small">{formatPlainPercent(hist.average_abs_move_pct)}</span>
-              </div>
-              <div className="stat">
-                <span className="stat-label">Largest past move</span>
-                <span className="stat-value small">{formatPlainPercent(hist.largest_move_pct_signed)}</span>
-              </div>
-            </div>
-            {iv?.implied_move_pct && (
-              <p className="text-sm text-muted" style={{ marginTop: 10, marginBottom: 0 }}>
-                The current implied move ({formatPlainPercent(iv.implied_move_pct)}) compares to a
-                real historical average of {formatPlainPercent(hist.average_abs_move_pct)} across{" "}
-                {hist.sample_size} past reports — not a prediction, just how this compares to what
-                actually happened before. See each candidate's own compatibility check in{" "}
-                <strong>Strategy Lab</strong>.
-              </p>
-            )}
-          </>
-        ) : (
-          !replay.loading && (
-            <p className="text-sm text-muted" style={{ margin: 0 }}>
-              No other reported event for {ticker} with a recorded move yet.
-            </p>
-          )
-        )}
-      </div>
     </div>
   );
 }

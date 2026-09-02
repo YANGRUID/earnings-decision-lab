@@ -254,7 +254,7 @@ function AnswerPanel({ item }: { item: AIResearchHistoryItem }) {
           </>
         )}
         {item.tool_calls.some((t) => t.tool_name === "earnings_history" && t.success) && (
-          <p className="text-faint text-sm" style={{ margin: "8px 0 0" }}>Earnings-history evidence was used; see Historical / Control in the company workspace for the underlying events.</p>
+          <p className="text-faint text-sm" style={{ margin: "8px 0 0" }}>Earnings-history evidence was used; see the company workspace's Earnings Setup tab for the underlying data.</p>
         )}
       </div>
 

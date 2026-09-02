@@ -1,19 +1,22 @@
-import { Link } from "react-router-dom";
 import { api } from "../../../api/client";
 import { useAsync } from "../../../hooks/useAsync";
-import { formatMoney, formatRelativeTime } from "../../../lib/format";
-import { fmtMarketCap, humanStrategy } from "../../v4/shared";
-import { ACTIONABLE_STATUSES } from "../DecisionTab";
+import { formatRelativeTime } from "../../../lib/format";
+import { fmtMarketCap } from "../../v4/shared";
 import { LifecyclePill, MarketDataQualityBadge, Metric, SectionHeader, Timestamp } from "../../v4/ui";
 import type { ResearchOverview } from "../../../types/api";
 
-// Company Overview (Section 3): one screen that answers "where does this
-// company stand right now" before any deeper analysis.
+// Company Overview (V4-only reset, 2026-09-02): where this company stands
+// for the V4 forward test -- research readiness (Company + fresh AI thesis,
+// the same rule the 15:30 ET decision gate applies), the next earnings
+// event, and the latest V4 decision. Nothing here refers to a retired
+// control cohort.
+
+const THESIS_FRESHNESS_DAYS = 7;
+
 export function OverviewV4Tab({ overview, onGo }: { overview: ResearchOverview; onGo: (tab: string) => void }) {
   const ticker = overview.ticker;
-  const lab = useAsync(() => api.getStrategyLab(ticker), [ticker]);
   const v4 = useAsync(() => api.getV4ShadowDecisions({ ticker, limit: 1 }), [ticker]);
-  const v3 = useAsync(() => api.listDecisionSnapshots({ ticker, limit: 1 }), [ticker]);
+  const theses = useAsync(() => api.getThesisHistory(ticker, { limit: 1 }), [ticker]);
   const calendar = useAsync(() => api.getSymbolEarningsCalendar(ticker), [ticker]);
   const cfgs = useAsync(
     () => (v4.data?.decisions[0] ? api.getV4ShadowConfigurations(v4.data.decisions[0].id) : Promise.resolve(null)),
@@ -22,9 +25,12 @@ export function OverviewV4Tab({ overview, onGo }: { overview: ResearchOverview; 
   const c = overview.company;
   const om = overview.options_market;
   const latestV4 = v4.data?.decisions[0] ?? null;
-  const latestV3 = v3.data?.[0] ?? null;
+  const latestThesis = theses.data?.[0] ?? null;
+  const thesisAgeDays = latestThesis ? (Date.now() - new Date(latestThesis.created_at).getTime()) / 86_400_000 : null;
+  const thesisFresh = thesisAgeDays !== null && thesisAgeDays < THESIS_FRESHNESS_DAYS;
+  const researchPrepared = !!overview.latest_job && overview.latest_job.status !== "failed" && overview.filings_count > 0;
+  const v4Ready = !!c && thesisFresh;
   const defaultCfg = cfgs.data?.configurations.find((x) => x.configuration_key === cfgs.data?.default_configuration_key) ?? null;
-  const researchReady = !!overview.latest_job && overview.latest_job.status === "completed" && overview.filings_count > 0;
   const today = new Date().toISOString().slice(0, 10);
   const nextEvent = (calendar.data ?? []).filter((e) => e.earnings_date >= today).sort((a, b) => a.earnings_date.localeCompare(b.earnings_date))[0] ?? (calendar.data ?? [])[0] ?? null;
 
@@ -34,20 +40,19 @@ export function OverviewV4Tab({ overview, onGo }: { overview: ResearchOverview; 
         <SectionHeader title={c?.name ?? ticker} eyebrow="Company" right={<span className="mono">{ticker}</span>} />
         <div className="grid grid-4" style={{ gap: 10 }}>
           <Metric label="Market cap" value={fmtMarketCap(nextEvent?.market_cap)} mono />
-          <Metric label="Underlying" value={lab.data?.underlying_price ? `$${formatMoney(lab.data.underlying_price)}` : "—"} mono
-            sub={lab.data?.snapshot_timestamp ? <Timestamp iso={lab.data.snapshot_timestamp} /> : "no quote observed"} />
-          <Metric label="Market data" value={<MarketDataQualityBadge quality={om?.market_data_quality ?? null} provider={lab.data?.snapshot_source ?? null} staleLabel={lab.data?.snapshot_age_label ? `no fresh quote · last ${lab.data.snapshot_age_label}` : undefined} />} />
           <Metric label="Next earnings" value={nextEvent?.earnings_date ?? "—"} mono sub={nextEvent ? `${nextEvent.earnings_time.toUpperCase()} · ${nextEvent.source}` : "no calendar event"} />
+          <Metric label="Market data" value={<MarketDataQualityBadge quality={om?.market_data_quality ?? null} />} />
+          <Metric label="V4 windows" value="15:30 ET" mono sub="entry on the legal day · settlement 15:30 ET on the first post-earnings trading day" />
         </div>
         <div className="grid grid-4" style={{ gap: 10, marginTop: 10 }}>
-          <Metric label="Research" value={<span className={researchReady ? "pill pill-positive" : "pill pill-warning"}>{researchReady ? "prepared" : "not prepared"}</span>}
+          <Metric label="Research" value={<span className={researchPrepared ? "pill pill-positive" : "pill pill-warning"}>{researchPrepared ? "prepared" : "not prepared"}</span>}
             sub={overview.latest_job?.completed_at ? `prepared ${formatRelativeTime(overview.latest_job.completed_at)}` : "not prepared yet"} />
-          <Metric label="V4 readiness" value={researchReady && om?.actionability && ACTIONABLE_STATUSES.has(om.actionability) ? <span className="pill pill-positive">ready</span> : <span className="pill pill-warning">not ready</span>}
-            sub={om?.actionability ? `options: ${String(om.actionability).replace(/_/g, " ").toLowerCase()}` : "options metadata not yet observed"} />
+          <Metric label="AI thesis" value={latestThesis ? <span className={thesisFresh ? "pill pill-positive" : "pill pill-warning"}>{thesisFresh ? "fresh" : "stale"}</span> : <span className="pill pill-neutral">none</span>}
+            sub={latestThesis ? `${Math.floor(thesisAgeDays ?? 0)}d old · ${latestThesis.model}` : "generated by the nightly research preparation"} />
+          <Metric label="V4 readiness" value={v4Ready ? <span className="pill pill-positive" data-testid="v4-ready">ready</span> : <span className="pill pill-warning" data-testid="v4-ready">not ready</span>}
+            sub={v4Ready ? "passes the 15:30 ET research gate" : !c ? "no company record yet" : "needs a fresh AI thesis (< 7 days)"} />
           <Metric label="Latest V4 decision" value={latestV4 ? <LifecyclePill lifecycle={defaultCfg?.lifecycle ?? latestV4.status} /> : <span className="pill pill-neutral">none yet</span>}
-            sub={latestV4 ? <Timestamp iso={latestV4.legal_decision_window_at} /> : "V4 shadow has not observed this company"} />
-          <Metric label="Latest V3 control" value={latestV3 ? humanStrategy(latestV3.strategy_type) : <span className="text-faint">none</span>}
-            sub={latestV3 ? <Timestamp iso={latestV3.generated_at} /> : undefined} />
+            sub={latestV4 ? <Timestamp iso={latestV4.legal_decision_window_at} /> : "V4 has not observed this company"} />
         </div>
       </div>
 
@@ -60,8 +65,6 @@ export function OverviewV4Tab({ overview, onGo }: { overview: ResearchOverview; 
           <button className="btn-secondary" onClick={() => onGo("decision")}>Six-config recommendation →</button>
           <button className="btn-secondary" onClick={() => onGo("candidates")}>Explore frozen structures →</button>
           <button className="btn-secondary" onClick={() => onGo("outcome")}>Entry &amp; settlement →</button>
-          <button className="btn-secondary" onClick={() => onGo("history")}>Price reaction &amp; legacy tools →</button>
-          {latestV4 && <Link className="btn-secondary" to={`/same-event-comparison/${latestV4.earnings_calendar_event_id}`}>Same-event comparison →</Link>}
         </div>
       </div>
     </div>

@@ -1,46 +1,25 @@
 import type {
-  AIDecisionVersion,
   AIResearchHistoryItem,
   AIThesisVersion,
-  BenchmarkCalibration,
-  BenchmarkTrackRecord,
   Company,
-  DecisionDirection,
-  DecisionSnapshot,
-  DecisionVolatilityView,
   EarningsCalendarEvent,
   EarningsEstimate,
-  EarningsEventDetail,
-  EarningsEventSummary,
   EarningsThesis,
-  EntryCaptureAttempt,
-  ExpirationSelectionResult,
   IbkrConnectResponse,
   OperationsEvents,
   OperationsFailures,
   OperationsJobs,
   OperationsSummary,
-  PendingDecisions,
   PreparationProgress,
-  PortfolioSnapshotResponse,
   ProviderDashboard,
-  QuoteDiagnostics,
-  QuoteDiagnosticsSummary,
   ProviderSettingsUpdate,
-  ReplaySummary,
   ResearchJob,
   ResearchJobQueued,
   ResearchOverview,
+  ResearchOverviewListResponse,
   ResearchQueryResponse,
-  RiskProfile,
-  SettlementAttemptResult,
-  SettlementCaptureAttempt,
-  StrategyLab,
-  StrategyPayoffRequest,
-  StrategyPayoffResponse,
   SystemStatus,
   TestConnectionResult,
-  TrackRecord,
   UsageSummary,
   V4ShadowCandidatesResponse,
   V4ShadowDecisionDetail,
@@ -48,10 +27,13 @@ import type {
   V4ShadowTrackRecord,
   V4ShadowConfigurationsResponse,
   V4TrackRecordByConfiguration,
-  SameEventComparison,
 } from "../types/api";
 
+import { cachedStatus } from "../lib/statusCache";
+
 const BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000/api/v1";
+// Status reads are shared for a few seconds; pollers call invalidateStatus().
+const STATUS_TTL_MS = 5_000;
 
 export class ApiError extends Error {
   status: number;
@@ -62,6 +44,12 @@ export class ApiError extends Error {
     this.status = status;
     this.requestId = requestId;
   }
+}
+
+export interface RequestOptions {
+  /** Forwarded to fetch(); useAsync passes one so an in-flight request is
+   * cancelled when the caller unmounts or its inputs change. */
+  signal?: AbortSignal;
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -86,21 +74,6 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 export const api = {
   listCompanies: () => request<Company[]>("/companies"),
-  listEarnings: (params: { ticker?: string; limit?: number; offset?: number } = {}) => {
-    const qs = new URLSearchParams();
-    if (params.ticker) qs.set("ticker", params.ticker);
-    if (params.limit) qs.set("limit", String(params.limit));
-    if (params.offset) qs.set("offset", String(params.offset));
-    const suffix = qs.toString() ? `?${qs.toString()}` : "";
-    return request<EarningsEventSummary[]>(`/earnings${suffix}`);
-  },
-  getEarningsEvent: (id: number) => request<EarningsEventDetail>(`/earnings/${id}`),
-
-  calculatePayoff: (body: StrategyPayoffRequest) =>
-    request<StrategyPayoffResponse>("/options/strategies/payoff", {
-      method: "POST",
-      body: JSON.stringify(body),
-    }),
   researchQuery: (question: string, ticker?: string) =>
     request<ResearchQueryResponse>("/research/query", {
       method: "POST",
@@ -131,12 +104,10 @@ export const api = {
   refreshResearch: (ticker: string) =>
     request<ResearchJob | ResearchJobQueued>(`/research/${ticker}/refresh`, { method: "POST" }),
   getResearchStatus: (ticker: string) => request<ResearchJob>(`/research/${ticker}/status`),
+  listResearchOverviews: (opts: RequestOptions = {}) =>
+    request<ResearchOverviewListResponse>("/research/overviews", { signal: opts.signal }),
   getResearchOverview: (ticker: string) =>
     request<ResearchOverview>(`/research/${ticker}/overview`),
-  getStrategyLab: (ticker: string, expiration?: string) =>
-    request<StrategyLab>(
-      `/research/${ticker}/strategies${expiration ? `?expiration=${encodeURIComponent(expiration)}` : ""}`
-    ),
   getEarningsThesis: (ticker: string) =>
     request<EarningsThesis>(`/research/${ticker}/thesis`, { method: "POST" }),
   setEarningsDateOverride: (
@@ -148,9 +119,8 @@ export const api = {
       body: JSON.stringify(body),
     }),
 
-  getReplaySummary: () => request<ReplaySummary>("/replay"),
-
-  getSystemStatus: () => request<SystemStatus>("/system-status"),
+  getSystemStatus: () =>
+    cachedStatus("system-status", STATUS_TTL_MS, () => request<SystemStatus>("/system-status")),
   getIbkrConnectUrl: () => request<IbkrConnectResponse>("/ibkr/connect"),
 
   // V4.5 -- EXPERIMENTAL shadow cohort, read-only.
@@ -172,23 +142,21 @@ export const api = {
     request<V4ShadowConfigurationsResponse>(`/v4/shadow/decisions/${id}/configurations`),
   getV4TrackRecordByConfiguration: () =>
     request<V4TrackRecordByConfiguration>("/v4/shadow/track-record/by-configuration"),
-  getSameEventComparison: (eventId: number) =>
-    request<SameEventComparison>(`/v4/shadow/events/${eventId}/comparison`),
-  getOperationsSummary: () => request<OperationsSummary>("/operations/summary"),
-  getOperationsEvents: () => request<OperationsEvents>("/operations/events"),
-  getOperationsJobs: () => request<OperationsJobs>("/operations/jobs"),
-  getOperationsFailures: () => request<OperationsFailures>("/operations/failures"),
+  // Status-style endpoints are read through a short shared cache (see
+  // lib/statusCache.ts): several components on one screen ask for the same
+  // summary at the same moment, and a navigation must never fire duplicates.
+  getOperationsSummary: () =>
+    cachedStatus("operations/summary", STATUS_TTL_MS, () => request<OperationsSummary>("/operations/summary")),
+  getOperationsEvents: (opts: RequestOptions = {}) =>
+    request<OperationsEvents>("/operations/events", { signal: opts.signal }),
+  getOperationsJobs: (opts: RequestOptions = {}) =>
+    request<OperationsJobs>("/operations/jobs", { signal: opts.signal }),
+  getOperationsFailures: (opts: RequestOptions = {}) =>
+    request<OperationsFailures>("/operations/failures", { signal: opts.signal }),
   getOperationsPreparationProgress: () =>
-    request<PreparationProgress>("/operations/preparation-progress"),
-  getQuoteDiagnosticsSummary: () =>
-    request<QuoteDiagnosticsSummary>("/operations/quote-diagnostics/summary"),
-  getEntryQuoteDiagnostics: (entryCaptureAttemptId: number) =>
-    request<QuoteDiagnostics>(`/operations/quote-diagnostics/entry/${entryCaptureAttemptId}`),
-  getSettlementQuoteDiagnostics: (settlementCaptureAttemptId: number) =>
-    request<QuoteDiagnostics>(
-      `/operations/quote-diagnostics/settlement/${settlementCaptureAttemptId}`
+    cachedStatus("operations/preparation-progress", STATUS_TTL_MS, () =>
+      request<PreparationProgress>("/operations/preparation-progress"),
     ),
-
   getProviderDashboard: () => request<ProviderDashboard>("/settings/providers"),
   updateProviderSettings: (update: ProviderSettingsUpdate) =>
     request<ProviderDashboard>("/settings/providers", {
@@ -214,100 +182,6 @@ export const api = {
   getUsageSummary: (window: string) =>
     request<UsageSummary>(`/settings/usage?window=${encodeURIComponent(window)}`),
 
-  getPortfolioPositions: (params: { ticker?: string } = {}) => {
-    const qs = new URLSearchParams();
-    if (params.ticker) qs.set("ticker", params.ticker);
-    const suffix = qs.toString() ? `?${qs.toString()}` : "";
-    return request<PortfolioSnapshotResponse>(`/portfolio/positions${suffix}`);
-  },
-
-  generateDecision: (
-    ticker: string,
-    options?: {
-      direction?: DecisionDirection;
-      volatility_view?: DecisionVolatilityView;
-      trade_budget?: string;
-      risk_cap?: string;
-      risk_cap_is_percent?: boolean;
-      risk_profile?: RiskProfile;
-      expiration?: string;
-    }
-  ) =>
-    request<AIDecisionVersion>(`/research/${ticker}/decision`, {
-      method: "POST",
-      body: options ? JSON.stringify(options) : undefined,
-    }),
-  getExpirationSelection: (
-    ticker: string,
-    params: { mode?: "auto" | "manual"; expiration?: string; max_candidates?: number } = {}
-  ) => {
-    const qs = new URLSearchParams();
-    if (params.mode) qs.set("mode", params.mode);
-    if (params.expiration) qs.set("expiration", params.expiration);
-    if (params.max_candidates) qs.set("max_candidates", String(params.max_candidates));
-    const suffix = qs.toString() ? `?${qs.toString()}` : "";
-    return request<ExpirationSelectionResult>(`/research/${ticker}/expirations${suffix}`);
-  },
-  getDecisionHistory: (ticker: string, params: { limit?: number; offset?: number } = {}) => {
-    const qs = new URLSearchParams();
-    if (params.limit) qs.set("limit", String(params.limit));
-    if (params.offset) qs.set("offset", String(params.offset));
-    const suffix = qs.toString() ? `?${qs.toString()}` : "";
-    return request<AIDecisionVersion[]>(`/research/${ticker}/decisions${suffix}`);
-  },
-  markDecisionFinal: (ticker: string, id: number) =>
-    request<AIDecisionVersion>(`/research/${ticker}/decisions/${id}/final`, { method: "POST" }),
-  settleDecision: (ticker: string, id: number) =>
-    request<SettlementAttemptResult>(`/research/${ticker}/decisions/${id}/settle`, {
-      method: "POST",
-    }),
-  getPendingDecisions: () => request<PendingDecisions>("/research/decisions/pending"),
-
-  getTrackRecord: (params: { ticker?: string; window?: "all_time" | "last_10" } = {}) => {
-    const qs = new URLSearchParams();
-    if (params.ticker) qs.set("ticker", params.ticker);
-    if (params.window) qs.set("window", params.window);
-    const suffix = qs.toString() ? `?${qs.toString()}` : "";
-    return request<TrackRecord>(`/research/track-record${suffix}`);
-  },
-
-  // Phase 4.6 -- AI Earnings Analyst Track Record, over the Benchmark
-  // Portfolio's real, settled forward-test decisions. Distinct from
-  // getTrackRecord above (a different system, over the legacy AI
-  // Options Decision journal).
-  getBenchmarkTrackRecord: (
-    params: {
-      portfolioId?: number;
-      strategy?: string;
-      confidenceBucket?: string;
-      dteBucket?: string;
-      riskProfile?: RiskProfile;
-      ivRegime?: string;
-      // V4.1 methodology foundation (2026-08-31) -- cohort isolation.
-      // Omitted means every real engine version.
-      engineVersion?: string;
-    } = {}
-  ) => {
-    const qs = new URLSearchParams();
-    if (params.portfolioId) qs.set("portfolio_id", String(params.portfolioId));
-    if (params.strategy) qs.set("strategy", params.strategy);
-    if (params.confidenceBucket) qs.set("confidence_bucket", params.confidenceBucket);
-    if (params.dteBucket) qs.set("dte_bucket", params.dteBucket);
-    if (params.riskProfile) qs.set("risk_profile", params.riskProfile);
-    if (params.ivRegime) qs.set("iv_regime", params.ivRegime);
-    if (params.engineVersion) qs.set("engine_version", params.engineVersion);
-    const suffix = qs.toString() ? `?${qs.toString()}` : "";
-    return request<BenchmarkTrackRecord>(`/benchmark/track-record${suffix}`);
-  },
-  getBenchmarkCalibration: (params: { portfolioId?: number } = {}) => {
-    const qs = new URLSearchParams();
-    if (params.portfolioId) qs.set("portfolio_id", String(params.portfolioId));
-    const suffix = qs.toString() ? `?${qs.toString()}` : "";
-    return request<BenchmarkCalibration>(`/benchmark/calibration${suffix}`);
-  },
-
-  // AI Earnings Analyst Dashboard -- reads the same immutable Phase 4
-  // tables the benchmark track record above already reads.
   listUpcomingEarnings: (params: { limit?: number; offset?: number } = {}) => {
     const qs = new URLSearchParams();
     if (params.limit) qs.set("limit", String(params.limit));
@@ -320,34 +194,5 @@ export const api = {
   listEarningsByMonth: (year: number, month: number) =>
     request<EarningsCalendarEvent[]>(`/earnings-calendar/by-month?year=${year}&month=${month}`),
 
-  listDecisionSnapshots: (params: { ticker?: string; limit?: number; offset?: number } = {}) => {
-    const qs = new URLSearchParams();
-    if (params.ticker) qs.set("ticker", params.ticker);
-    if (params.limit) qs.set("limit", String(params.limit));
-    if (params.offset) qs.set("offset", String(params.offset));
-    const suffix = qs.toString() ? `?${qs.toString()}` : "";
-    return request<DecisionSnapshot[]>(`/decision-snapshots${suffix}`);
-  },
-  getDecisionSnapshotEntries: (id: number) =>
-    request<EntryCaptureAttempt[]>(`/decision-snapshots/${id}/entries`),
 
-  listBenchmarkEntries: (params: { status?: string; limit?: number; offset?: number } = {}) => {
-    const qs = new URLSearchParams();
-    if (params.status) qs.set("status", params.status);
-    if (params.limit) qs.set("limit", String(params.limit));
-    if (params.offset) qs.set("offset", String(params.offset));
-    const suffix = qs.toString() ? `?${qs.toString()}` : "";
-    return request<EntryCaptureAttempt[]>(`/benchmark/entries${suffix}`);
-  },
-
-  getSettlements: (decisionId: number) =>
-    request<SettlementCaptureAttempt[]>(`/settlements/${decisionId}`),
-  listAllSettlements: (params: { status?: string; limit?: number; offset?: number } = {}) => {
-    const qs = new URLSearchParams();
-    if (params.status) qs.set("status", params.status);
-    if (params.limit) qs.set("limit", String(params.limit));
-    if (params.offset) qs.set("offset", String(params.offset));
-    const suffix = qs.toString() ? `?${qs.toString()}` : "";
-    return request<SettlementCaptureAttempt[]>(`/settlements${suffix}`);
-  },
 };

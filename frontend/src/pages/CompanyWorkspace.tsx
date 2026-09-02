@@ -10,14 +10,10 @@ import { EarningsSetupTab } from "../components/workspace/v4/EarningsSetupTab";
 import { MarketViewTab } from "../components/workspace/v4/MarketViewTab";
 import { V4DecisionTab } from "../components/workspace/v4/V4DecisionTab";
 import { ForwardOutcomeTab } from "../components/workspace/v4/ForwardOutcomeTab";
-import { HistoricalControlTab } from "../components/workspace/v4/HistoricalControlTab";
 import type { ResearchJob, ResearchOverview } from "../types/api";
 
-// V4-first company workflow (V4 consolidation, Section 2): summary ->
-// setup -> research -> AI view -> deterministic decision -> candidates ->
-// forward outcome -> history and legacy tools. The old Strategy Lab, My
-// Exposure and manual AI Decision tabs are not deleted; they live under
-// Historical / Control, labelled as non-evidence tools.
+// V4-only company workflow (2026-09-02): summary -> setup -> research ->
+// AI view -> deterministic decision -> candidates -> forward outcome.
 const TABS = [
   { key: "overview", label: "Overview" },
   { key: "setup", label: "Earnings Setup" },
@@ -26,7 +22,6 @@ const TABS = [
   { key: "decision", label: "V4 Decision" },
   { key: "candidates", label: "Candidates" },
   { key: "outcome", label: "Forward Outcome" },
-  { key: "history", label: "Historical / Control" },
 ] as const;
 
 type TabKey = (typeof TABS)[number]["key"];
@@ -223,7 +218,6 @@ export function CompanyWorkspace() {
         {tab === "decision" && <V4DecisionTab ticker={ticker} mode="lab" />}
         {tab === "candidates" && <V4DecisionTab ticker={ticker} mode="explorer" />}
         {tab === "outcome" && <ForwardOutcomeTab ticker={ticker} />}
-        {tab === "history" && <HistoricalControlTab ticker={ticker} />}
       </div>
     </div>
   );

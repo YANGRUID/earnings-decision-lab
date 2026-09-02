@@ -44,8 +44,9 @@ async function mockOperations(page: import("@playwright/test").Page, eventCount:
           scheduler: { state: "green", running: true, registered_job_count: 5, last_activity_at: "2026-09-02T16:41:03Z", next_activity_at: "2026-09-02T17:01:17Z" },
           database: { state: "green", backend_healthy: true, database_healthy: true, migration_head: "c1e5a7d93f20" },
         },
-        execution_summary: { todays_events: eventCount, eligibility_passed: eventCount, eligibility_failed: 0, decisions_created: 0, waiting_for_entry: 0, entries_captured: 0, entry_failures: 0, settlements_due: 0, settled: 0, settlement_failures: 0 },
-        official_run: { found: false, run_started_at: null, run_finished_at: null, run_status: null, evaluated: 0, skipped_ineligible: 0, decisions_created: 0, no_action: 0, entries_captured: 0, entries_failed: 0, pipeline_failed: 0, settlements_captured: 0, settlements_failed: 0 },
+        today: { decision_window_et: "15:30", settlement_window_et: "15:30", deadline_et: "15:50", events_in_window: 1, business_eligible: 1, research_ready: 1, waiting_decision: 1, decisions_today: 0, ranked_today: 0, no_action_today: 0, entries_observed_today: 0, entries_failed_today: 0, deadline_skipped_today: 0, research_not_ready_today: 0, settlements_due_today: 0, settled_today: 0, settlements_failed_today: 0 },
+        readiness: { window_days: 7, upcoming_events: 1, business_eligible: 1, company_resolved: 1, research_queued: 0, research_running: 0, research_ready: 1, research_failed: 0, ai_thesis_ready: 1, v4_decision_ready: 1, next_window_at: "2026-09-03T19:30:00Z", next_window_ready: 1, next_window_total: 1 },
+        staleness: [],
         preflight: { checks: [], ready: true, blockers: [] },
         market_clock: { utc_now: "2026-09-02T16:45:00Z", new_york_now: "2026-09-02T12:45:00-04:00", zurich_now: "2026-09-02T18:45:00+02:00", market_session: "regular", next_automatic_action_job_id: "ibkr_gateway_healthcheck", next_automatic_action_at: "2026-09-02T17:01:17Z" },
       },
@@ -57,7 +58,6 @@ async function mockOperations(page: import("@playwright/test").Page, eventCount:
   await page.route("**/operations/preparation-progress", (route: Route) =>
     route.fulfill({ json: { queue_depth: 0, completed: 0, failed: 0, worker_active: false, current_symbol: null, current_stage: null, step_index: null, step_total: null, attempt: null, heartbeat_seconds_ago: null, elapsed_seconds: null } }),
   );
-  await page.route("**/operations/quote-diagnostics/summary", (route: Route) => route.fulfill({ status: 404, json: { detail: "not mocked" } }));
   await page.route("**/v4/shadow/decisions", (route: Route) => route.fulfill({ json: { decisions: [] } }));
 }
 
@@ -66,7 +66,7 @@ test.describe("Operations pipeline with a long list", () => {
     await mockOperations(page, 120);
     await page.goto("/operations");
 
-    const heading = page.getByRole("heading", { name: "Today's Earnings Pipeline" });
+    const heading = page.getByRole("heading", { name: "V4 pipeline" });
     await expect(heading).toBeVisible();
     const card = page.locator(".card", { has: heading });
     const rows = card.locator("tbody > tr");
@@ -116,7 +116,7 @@ test.describe("Operations pipeline with a long list", () => {
     await mockOperations(page, 60);
     await page.goto("/operations?pipe_p=3&pipe_f=SETTLED&pipe_n=all");
     await expect(page.getByTestId("pipeline-controls-range")).toHaveText("15 of 60");
-    const heading = page.getByRole("heading", { name: "Today's Earnings Pipeline" });
+    const heading = page.getByRole("heading", { name: "V4 pipeline" });
     const card = page.locator(".card", { has: heading });
     await expect(card.locator("tbody > tr")).toHaveCount(15);
     await expect(card.getByRole("button", { name: /^SETTLED/ })).toHaveClass(/active/);
@@ -125,7 +125,7 @@ test.describe("Operations pipeline with a long list", () => {
   test("a short list shows no pager and no facet chips for a single state", async ({ page }) => {
     await mockOperations(page, 3);
     await page.goto("/operations");
-    await expect(page.getByRole("heading", { name: "Today's Earnings Pipeline" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "V4 pipeline" })).toBeVisible();
     await expect(page.getByTestId("pipeline-pager")).toHaveCount(0);
     await expect(page.getByTestId("pipeline-controls-range")).toHaveText("3 of 3");
   });
@@ -135,8 +135,8 @@ test.describe("Operations pipeline with a long list", () => {
     await page.goto("/operations");
     const outline = page.getByTestId("page-outline");
     await expect(outline).toBeVisible();
-    await expect(outline.getByRole("link", { name: "Earnings pipeline" })).toBeVisible();
-    await expect(outline.getByRole("link", { name: "V4 shadow" })).toBeVisible();
+    await expect(outline.getByRole("link", { name: "V4 pipeline" })).toBeVisible();
+    await expect(outline.getByRole("link", { name: "V4 forward engine" })).toBeVisible();
     // Research preparation is not rendered for an idle queue, so it is not offered.
     await expect(outline.getByRole("link", { name: "Research prep" })).toHaveCount(0);
   });

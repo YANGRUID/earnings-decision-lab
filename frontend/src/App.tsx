@@ -1,17 +1,11 @@
 import { BrowserRouter, Routes, Route } from "react-router-dom";
 import { Layout } from "./components/Layout";
 import { EarningsAnalystDashboard } from "./pages/EarningsAnalystDashboard";
-import { EarningsCalendarDetail } from "./pages/EarningsCalendarDetail";
 import { Dashboard } from "./pages/Dashboard";
 import { CompanyWorkspace } from "./pages/CompanyWorkspace";
-import { EarningsEvent } from "./pages/EarningsEvent";
 import { Research } from "./pages/Research";
-import { HistoricalReplay } from "./pages/HistoricalReplay";
-import { TrackRecord } from "./pages/TrackRecord";
-import { BenchmarkTrackRecord } from "./pages/BenchmarkTrackRecord";
 import { DataStatus } from "./pages/DataStatus";
 import { V4DecisionLab } from "./pages/V4DecisionLab";
-import { SameEventComparison } from "./pages/SameEventComparison";
 import { V4ShadowTrackRecord } from "./pages/V4ShadowTrackRecord";
 import { Operations } from "./pages/Operations";
 import { DataProviders } from "./pages/Settings/DataProviders";
@@ -30,7 +24,6 @@ export default function App() {
           <Route path="dashboard" element={<EarningsAnalystDashboard />} />
           <Route path="search" element={<Dashboard />} />
           <Route path="company/:ticker" element={<CompanyWorkspace />} />
-          <Route path="earnings/:id" element={<EarningsEvent />} />
           {/* Deliberately NOT "earnings/:symbol" -- would collide with the
               int-keyed "earnings/:id" route above (a structurally different
               question: one already-reported SEC-XBRL event, vs. this
@@ -38,20 +31,14 @@ export default function App() {
               /earnings-calendar naming the backend already uses for the
               same reason -- see api/routers/earnings_calendar.py's own
               docstring. */}
-          <Route path="earnings-calendar/:symbol" element={<EarningsCalendarDetail />} />
           <Route path="research" element={<Research />} />
-          <Route path="historical-replay" element={<HistoricalReplay />} />
-          <Route path="track-record" element={<TrackRecord />} />
-          <Route path="benchmark-track-record" element={<BenchmarkTrackRecord />} />
           <Route path="operations" element={<Operations />} />
-          {/* V4.5 -- EXPERIMENTAL shadow cohort. Separate routes from the
+          {/* V4 forward test (internal route prefix kept as v4-shadow). Separate routes from the
               official AI Decision / Benchmark Track Record surfaces. */}
           <Route path="v4-decision-lab" element={<V4DecisionLab />} />
           <Route path="v4-decision-lab/:id" element={<V4DecisionLab />} />
           <Route path="candidate-explorer" element={<V4DecisionLab mode="explorer" />} />
           <Route path="candidate-explorer/:id" element={<V4DecisionLab mode="explorer" />} />
-          <Route path="same-event-comparison" element={<SameEventComparison />} />
-          <Route path="same-event-comparison/:eventId" element={<SameEventComparison />} />
           <Route path="v4-shadow-track-record" element={<V4ShadowTrackRecord />} />
           <Route path="settings/providers" element={<DataProviders />} />
           <Route path="settings/ai-provider" element={<AiProvider />} />

@@ -3,12 +3,12 @@ import { api } from "../api/client";
 import { useAsync } from "../hooks/useAsync";
 import { ErrorState, LoadingState } from "../components/StatusStates";
 import { CONFIG_ORDER, configLabel } from "../components/v4/shared";
-import { ExperimentalNotice } from "../components/v4/sharedComponents";
+import { ForwardTestNotice } from "../components/v4/sharedComponents";
 
 // V4 Forward Track Record -- the primary performance page (Sections 28-31).
 // Six cohorts, counts only until a cohort clears the sample floor. No
 // portfolio drawdown, no Sharpe: there is no real capital ledger yet and
-// V3's static-$2,000 accounting is deliberately not reproduced.
+// No static pseudo-portfolio accounting is reproduced.
 export function V4ShadowTrackRecord() {
   const [selected, setSelected] = useState<"all" | string>("all");
   const record = useAsync(() => api.getV4TrackRecordByConfiguration(), []);
@@ -25,7 +25,7 @@ export function V4ShadowTrackRecord() {
   return (
     <div>
       <div className="page-header"><h1>V4 Forward Track Record</h1></div>
-      <ExperimentalNotice text={record.data.notice} />
+      <ForwardTestNotice text={record.data.notice} />
 
       <div className="card">
         <div className="tab-bar" data-testid="cohort-selector">

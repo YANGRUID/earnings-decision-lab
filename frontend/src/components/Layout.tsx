@@ -10,9 +10,8 @@ const THEME_OPTIONS: { value: ThemePreference; label: string }[] = [
 // V4 product consolidation (2026-09-02) -- information architecture.
 //
 // The product is now V4-first: the decision engine and its forward test are
-// the primary surfaces, and V3 is retained as the historical control cohort
-// rather than as the headline product. Nothing was deleted -- every V3 and
-// legacy surface below still resolves to the same route it always did, it
+// the primary surfaces. V4-only reset (2026-09-02): every retired surface is
+// gone from the router, so nothing here can link to a dead route; it
 // simply no longer competes with V4 for the top of the navigation.
 //
 // Every entry here points at a route that actually exists in App.tsx.
@@ -30,14 +29,11 @@ const RESEARCH_NAV_ITEMS: NavItem[] = [
 const DECISION_NAV_ITEMS: NavItem[] = [
   { to: "/v4-decision-lab", label: "V4 Decision Lab" },
   { to: "/candidate-explorer", label: "Candidate Explorer" },
-  { to: "/same-event-comparison", label: "Same-Event Comparison" },
 ];
 
-// V4 forward evidence first, V3 control second -- the ordering is the
-// claim: V4 is what we are testing, V3 is what we are testing against.
+// The V4 forward test is the only evidence the product keeps.
 const PERFORMANCE_NAV_ITEMS: NavItem[] = [
   { to: "/v4-shadow-track-record", label: "V4 Forward Track Record" },
-  { to: "/benchmark-track-record", label: "V3 Control Track Record" },
 ];
 
 const OPERATIONS_NAV_ITEMS: NavItem[] = [{ to: "/operations", label: "Live Operations" }];
@@ -50,15 +46,6 @@ const SETTINGS_NAV_ITEMS: NavItem[] = [
   { to: "/system-status", label: "System Status" },
 ];
 
-// Retained, not removed. These remain fully reachable and their data
-// remains auditable -- they are simply no longer part of the primary
-// workflow. "AI Decision Journal" is the old on-demand AIDecisionVersion
-// history; it is explicitly NOT the official forward test, and keeping it
-// under this heading is what stops the two being confused.
-const LEGACY_NAV_ITEMS: NavItem[] = [
-  { to: "/track-record", label: "AI Decision Journal" },
-  { to: "/historical-replay", label: "Cross-Company Replay" },
-];
 
 const NAV_SECTIONS: { heading: string | null; items: NavItem[] }[] = [
   { heading: null, items: HOME_NAV_ITEMS },
@@ -67,7 +54,6 @@ const NAV_SECTIONS: { heading: string | null; items: NavItem[] }[] = [
   { heading: "Performance", items: PERFORMANCE_NAV_ITEMS },
   { heading: "Operations", items: OPERATIONS_NAV_ITEMS },
   { heading: "Settings", items: SETTINGS_NAV_ITEMS },
-  { heading: "Legacy / Control", items: LEGACY_NAV_ITEMS },
 ];
 
 export function Layout() {

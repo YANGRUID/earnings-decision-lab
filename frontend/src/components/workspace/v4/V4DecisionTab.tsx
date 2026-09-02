@@ -13,7 +13,7 @@ export function V4DecisionTab({ ticker, mode }: { ticker: string; mode: "lab" | 
   if (!d) {
     return (
       <EmptyState>
-        <strong>No V4 decision for {ticker} yet.</strong> The V4 shadow engine freezes one decision per
+        <strong>No V4 decision for {ticker} yet.</strong> The V4 engine freezes one decision per
         earnings event at 15:30 ET on the legal pre-earnings trading day. Nothing here is simulated or
         generated on demand.
       </EmptyState>

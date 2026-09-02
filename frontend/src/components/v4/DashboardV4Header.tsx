@@ -42,7 +42,7 @@ export function DashboardV4Header() {
   const decisions = useAsync(() => api.getV4ShadowDecisions(), []);
   const record = useAsync(() => api.getV4TrackRecordByConfiguration(), []);
   const h = ops.data?.health;
-  const v4Enabled = (h?.scheduler?.registered_job_count ?? 0) > 5;
+  const v4Enabled = !!h?.v4_shadow?.enabled;
   const latest = decisions.data?.decisions.slice(0, 5) ?? [];
   const settled = record.data?.configurations.reduce((a, r) => a + (r.settled ?? 0), 0) ?? 0;
 
@@ -60,8 +60,8 @@ export function DashboardV4Header() {
             )}
           </div>
           <div className="stat"><span className="stat-label">Next windows</span>
-            <span className="stat-value small mono">V4 {nextWindow(15, 30)}</span>
-            <span className="text-faint text-sm mono">V3 control {nextWindow(15, 55)}</span>
+            <span className="stat-value small mono">Decision {nextWindow(15, 30)}</span>
+            <span className="text-faint text-sm mono">Settlement 15:30 ET, T+1</span>
           </div>
         </div>
       </div>
@@ -70,7 +70,7 @@ export function DashboardV4Header() {
         <div className="card" data-testid="dashboard-v4-decisions">
           <h2>V4 decisions <Link className="text-link text-sm" to="/v4-decision-lab">open lab →</Link></h2>
           {decisions.loading && !decisions.data ? <div className="text-muted">Loading…</div> : latest.length === 0 ? (
-            <div className="empty-state">No V4 decisions yet. {v4Enabled ? "The first natural 15:30 ET run will appear here." : "V4 shadow is disabled — awaiting the live activation gate."}</div>
+            <div className="empty-state">No V4 decisions yet. {v4Enabled ? "The next natural 15:30 ET run will appear here." : "The V4 forward test is disabled."}</div>
           ) : (
             <table>
               <thead><tr><th>Ticker</th><th>View</th><th>Status</th><th>Observed</th></tr></thead>
@@ -102,7 +102,7 @@ export function DashboardV4Header() {
                 <tr><td>Research worker</td><td><span className={prep.data?.worker_active ? "pill pill-positive" : "pill pill-warning"}>{prep.data ? (prep.data.worker_active ? "active" : "idle") + ` · queue ${prep.data.queue_depth}` : "—"}</span></td></tr>
                 <tr><td>Scheduler</td><td><span className={light(h.scheduler.state)}>{h.scheduler.registered_job_count} jobs</span></td></tr>
                 <tr><td>Database</td><td><span className={light(h.database.state)}>{h.database.migration_head ?? "—"}</span></td></tr>
-                <tr><td>V4 shadow</td><td><span className={v4Enabled ? "pill pill-positive" : "pill pill-neutral"}>{v4Enabled ? "active" : "Disabled — awaiting live activation gate"}</span></td></tr>
+                <tr><td>V4 forward test</td><td><span className={v4Enabled ? "pill pill-positive" : "pill pill-neutral"}>{v4Enabled ? "active" : "Disabled"}</span></td></tr>
               </tbody>
             </table>
           )}

@@ -8,30 +8,6 @@ export interface Company {
   exchange: string | null;
 }
 
-export interface EarningsResult {
-  actual_eps: string | null;
-  actual_revenue: string | null;
-  gross_margin: string | null;
-  reported_at: string | null;
-  source_provider: string;
-}
-
-export interface PriceReaction {
-  close_price_before: string | null;
-  next_day_close: string | null;
-  five_day_close: string | null;
-  next_day_move_pct: string | null;
-  five_day_move_pct: string | null;
-}
-
-export interface EarningsEventSummary {
-  id: number;
-  fiscal_year: number;
-  fiscal_quarter: number;
-  earnings_date: string | null;
-  date_confirmed: boolean;
-}
-
 export interface EarningsEstimate {
   fiscal_period_end_date: string;
   horizon: string;
@@ -75,36 +51,6 @@ export interface HistoricalMoveStats {
   median_abs_move_pct: string;
   largest_abs_move_pct: string;
   largest_move_pct_signed: string;
-}
-
-export interface ImpliedVsRealizedMove {
-  target_earnings_date: string;
-  snapshot_timestamp: string;
-  near_term_expiration: string | null;
-  implied_move_pct: string | null;
-  realized_next_day_move_pct: string;
-}
-
-export interface CompanyReplaySummary {
-  company: Company;
-  historical_moves: HistoricalMoveStats | null;
-  implied_vs_realized: ImpliedVsRealizedMove[];
-}
-
-export interface ReplaySummary {
-  companies: CompanyReplaySummary[];
-  options_data_ingested: boolean;
-}
-
-// Deliberately no market_expectations/implied_move here -- a past earnings
-// event's own page never carries forward-looking data (Phase 14 fix for
-// mixing historical-event and upcoming-earnings temporal contexts). That
-// company-level, always-current data lives on ResearchOverview instead.
-export interface EarningsEventDetail extends EarningsEventSummary {
-  company: Company;
-  result: EarningsResult | null;
-  price_reaction: PriceReaction | null;
-  historical_moves: HistoricalMoveStats | null;
 }
 
 export interface Citation {
@@ -220,43 +166,6 @@ export interface AIThesisVersion {
   volatility_snapshot_id: number | null;
   created_at: string;
   is_stale: boolean;
-}
-
-export interface OptionLegInput {
-  option_type: "call" | "put";
-  action: "buy" | "sell";
-  strike: string;
-  premium: string;
-  quantity?: number;
-}
-
-export interface StrategyPayoffRequest {
-  strategy_label: string;
-  legs: OptionLegInput[];
-}
-
-export interface StrategyPayoffResponse {
-  summary: string;
-  net_premium: string;
-  max_profit: string;
-  max_loss: string;
-  breakevens: string[];
-}
-
-export interface ImpliedMoveRequest {
-  underlying_price: string;
-  strike: string;
-  call_price: string;
-  put_price: string;
-  expiration_label?: string;
-}
-
-export interface ImpliedMoveResponse {
-  summary: string;
-  method: string;
-  implied_move_pct: string;
-  implied_move_absolute: string;
-  expiration_label: string;
 }
 
 export interface RetrievalSummary {
@@ -555,22 +464,8 @@ export interface ResearchOverview {
   options_market: OptionsMarketState;
 }
 
-export interface OptionQuote {
-  expiration_date: string;
-  strike: string;
-  option_type: "call" | "put";
-  bid: string | null;
-  ask: string | null;
-  last_price: string | null;
-  volume: number | null;
-  open_interest: number | null;
-  implied_volatility: string | null;
-  delta: string | null;
-  gamma: string | null;
-  theta: string | null;
-  vega: string | null;
-  market_data_quality: string | null;
-  source_provider: string;
+export interface ResearchOverviewListResponse {
+  overviews: ResearchOverview[];
 }
 
 export interface OptionLeg {
@@ -598,44 +493,6 @@ export interface MoveCompatibility {
   compatible_pct: string;
 }
 
-export interface ScenarioPnl {
-  down_price: string;
-  down_pnl: string;
-  flat_pnl: string;
-  up_price: string;
-  up_pnl: string;
-}
-
-export interface RankedStrategy {
-  rank: number;
-  category: string;
-  legs: OptionLeg[];
-  analysis: StrategyAnalysis;
-  score: string;
-  explanation: string;
-  scenario: ScenarioPnl | null;
-  move_compatibility: MoveCompatibility | null;
-}
-
-export interface StrategyLab {
-  ticker: string;
-  expiration: string | null;
-  underlying_price: string | null;
-  implied_move_pct: string | null;
-  strategies: RankedStrategy[];
-  chain: OptionQuote[];
-  anchor: string | null;
-  reason: string | null;
-  market_session: string;
-  data_state: string;
-  snapshot_source: string | null;
-  snapshot_timestamp: string | null;
-  snapshot_age_minutes: number | null;
-  snapshot_age_label: string | null;
-  earnings_anchor_status: string;
-  options_market: OptionsMarketState;
-}
-
 export interface EarningsThesis {
   business_context: string;
   historical_earnings_pattern: string;
@@ -646,30 +503,6 @@ export interface EarningsThesis {
   citations: Citation[];
   generated_at: string;
   model: string;
-}
-
-export interface PortfolioPosition {
-  account_id_masked: string;
-  conid: number;
-  contract_description: string;
-  asset_class: string;
-  quantity: string;
-  currency: string | null;
-  market_price: string | null;
-  market_value: string | null;
-  average_cost: string | null;
-  unrealized_pnl: string | null;
-  realized_pnl: string | null;
-  option_expiry: string | null;
-  option_right: string | null;
-  option_strike: string | null;
-  snapshot_timestamp: string;
-  source_provider: string;
-}
-
-export interface PortfolioSnapshotResponse {
-  positions: PortfolioPosition[];
-  snapshot_timestamp: string | null;
 }
 
 export interface ApiError {
@@ -740,42 +573,6 @@ export interface EstimatedProbability {
 
 export type RiskProfile = "conservative" | "moderate" | "aggressive";
 
-export interface ExpirationScore {
-  event_fit: number;
-  liquidity: number;
-  quote_coverage: number;
-  bid_ask_quality: number;
-  dte_suitability: number;
-  data_quality: number;
-  total: number;
-}
-
-export interface ExpirationCandidate {
-  expiration: string;
-  dte: number;
-  days_after_earnings: number | null;
-  contract_count: number;
-  priceable_contract_count: number;
-  quote_coverage: string;
-  bid_ask_coverage: string;
-  oi_coverage: string;
-  volume_coverage: string;
-  atm_iv: string | null;
-  atm_spread_pct: string | null;
-  quality: string;
-  score: ExpirationScore;
-  is_earnings_anchored: boolean;
-  excluded_pre_earnings: boolean;
-}
-
-export interface ExpirationSelectionResult {
-  mode: "auto" | "manual";
-  selected: ExpirationCandidate | null;
-  alternatives: ExpirationCandidate[];
-  reasons: string[];
-  warning: string | null;
-}
-
 export interface AIDecisionVersion {
   id: number;
   company_id: number;
@@ -845,114 +642,16 @@ export interface AIDecisionVersion {
   settlement_earliest_date: string | null;
 }
 
-export interface SettlementAttemptResult {
-  decision: AIDecisionVersion;
-  settled: boolean;
-  message: string;
-}
-
-export interface PendingDecision {
-  ticker: string;
-  decision: AIDecisionVersion;
-}
-
-export interface PendingDecisions {
-  pending: PendingDecision[];
-  final_count: number;
-  pending_count: number;
-  settled_count: number;
-}
-
 export interface Rate {
   correct: number;
   total: number;
   pct: string | null;
 }
 
-export interface ConfidenceBucket {
-  label: string;
-  lower: number;
-  upper: number;
-  rate: Rate;
-}
-
-export interface TrackRecord {
-  window: "all_time" | "last_10";
-  evaluated_count: number;
-  directional_accuracy: Rate;
-  bullish_accuracy: Rate;
-  bearish_accuracy: Rate;
-  average_confidence: string | null;
-  high_confidence_accuracy: Rate;
-  volatility_view_accuracy: Rate;
-  breakeven_success: Rate;
-  strategy_win_rate_available: boolean;
-  confidence_calibration: ConfidenceBucket[];
-}
-
-// Phase 4.6 -- AI Earnings Analyst Track Record, over the real, settled
-// Benchmark Portfolio forward-test decisions (DecisionSnapshot +
-// SettlementCaptureAttempt). Deliberately a separate shape from
-// TrackRecord above -- that one grades the legacy AI Options Decision
-// journal; this one grades whether a real $2,000 benchmark following the
-// AI would actually have made money. See docs/PHASE4_6_TRACK_RECORD_
-// ARCHITECTURE_REVIEW.md.
-export interface BenchmarkTrackRecord {
-  portfolio_id: number;
-  total_decisions: number;
-  actionable_decisions: number;
-  no_action_decisions: number;
-  entries_captured: number;
-  entries_capture_failed: number;
-  settled_decisions: number;
-  win_rate: Rate;
-  average_r: string | null;
-  median_r: string | null;
-  expectancy: string | null;
-  profit_factor: string | null;
-  max_drawdown: string | null;
-  max_drawdown_pct: string | null;
-  directional_accuracy: Rate;
-  breakeven_accuracy: Rate;
-  range_accuracy: Rate;
-  // V4.1 methodology foundation (2026-08-31) -- max_drawdown/
-  // max_drawdown_pct above are never altered; legacy_capital_caveat
-  // explains why they aren't a real portfolio statistic (V3's real
-  // per-decision sizing never actually shared/depleted capital across
-  // concurrent positions), and standardized is the same real
-  // settlements read correctly instead.
-  legacy_capital_caveat: string | null;
-  standardized: StandardizedCohortSummary;
-}
-
-export interface StandardizedCohortSummary {
-  n: number;
-  wins: number;
-  losses: number;
-  mean_return_on_standardized_capital: string | null;
-  median_return_on_standardized_capital: string | null;
-  total_realized_pnl: string;
-  portfolio_drawdown_available: boolean;
-  portfolio_drawdown_reason: string;
-}
-
-export interface BenchmarkCalibrationBucket {
-  label: string;
-  lower: number | null;
-  upper: number | null;
-  rate: Rate;
-}
-
-export interface BenchmarkCalibration {
-  portfolio_id: number;
-  settled_decisions: number;
-  buckets: BenchmarkCalibrationBucket[];
-}
-
 // --- AI Earnings Analyst Dashboard (product frontend layer) --------------
 // Reads the same immutable Phase 4 tables the Track Record analytics
 // above already read (DecisionSnapshot/EntrySnapshot/EntryCaptureAttempt/
-// SettlementCaptureAttempt/ExitSnapshot), never the legacy AIDecisionVersion
+// V4 settlement rows), never any on-demand journal
 // journal.
 
 export interface EarningsCalendarEvent {
@@ -1160,13 +859,6 @@ export interface SettlementCaptureAttempt {
  * three stages exactly, computed here from the same real facts (a
  * CAPTURED EntryCaptureAttempt / SettlementCaptureAttempt existing for
  * the decision) rather than duplicating any calculation. */
-export type DecisionLifecycleStage =
-  | "pending_entry"
-  | "entered"
-  | "entry_failed"
-  | "no_action"
-  | "settled";
-
 // ---------------------------------------------------------------------
 // Live Operations Monitor -- read-only, mirrors backend schemas/api.py's
 // operations response models field-for-field. Every value here is a
@@ -1230,12 +922,31 @@ export interface DatabaseHealth {
   migration_head: string | null;
 }
 
+export interface V4ForwardHealth {
+  state: HealthState;
+  enabled: boolean;
+  decisions_today: number;
+  ranked_today: number;
+  no_action_today: number;
+  failed_today: number;
+  entry_observations_failed_today: number;
+  settlements_due: number;
+  settlements_complete: number;
+  last_run_at: string | null;
+  engine_version: string | null;
+  decision_time_et: string;
+  settlement_time_et: string;
+  timing_policy_version: string;
+  note: string;
+}
+
 export interface SystemHealth {
   ibkr: IbkrHealth;
   earnings_calendar: EarningsCalendarHealth;
   ai_provider: AiProviderHealth;
   scheduler: SchedulerHealth;
   database: DatabaseHealth;
+  v4_shadow: V4ForwardHealth | null;
 }
 
 export interface TimelineStep {
@@ -1244,6 +955,28 @@ export interface TimelineStep {
   status: "done" | "pending" | "failed" | "warning";
   detail: string | null;
 }
+
+// V4-only reset (2026-09-02): one row per calendar event in the V4 pipeline
+// window, classified by the backend state machine (services/operations.py).
+export type V4PipelineState =
+  | "CALENDAR_DISCOVERED"
+  | "BUSINESS_INELIGIBLE"
+  | "COMPANY_RESOLUTION_FAILED"
+  | "RESEARCH_QUEUED"
+  | "RESEARCH_RUNNING"
+  | "RESEARCH_READY"
+  | "RESEARCH_FAILED"
+  | "RESEARCH_NOT_READY"
+  | "WAITING_DECISION"
+  | "DECISION_WINDOW_MISSED"
+  | "DECISION_FAILED"
+  | "DEADLINE_SKIPPED"
+  | "NO_ACTION"
+  | "ENTRY_OBSERVED"
+  | "ENTRY_FAILED"
+  | "WAITING_SETTLEMENT"
+  | "SETTLED"
+  | "SETTLEMENT_FAILED";
 
 export interface PipelineEvent {
   calendar_event_id: number;
@@ -1254,13 +987,17 @@ export interface PipelineEvent {
   earnings_timing: "bmo" | "amc" | "dmh" | "unknown";
   entry_timestamp: string;
   exit_timestamp: string;
-  lifecycle_state: string;
+  lifecycle_state: V4PipelineState | string;
   lifecycle_reason: string | null;
   next_action: string | null;
   next_action_at: string | null;
-  decision_snapshot_id: number | null;
-  entry_capture_attempt_id: number | null;
-  settlement_capture_attempt_id: number | null;
+  research_ready: boolean;
+  shadow_decision_id: number | null;
+  decision_status: string | null;
+  entries_observed: number;
+  entries_failed: number;
+  settlements_settled: number;
+  settlements_failed: number;
   timeline: TimelineStep[];
 }
 
@@ -1275,40 +1012,6 @@ export interface SchedulerJobView {
   items_failed: number | null;
   next_run_time: string | null;
   last_error: string | null;
-}
-
-export interface ExecutionSummary {
-  todays_events: number;
-  eligibility_passed: number;
-  eligibility_failed: number;
-  decisions_created: number;
-  waiting_for_entry: number;
-  entries_captured: number;
-  entry_failures: number;
-  settlements_due: number;
-  settled: number;
-  settlement_failures: number;
-}
-
-// Post-official-run cleanup (2026-08-27), Section 3 -- sourced strictly
-// from today's real, persisted SchedulerRun/SchedulerRunEvent rows,
-// never the broader multi-day pipeline table ExecutionSummary reads
-// from. `found: false` is the honest state before today's scheduler run
-// has actually fired yet.
-export interface TodaysOfficialRun {
-  found: boolean;
-  run_started_at: string | null;
-  run_finished_at: string | null;
-  run_status: string | null;
-  evaluated: number;
-  skipped_ineligible: number;
-  decisions_created: number;
-  no_action: number;
-  entries_captured: number;
-  entries_failed: number;
-  pipeline_failed: number;
-  settlements_captured: number;
-  settlements_failed: number;
 }
 
 export interface FailureEntry {
@@ -1340,14 +1043,61 @@ export interface MarketClock {
   market_session: "pre_market" | "regular" | "after_hours" | "closed";
   next_automatic_action_job_id: string | null;
   next_automatic_action_at: string | null;
+  settlement_window_tolerance_minutes: number;
+}
+
+export interface ResearchReadiness {
+  window_days: number;
+  upcoming_events: number;
+  business_eligible: number;
+  company_resolved: number;
+  research_queued: number;
+  research_running: number;
+  research_ready: number;
+  research_failed: number;
+  ai_thesis_ready: number;
+  v4_decision_ready: number;
+  next_window_at: string | null;
+  next_window_ready: number;
+  next_window_total: number;
+}
+
+export interface V4TodaySummary {
+  decision_window_et: string;
+  settlement_window_et: string;
+  deadline_et: string;
+  events_in_window: number;
+  business_eligible: number;
+  research_ready: number;
+  waiting_decision: number;
+  decisions_today: number;
+  ranked_today: number;
+  no_action_today: number;
+  entries_observed_today: number;
+  entries_failed_today: number;
+  deadline_skipped_today: number;
+  research_not_ready_today: number;
+  settlements_due_today: number;
+  settled_today: number;
+  settlements_failed_today: number;
+}
+
+export interface JobStaleness {
+  job_id: string;
+  state: "ok" | "stale" | "missed" | "never" | string;
+  last_expected_at: string | null;
+  last_actual_at: string | null;
+  next_run_at: string | null;
+  detail: string;
 }
 
 export interface OperationsSummary {
   health: SystemHealth;
-  execution_summary: ExecutionSummary;
-  official_run: TodaysOfficialRun;
+  today: V4TodaySummary;
+  readiness: ResearchReadiness;
   preflight: PreflightReadiness;
   market_clock: MarketClock;
+  staleness: JobStaleness[];
 }
 
 export interface OperationsEvents {
@@ -1376,53 +1126,9 @@ export interface PreparationProgress {
   elapsed_seconds: number | null;
 }
 
-// Phase 4 quote-observability hardening (2026-08-26), Sections 13-14.
-export interface QuoteDiagnosticAttempt {
-  snapshot_attempt_number: number;
-  elapsed_ms: number;
-  bid: string | null;
-  ask: string | null;
-  last_price: string | null;
-  bid_present: boolean;
-  ask_present: boolean;
-  last_present: boolean;
-  market_data_quality: string | null;
-}
-
-export interface QuoteDiagnosticLeg {
-  leg_index: number | null;
-  option_type: string | null;
-  strike: string | null;
-  required_side: string;
-  contract_resolved: boolean;
-  external_contract_id: string | null;
-  attempts: QuoteDiagnosticAttempt[];
-  result_label: string;
-}
-
-export interface QuoteDiagnostics {
-  ticker: string;
-  expiration: string | null;
-  legs: QuoteDiagnosticLeg[];
-}
-
-export interface QuoteDiagnosticsSummary {
-  window_hours: number;
-  contracts_requested: number;
-  contracts_resolved: number;
-  total_snapshot_attempts: number;
-  average_attempts_per_leg: number | null;
-  median_attempts_per_leg: number | null;
-  quote_unavailable_count: number;
-  rate_limited_count: number;
-  permission_error_count: number;
-  contract_error_count: number;
-}
-
-
 // ---------------------------------------------------------------------
 // V4.5 -- EXPERIMENTAL V4 shadow cohort. Deliberately separate types from
-// the official V3 benchmark: these describe analytical observations, not
+// the V4 forward record: these describe analytical observations, not
 // forward-test evidence, and the two are never merged.
 // ---------------------------------------------------------------------
 
@@ -1763,71 +1469,3 @@ export interface V4TrackRecordByConfiguration {
   configurations: V4ConfigTrackRecordRow[];
 }
 
-export interface SameEventComparisonV3 {
-  engine: string;
-  timing_policy_version: string;
-  observation_time_et: string;
-  decision_id: number;
-  generated_at: string;
-  strategy: string | null;
-  direction: string | null;
-  risk_profile: string | null;
-  underlying_price: string | null;
-  entry: {
-    status: string;
-    capture_error: string | null;
-    contracts: number | null;
-    net_entry_cash: string | null;
-    initial_max_risk: string | null;
-    source_provider: string | null;
-  } | null;
-  settlement: { status: string; realized_pnl: string | null } | null;
-}
-
-export interface SameEventComparisonV4Config {
-  configuration_key: string;
-  label: string;
-  status: string;
-  no_action_reason: string | null;
-  capital_base: string;
-  max_risk_dollars: string;
-  strategy: string | null;
-  expiration: string | null;
-  entry_cash_required: string | null;
-  core_median_return: string | null;
-  core_worst_return: string | null;
-  stress_worst_return: string | null;
-  entry: { status: string; quantity: number; capital_used: string | null; entry_net_value: string | null; observed_at: string; market_data_quality: string | null } | null;
-  settlement: { status: string; realized_pnl: string | null; return_on_standardized_capital: string | null; settled_at: string } | null;
-}
-
-export interface SameEventComparisonV4 {
-  engine: string;
-  timing_policy_version: string;
-  observation_time_et: string;
-  decision_id: number;
-  generated_at: string;
-  underlying_price: string | null;
-  market_data_quality: string | null;
-  entry_observation: { status: string; candidate_id: string } | null;
-  settlement: {
-    status: string;
-    realized_pnl: string | null;
-    return_on_standardized_capital: string | null;
-  } | null;
-  configurations: SameEventComparisonV4Config[];
-}
-
-export interface SameEventComparison {
-  notice: string;
-  event: {
-    id: number;
-    symbol: string;
-    company_name: string;
-    earnings_date: string;
-    earnings_time: string | null;
-  };
-  timing_note: string;
-  v3_control: SameEventComparisonV3 | null;
-  v4_shadow: SameEventComparisonV4 | null;
-}

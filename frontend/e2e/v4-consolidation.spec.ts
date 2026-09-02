@@ -14,7 +14,8 @@ const healthy = {
   earnings_calendar: { state: "green", active_provider: "earningsapi", fallback_provider: "finnhub", last_successful_sync_at: NOW, events_received: 85, last_error: null, next_scheduled_sync_at: NOW },
   ai_provider: { state: "green", provider: "deepseek", configured: true, last_successful_generation_at: NOW, last_error: null },
   scheduler: { state: "green", running: true, registered_job_count: 5, last_activity_at: null, next_activity_at: NOW },
-  database: { state: "green", backend_healthy: true, database_healthy: true, migration_head: "b8d4f02a1c37" },
+  database: { state: "green", backend_healthy: true, database_healthy: true, migration_head: "f4b6d8e0c2a3" },
+  v4_shadow: { state: "green", enabled: false, decisions_today: 0, ranked_today: 0, no_action_today: 0, failed_today: 0, entry_observations_failed_today: 0, settlements_due: 0, settlements_complete: 0, last_run_at: null, engine_version: "options-decision-engine-v4", decision_time_et: "15:30", settlement_time_et: "15:30", timing_policy_version: "v4-1530-entry-1530-t1-settlement-v2", note: "V4 forward test" },
 };
 
 const decisionSummary = (over: Record<string, unknown> = {}) => ({
@@ -28,7 +29,7 @@ const decisionSummary = (over: Record<string, unknown> = {}) => ({
   versions: { engine: "options-decision-engine-v4", ranking: "v4-4b-t1-executable-ranking-v1" },
   timing_policy_version: "v4-pre-earnings-1530et-v1",
   expected_move: { spot: "339.90", observed_at: NOW, implied_move_available: true, implied_move_dollars: "17.00", implied_move_pct: "0.05", upper_implied_boundary: "356.90", lower_implied_boundary: "322.90", implied_move_source: "atm_straddle", historical_sample_n: 8, historical_evidence_quality: "adequate", historical_median_abs_move_pct: "0.04", historical_median_upper_boundary: "353.50", historical_median_lower_boundary: "326.30", context_version: "test" },
-  notice: "EXPERIMENTAL V4 shadow cohort -- not official evidence.",
+  notice: "V4 FORWARD TEST -- PROSPECTIVE EVIDENCE ONLY -- NO BROKERAGE ORDER.",
   ...over,
 });
 
@@ -74,7 +75,7 @@ const exclusion = { candidate_id: "long_put", reason_code: "RISK_CAP_EXCEEDED", 
 
 function configurationsResponse(noActionAtTwoK = false) {
   return {
-    notice: "EXPERIMENTAL V4 shadow cohort -- not official evidence.",
+    notice: "V4 FORWARD TEST -- PROSPECTIVE EVIDENCE ONLY -- NO BROKERAGE ORDER.",
     decision: decisionSummary(),
     timing_policy_version: "v4-pre-earnings-1530et-v1",
     configurations: [
@@ -96,12 +97,12 @@ async function mockCommon(page: Page, { v4Decisions = [decisionSummary()] as unk
   if (mockOps) {
     await page.route("**/operations/summary", json({
       health: healthy,
-      execution_summary: { todays_events: 1, eligibility_passed: 1, eligibility_failed: 0, decisions_created: 0, waiting_for_entry: 0, entries_captured: 0, entry_failures: 0, settlements_due: 0, settled: 0, settlement_failures: 0 },
-      official_run: { found: false, run_started_at: null, run_finished_at: null, run_status: null, evaluated: 0, skipped_ineligible: 0, contract_resolution_failed: 0, decisions_created: 0, no_action: 0, entries_captured: 0, entries_failed: 0, pipeline_failed: 0, settlements_captured: 0, settlements_failed: 0 },
+      today: { decision_window_et: "15:30", settlement_window_et: "15:30", deadline_et: "15:50", events_in_window: 1, business_eligible: 1, research_ready: 1, waiting_decision: 1, decisions_today: 0, ranked_today: 0, no_action_today: 0, entries_observed_today: 0, entries_failed_today: 0, deadline_skipped_today: 0, research_not_ready_today: 0, settlements_due_today: 0, settled_today: 0, settlements_failed_today: 0 },
+      readiness: { window_days: 7, upcoming_events: 1, business_eligible: 1, company_resolved: 1, research_queued: 0, research_running: 0, research_ready: 1, research_failed: 0, ai_thesis_ready: 1, v4_decision_ready: 1, next_window_at: "2026-09-03T19:30:00Z", next_window_ready: 1, next_window_total: 1 },
+      staleness: [],
       preflight: { checks: [], ready: true, blockers: [] },
-      market_clock: { utc_now: NOW, new_york_now: "2026-09-10T15:30:00-04:00", zurich_now: "2026-09-10T21:30:00+02:00", market_session: "open", next_automatic_action_job_id: "ibkr_gateway_healthcheck", next_automatic_action_at: NOW },
+      market_clock: { utc_now: NOW, new_york_now: "2026-09-10T15:30:00-04:00", zurich_now: "2026-09-10T21:30:00+02:00", market_session: "open", next_automatic_action_job_id: "ibkr_gateway_healthcheck", next_automatic_action_at: NOW, settlement_window_tolerance_minutes: 5 },
     }));
-    await page.route("**/operations/quote-diagnostics/summary", json({ windows: [], entries: [], settlements: [] }));
   }
   await page.route("**/operations/preparation-progress", json({ queue_depth: 0, completed: 3, failed: 0, worker_active: false, current_symbol: null, current_stage: null, step_index: null, step_total: null, attempt: null, heartbeat_seconds_ago: null, elapsed_seconds: null }));
   await page.route("**/operations/events", json({ events: [] }));
@@ -122,14 +123,6 @@ async function mockCommon(page: Page, { v4Decisions = [decisionSummary()] as unk
     fullCandidate("spread", "bull_call_spread", [{ action: "buy", right: "call", strike: "340", bid: "3.00", ask: "3.20" }, { action: "sell", right: "call", strike: "350", bid: "1.20", ask: "1.40" }]),
     fullCandidate("long_put", "long_put", [{ action: "buy", right: "put", strike: "347.5", bid: "10.90", ask: "11.55" }]),
   ] }));
-  await page.route("**/v4/shadow/events/2913/comparison", json({
-    notice: "EXPERIMENTAL",
-    event: { id: 2913, symbol: "PANW", company_name: "Palo Alto Networks Inc", earnings_date: "2026-09-01", earnings_time: "AMC" },
-    timing_note: "V3 observes at 15:55 ET and V4 at 15:30 ET. This is not a timestamp-identical comparison.",
-    v3_control: { engine: "V3 historical control", timing_policy_version: "v3-pre-earnings-1555et-v1", observation_time_et: "15:55", decision_id: 4816, generated_at: NOW, strategy: "long_put", direction: "BEARISH", risk_profile: "MODERATE", underlying_price: "339.90", entry: { status: "FAILED", capture_error: "Risk cap exceeded: one contract requires $1,155.00 defined risk; Moderate permits $600.00 (30% of $2,000 standardized capital)", contracts: 0, net_entry_cash: null, initial_max_risk: null, source_provider: "ibkr_tws" }, settlement: null },
-    v4_shadow: { engine: "V4 experimental shadow", timing_policy_version: "v4-pre-earnings-1530et-v1", observation_time_et: "15:30", decision_id: 1, generated_at: NOW, underlying_price: "339.90", market_data_quality: "delayed", entry_observation: { status: "OBSERVED", candidate_id: "spread" }, settlement: null,
-      configurations: configurationsResponse().configurations.map((c) => ({ configuration_key: c.configuration_key, label: c.label, status: c.status, no_action_reason: c.no_action_reason, capital_base: c.capital_base, max_risk_dollars: c.max_risk_dollars, strategy: c.rank_1?.strategy ?? null, expiration: c.rank_1?.expiration ?? null, entry_cash_required: c.rank_1?.entry_cash_required ?? null, core_median_return: c.rank_1?.core_median_return ?? null, core_worst_return: c.rank_1?.core_worst_return ?? null, stress_worst_return: c.rank_1?.stress_worst_return ?? null })) },
-  }));
 }
 
 test.describe("Dashboard (V4-first)", () => {
@@ -138,8 +131,8 @@ test.describe("Dashboard (V4-first)", () => {
     await page.goto("/");
     await expect(page.getByRole("heading", { name: "Dashboard" })).toBeVisible();
     await expect(page.getByTestId("dashboard-today")).toContainText("TWS · DELAYED");
-    await expect(page.getByTestId("dashboard-today")).toContainText("V4");
-    await expect(page.getByTestId("dashboard-readiness")).toContainText("Disabled — awaiting live activation gate");
+    await expect(page.getByTestId("dashboard-today")).toContainText("Settlement 15:30 ET, T+1");
+    await expect(page.getByTestId("dashboard-readiness")).toContainText("Disabled");
     await expect(page.getByTestId("dashboard-v4-decisions")).toContainText("PANW");
     await expect(page.getByTestId("dashboard-performance")).toContainText("INSUFFICIENT SAMPLE");
   });
@@ -210,34 +203,20 @@ test.describe("Performance", () => {
     await expect(page.locator("body")).not.toContainText(/Sharpe ratio/i);
   });
 
-  test("V3 control track record is reachable and labelled as control", async ({ page }) => {
-    await mockCommon(page);
-    await page.goto("/");
-    await expect(page.getByRole("link", { name: "V3 Control Track Record" })).toBeVisible();
-  });
 });
 
-test.describe("Same-Event Comparison", () => {
-  test("shows V3 and V4 in separate panels with the timing difference stated", async ({ page }) => {
-    await mockCommon(page);
-    await page.goto("/same-event-comparison/2913");
-    await expect(page.getByTestId("timing-note")).toContainText("not a timestamp-identical comparison");
-    await expect(page.getByTestId("v3-panel")).toContainText("15:55 ET");
-    await expect(page.getByTestId("v4-panel")).toContainText("15:30 ET");
-    await expect(page.getByTestId("v3-panel")).toContainText("Risk cap exceeded");
-    await expect(page.getByTestId("v4-panel")).toContainText("$10,000 Aggressive");
-    await expect(page.locator("body")).not.toContainText(/V4 beats V3/i);
-  });
-});
 
 test.describe("Operations", () => {
-  test("separates V3 control from V4 experimental and shows the disabled state honestly", async ({ page }) => {
+  test("is V4-only and shows the disabled forward engine honestly", async ({ page }) => {
     await mockCommon(page);
     await page.goto("/operations");
-    await expect(page.getByText("Control / Official — V3")).toBeVisible();
-    await expect(page.getByText("Experimental Forward — V4")).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Live Operations" })).toBeVisible();
+    await expect(page.getByText("Control / Official — V3")).toHaveCount(0);
+    await expect(page.getByText("Legacy / Control")).toHaveCount(0);
     await expect(page.getByTestId("operations-v4")).toContainText("15:30 ET");
-    await expect(page.getByTestId("operations-v4")).toContainText("Disabled — awaiting live activation gate");
+    await expect(page.getByTestId("operations-v4")).toContainText("DISABLED");
+    await expect(page.getByTestId("ops-today")).toContainText("15:30 ET");
+    await expect(page.getByTestId("ops-readiness")).toContainText("V4 decision ready");
   });
 });
 

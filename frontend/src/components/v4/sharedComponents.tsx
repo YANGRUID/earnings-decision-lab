@@ -19,12 +19,12 @@ export function MethodologyDetails({ versions }: { versions: Record<string, stri
   );
 }
 
-export function ExperimentalNotice({ text }: { text?: string }) {
+export function ForwardTestNotice({ text }: { text?: string }) {
   return (
     <div className="notice" role="note">
-      <strong>Experimental forward test.</strong>{" "}
+      <strong>V4 forward test.</strong>{" "}
       {text ??
-        "V4 shadow evidence is prospective, immutable and never used to place orders. It is not the official V3 control cohort."}
+        "Evidence is prospective and immutable: decided at 15:30 ET, settled at 15:30 ET on the first post-earnings trading day, never used to place orders."}
     </div>
   );
 }

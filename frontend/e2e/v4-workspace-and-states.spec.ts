@@ -113,7 +113,7 @@ test.describe("Company workspace (V4-first)", () => {
     await expect(page.getByTestId("overview-summary")).toBeVisible({ timeout: 20000 });
     await expect(page.getByTestId("overview-summary")).toContainText("Latest V4 decision");
     await expect(page.getByRole("button", { name: "Earnings Setup", exact: true })).toBeVisible();
-    await expect(page.getByRole("button", { name: "Historical / Control", exact: true })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Historical / Control", exact: true })).toHaveCount(0);
     // Old V3-shaped tabs are gone from the primary flow.
     await expect(page.getByRole("button", { name: "Strategy Lab", exact: true })).toHaveCount(0);
     await expect(page.getByRole("button", { name: "My Exposure" })).toHaveCount(0);
@@ -144,13 +144,6 @@ test.describe("Company workspace (V4-first)", () => {
     await expect(page.getByTestId("candidate-explorer")).toContainText("Bull Call Spread");
   });
 
-  test("legacy on-demand analysis is separated and labelled as non-evidence", async ({ page }) => {
-    await mockV4(page, "waiting");
-    await page.goto(`/company/${TICKER}`);
-    await page.getByRole("button", { name: "Historical / Control", exact: true }).click();
-    await expect(page.getByTestId("ondemand-notice")).toContainText("not official forward evidence");
-    await expect(page.getByRole("button", { name: "On-demand V3 analysis" })).toBeVisible();
-  });
 
   test("empty V4 state on the company page is honest", async ({ page }) => {
     await mockV4(page, "waiting", false);

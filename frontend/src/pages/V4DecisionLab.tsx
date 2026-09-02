@@ -6,7 +6,7 @@ import { useListControls } from "../hooks/useListControls";
 import { ListToolbar, Pager } from "../components/ListControls";
 import { EmptyState, ErrorState, LoadingState } from "../components/StatusStates";
 import { CONFIG_ORDER, fmtIv, fmtStrike, humanReasonCode, humanStatus, humanStrategy, money, pct, statusPill } from "../components/v4/shared";
-import { ExperimentalNotice, MethodologyDetails } from "../components/v4/sharedComponents";
+import { ForwardTestNotice, MethodologyDetails } from "../components/v4/sharedComponents";
 import { FailureExplanation, LifecyclePill, MarketDataQualityBadge, Metric, SectionHeader, Timestamp } from "../components/v4/ui";
 import type { V4EntryObservation, V4SettlementOutcome } from "../types/api";
 import type {
@@ -38,7 +38,7 @@ function DecisionPicker({ onPick, mode }: { onPick: (id: number) => void; mode: 
   if (rows.length === 0) {
     return (
       <EmptyState>
-        <strong>No V4 decisions yet.</strong> The V4 shadow engine has not produced a forward
+        <strong>No V4 decisions yet.</strong> The V4 engine has not produced a forward
         observation. The first natural run happens at 15:30 ET on the next legal earnings day
         after activation; nothing is back-filled and nothing here is simulated.
       </EmptyState>
@@ -677,10 +677,9 @@ export function V4DecisionView({ decisionId, mode = "lab", backTo, hideHero = fa
       {backTo && (
         <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
           <Link className="btn-secondary" to={backTo}>← All decisions</Link>
-          <Link className="btn-secondary" to={`/same-event-comparison/${data.decision.earnings_calendar_event_id}`}>Same-event comparison →</Link>
         </div>
       )}
-      <ExperimentalNotice text={data.notice} />
+      <ForwardTestNotice text={data.notice} />
       {mode === "lab" && !hideHero && <Hero d={data.decision} cfg={cfg} timing={data.timing_policy_version} />}
       <ConfigSelector configs={data.configurations} selected={selected} onSelect={(k) => { setSelected(k); setHighlight(null); }} />
       {mode === "lab" && <ForwardOutcomePanel cfg={cfg} entry={data.entry_observation} settlement={data.settlement} policy={data.settlement_policy} />}
@@ -711,7 +710,7 @@ export function V4DecisionLab({ mode = "lab" }: { mode?: "lab" | "explorer" }) {
       <div className="page-header"><h1>{mode === "explorer" ? "Candidate Explorer" : "V4 Decision Lab"}</h1></div>
       {!id ? (
         <>
-          <ExperimentalNotice />
+          <ForwardTestNotice />
           <DecisionPicker mode={mode} onPick={(d) => navigate(`${base}/${d}`)} />
         </>
       ) : (
