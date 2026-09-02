@@ -45,6 +45,12 @@ from models.enums import AnnouncementTime
 ENTRY_EXIT_TIME = time(15, 55)
 
 
+from analytics.decision_timing_policy import (  # noqa: E402
+    V3_TIMING_POLICY,
+    DecisionTimingPolicy,
+)
+
+
 def _nth_weekday_of_month(year: int, month: int, weekday: int, n: int) -> date:
     """The nth occurrence (1-indexed) of ``weekday`` (Mon=0..Sun=6) in
     ``month``/``year`` -- e.g. n=3, weekday=0 (Monday) for MLK Day."""
@@ -181,21 +187,27 @@ class EarningsEntryExitSchedule:
 
 
 def compute_entry_exit_schedule(
-    earnings_date: date, session: AnnouncementTime
+    earnings_date: date,
+    session: AnnouncementTime,
+    policy: DecisionTimingPolicy = V3_TIMING_POLICY,
 ) -> EarningsEntryExitSchedule:
     """The one place this project decides entry/exit timing for a
     forward-tested benchmark decision. See this module's docstring for
     the three cases; ``session`` values other than AFTER_MARKET/
     BEFORE_MARKET (i.e. UNKNOWN, or any future value) always take the
     conservative BMO-shaped branch -- never assume AMC."""
+    entry_label = policy.entry_time.strftime("%H:%M")
+    exit_label = policy.exit_time.strftime("%H:%M")
+
     if session == AnnouncementTime.AFTER_MARKET:
         decision_date = _nearest_trading_day_on_or_before(earnings_date)
         exit_date = next_trading_day(decision_date)
         reasoning = (
             f"{earnings_date.isoformat()} is an after-market-close (AMC) report -- the release "
-            f"happens after the close, so a decision generated and entered at 15:55 ET on "
+            f"happens after the close, so a decision generated and entered at {entry_label} ET on "
             f"{decision_date.isoformat()} is still real pre-release data. Exit is "
-            f"{exit_date.isoformat()} 15:55 ET, the next full trading session after the release."
+            f"{exit_date.isoformat()} {exit_label} ET, the next full trading session "
+            f"after the release."
         )
     else:
         decision_date = previous_trading_day(earnings_date)
@@ -206,24 +218,24 @@ def compute_entry_exit_schedule(
                 f"result is already known before that day's open, so entering on "
                 f"{earnings_date.isoformat()} itself would be look-ahead bias. Decision "
                 f"generation and entry use the previous real trading day, "
-                f"{decision_date.isoformat()}, 15:55 ET instead. Exit is "
-                f"{exit_date.isoformat()} 15:55 ET, after the market has had a full session to "
-                f"react."
+                f"{decision_date.isoformat()}, {entry_label} ET instead. Exit is "
+                f"{exit_date.isoformat()} {exit_label} ET, after the market has had a "
+                f"full session to react."
             )
         else:
             reasoning = (
                 f"{earnings_date.isoformat()}'s announcement time is not known to be AMC -- "
                 f"the conservative rule applies (never assume AMC): decision generation and "
-                f"entry use the previous real trading day, {decision_date.isoformat()}, 15:55 "
-                f"ET. Exit is {exit_date.isoformat()} 15:55 ET."
+                f"entry use the previous real trading day, {decision_date.isoformat()}, "
+                f"{entry_label} ET. Exit is {exit_date.isoformat()} {exit_label} ET."
             )
 
     return EarningsEntryExitSchedule(
         earnings_date=earnings_date,
         session=session,
         decision_generation_date=decision_date,
-        entry_timestamp=datetime.combine(decision_date, ENTRY_EXIT_TIME, tzinfo=EASTERN),
+        entry_timestamp=datetime.combine(decision_date, policy.entry_time, tzinfo=EASTERN),
         exit_date=exit_date,
-        exit_timestamp=datetime.combine(exit_date, ENTRY_EXIT_TIME, tzinfo=EASTERN),
+        exit_timestamp=datetime.combine(exit_date, policy.exit_time, tzinfo=EASTERN),
         reasoning=reasoning,
     )
