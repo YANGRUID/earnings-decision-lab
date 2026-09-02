@@ -107,9 +107,11 @@ class TestTrackRecordByConfiguration:
         for c in body["configurations"]:
             assert c["events"] == 0
             assert c["sample_sufficiency"] == "INSUFFICIENT SAMPLE"
-            # Not-yet-measured per-config observation streams are null,
-            # never fabricated zeros.
-            assert c["entry_observed"] is None and c["settled"] is None
+            # Per-cohort observation streams are real counters now; with no
+            # evidence they are honestly zero, and outcome metrics stay null
+            # below the sample floor.
+            assert c["entry_observed"] == 0 and c["settled"] == 0
+            assert c["wins"] is None and c["win_rate"] is None
         assert body["sample_floor"] == 30
         assert "no real capital ledger" in body["metrics_note"]
 

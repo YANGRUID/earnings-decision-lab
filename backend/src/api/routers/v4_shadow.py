@@ -19,7 +19,10 @@ from api.exceptions import NotFoundError
 from models.v4_shadow import (
     V4ShadowCandidate,
     V4ShadowCandidateLeg,
+    V4ShadowCandidateObservation,
+    V4ShadowConfigEntry,
     V4ShadowConfigResult,
+    V4ShadowConfigSettlement,
     V4ShadowDecision,
     V4ShadowObservation,
     V4ShadowSettlement,
@@ -104,11 +107,7 @@ def list_shadow_decisions(
     query = db.query(V4ShadowDecision)
     if ticker:
         query = query.filter(V4ShadowDecision.ticker == ticker.upper())
-    rows = (
-        query.order_by(V4ShadowDecision.legal_decision_window_at.desc())
-        .limit(limit)
-        .all()
-    )
+    rows = query.order_by(V4ShadowDecision.legal_decision_window_at.desc()).limit(limit).all()
     return {"notice": EXPERIMENTAL_NOTICE, "decisions": [_decision_summary(r) for r in rows]}
 
 
@@ -117,9 +116,7 @@ def get_shadow_decision(decision_id: int, db: DbSession) -> dict:
     row = db.get(V4ShadowDecision, decision_id)
     if row is None:
         raise NotFoundError(f"no V4 shadow decision with id {decision_id}")
-    observations = (
-        db.query(V4ShadowObservation).filter_by(shadow_decision_id=decision_id).all()
-    )
+    observations = db.query(V4ShadowObservation).filter_by(shadow_decision_id=decision_id).all()
     settlement = (
         db.query(V4ShadowSettlement).filter_by(shadow_decision_id=decision_id).one_or_none()
     )
@@ -272,9 +269,7 @@ def get_shadow_track_record(db: DbSession) -> dict:
     no_action = db.query(V4ShadowDecision).filter_by(status="NO_ACTION").count()
     failed = db.query(V4ShadowDecision).filter_by(status="FAILED").count()
     settled = db.query(V4ShadowSettlement).filter_by(status="SETTLED").count()
-    settlement_failed = (
-        db.query(V4ShadowSettlement).filter_by(status="OBSERVATION_FAILED").count()
-    )
+    settlement_failed = db.query(V4ShadowSettlement).filter_by(status="OBSERVATION_FAILED").count()
     entry_observed = (
         db.query(V4ShadowObservation).filter_by(phase="ENTRY", status="OBSERVED").count()
     )
@@ -312,7 +307,6 @@ def get_shadow_track_record(db: DbSession) -> dict:
     }
 
 
-
 # ---------------------------------------------------------------------------
 # Six-configuration read model (V4 consolidation, Sections 53-54).
 #
@@ -322,8 +316,12 @@ def get_shadow_track_record(db: DbSession) -> dict:
 # switches between the six results client-side without another request.
 # ---------------------------------------------------------------------------
 _CONFIG_DISPLAY_ORDER = [
-    "v4_2k_conservative", "v4_2k_moderate", "v4_2k_aggressive",
-    "v4_10k_conservative", "v4_10k_moderate", "v4_10k_aggressive",
+    "v4_2k_conservative",
+    "v4_2k_moderate",
+    "v4_2k_aggressive",
+    "v4_10k_conservative",
+    "v4_10k_moderate",
+    "v4_10k_aggressive",
 ]
 
 
@@ -385,12 +383,9 @@ def get_shadow_decision_configurations(decision_id: int, db: DbSession) -> dict:
             "rank_explanation": c.rank_explanation,
         }
 
-    # Lifecycle (Sections 23-27): the ENTRY observation and settlement are
-    # recorded once at event level against the unconstrained rank #1. A
-    # configuration whose own rank #1 is that same candidate inherits the
-    # observation; a configuration whose rank #1 differs has no separate
-    # observation stream yet and honestly reports WAITING_ENTRY rather than
-    # borrowing evidence for a different structure.
+    # Lifecycle (activation phase, Section 20): derived from each
+    # configuration's OWN entry and settlement rows. No configuration ever
+    # borrows the event-level observation.
     entry_obs = (
         db.query(V4ShadowObservation)
         .filter_by(shadow_decision_id=decision_id, phase="ENTRY")
@@ -402,19 +397,83 @@ def get_shadow_decision_configurations(decision_id: int, db: DbSession) -> dict:
         .order_by(V4ShadowSettlement.id.desc())
         .first()
     )
+    entries_by_result = {
+        e.shadow_config_result_id: e
+        for e in db.query(V4ShadowConfigEntry).filter_by(shadow_decision_id=decision_id)
+    }
+    settlements_by_result = {
+        x.shadow_config_result_id: x
+        for x in db.query(V4ShadowConfigSettlement).filter_by(shadow_decision_id=decision_id)
+    }
+    cand_obs = {
+        (o.candidate_id, o.phase): o
+        for o in db.query(V4ShadowCandidateObservation).filter_by(shadow_decision_id=decision_id)
+    }
 
     def lifecycle(row: V4ShadowConfigResult) -> str:
         if row.status == "NO_ACTION":
             return "NO_ACTION"
         if row.status == "FAILED":
             return "FAILED"
-        if entry_obs is None or entry_obs.candidate_id != row.rank_1_candidate_id:
+        entry = entries_by_result.get(row.id)
+        if entry is None:
             return "WAITING_ENTRY"
-        if entry_obs.status != "OBSERVED":
+        if entry.status != "OBSERVED":
             return "ENTRY_FAILED"
-        if settlement is None:
+        stl = settlements_by_result.get(row.id)
+        if stl is None:
             return "WAITING_SETTLEMENT"
-        return "SETTLED" if settlement.status == "SETTLED" else "SETTLEMENT_FAILED"
+        return "SETTLED" if stl.status == "SETTLED" else "SETTLEMENT_FAILED"
+
+    def entry_payload(row: V4ShadowConfigResult) -> dict | None:
+        e = entries_by_result.get(row.id)
+        if e is None:
+            return None
+        obs = cand_obs.get((e.candidate_id, "ENTRY"))
+        return {
+            "status": e.status,
+            "candidate_id": e.candidate_id,
+            "quantity": e.quantity,
+            "standardized_capital": e.standardized_capital,
+            "capital_used": e.capital_used,
+            "max_risk_per_contract": e.max_risk_per_contract,
+            "max_risk_used": e.max_risk_used,
+            "entry_net_value": e.entry_net_value,
+            "pricing_convention": e.pricing_convention,
+            "observed_at": e.observed_at,
+            "market_data_quality": e.market_data_quality,
+            "failure_category": e.failure_category,
+            "failure_detail": e.failure_detail,
+            "timing_policy_version": e.timing_policy_version,
+            "legs": (obs.legs_json or {}).get("legs") if obs else None,
+            "earliest_leg_observed_at": obs.earliest_leg_observed_at if obs else None,
+            "latest_leg_observed_at": obs.latest_leg_observed_at if obs else None,
+            "max_leg_timestamp_skew_seconds": obs.max_leg_timestamp_skew_seconds if obs else None,
+        }
+
+    def settlement_payload(row: V4ShadowConfigResult) -> dict | None:
+        x = settlements_by_result.get(row.id)
+        if x is None:
+            return None
+        obs = cand_obs.get((x.candidate_id, "EXIT"))
+        return {
+            "status": x.status,
+            "candidate_id": x.candidate_id,
+            "quantity": x.quantity,
+            "standardized_capital": x.standardized_capital,
+            "capital_used": x.capital_used,
+            "entry_net_value": x.entry_net_value,
+            "exit_net_value": x.exit_net_value,
+            "realized_pnl": x.realized_pnl,
+            "return_on_standardized_capital": x.return_on_standardized_capital,
+            "entry_observed_at": x.entry_observed_at,
+            "settled_at": x.settled_at,
+            "pricing_convention": x.pricing_convention,
+            "market_data_quality": x.market_data_quality,
+            "failure_category": x.failure_category,
+            "failure_detail": x.failure_detail,
+            "legs": (obs.legs_json or {}).get("legs") if obs else None,
+        }
 
     configurations = []
     for key in _CONFIG_DISPLAY_ORDER:
@@ -425,6 +484,8 @@ def get_shadow_decision_configurations(decision_id: int, db: DbSession) -> dict:
         top = by_id.get(row.rank_1_candidate_id) if row.rank_1_candidate_id else None
         summary["rank_1"] = candidate_summary(top) if top is not None else None
         summary["lifecycle"] = lifecycle(row)
+        summary["entry"] = entry_payload(row)
+        summary["settlement"] = settlement_payload(row)
         configurations.append(summary)
 
     return {
@@ -434,7 +495,9 @@ def get_shadow_decision_configurations(decision_id: int, db: DbSession) -> dict:
         "configurations": configurations,
         "candidates": [candidate_summary(c) for c in candidates],
         "default_configuration_key": "v4_2k_moderate",
-        "entry_observation": None if entry_obs is None else {
+        "entry_observation": None
+        if entry_obs is None
+        else {
             "status": entry_obs.status,
             "candidate_id": entry_obs.candidate_id,
             "observed_at": entry_obs.observed_at,
@@ -443,7 +506,9 @@ def get_shadow_decision_configurations(decision_id: int, db: DbSession) -> dict:
             "market_data_quality": entry_obs.market_data_quality,
             "net_executable_value": entry_obs.net_executable_value,
         },
-        "settlement": None if settlement is None else {
+        "settlement": None
+        if settlement is None
+        else {
             "status": settlement.status,
             "settled_at": settlement.settled_at,
             "failure_category": settlement.failure_category,
@@ -471,50 +536,90 @@ SAMPLE_FLOOR = 30
 def get_shadow_track_record_by_configuration(db: DbSession) -> dict:
     from sqlalchemy import func
 
-    rows = (
-        db.query(
-            V4ShadowConfigResult.configuration_key,
-            V4ShadowConfigResult.status,
-            func.count(V4ShadowConfigResult.id),
-        )
-        .group_by(V4ShadowConfigResult.configuration_key, V4ShadowConfigResult.status)
-        .all()
-    )
-    by_key: dict[str, dict] = {
-        key: {
-            "configuration_key": key,
-            "events": 0, "actionable": 0, "no_action": 0, "failed": 0,
-            # Entry/settlement are observed on the shared event-level
-            # freeze today; per-configuration observation is not yet a
-            # separate evidence stream, so these are reported as such
-            # rather than invented from the event-level rows.
-            "entry_observed": None, "entry_failed": None,
-            "settled": None, "settlement_failed": None,
-            "sample_sufficiency": "INSUFFICIENT SAMPLE",
-        }
-        for key in _CONFIG_DISPLAY_ORDER
-    }
-    for key, status, n in rows:
-        bucket = by_key.setdefault(key, {"configuration_key": key})
-        bucket["events"] = bucket.get("events", 0) + n
-        if status == "RANKED":
-            bucket["actionable"] = n
-        elif status == "NO_ACTION":
-            bucket["no_action"] = n
-        elif status == "FAILED":
-            bucket["failed"] = n
+    def counts(model, status_col, key_col):
+        out: dict[str, dict[str, int]] = {}
+        for key, status, n in (
+            db.query(key_col, status_col, func.count(model.id)).group_by(key_col, status_col).all()
+        ):
+            out.setdefault(key, {})[status] = n
+        return out
 
+    results = counts(
+        V4ShadowConfigResult, V4ShadowConfigResult.status, V4ShadowConfigResult.configuration_key
+    )
+    entries = counts(
+        V4ShadowConfigEntry, V4ShadowConfigEntry.status, V4ShadowConfigEntry.configuration_key
+    )
+    settlements = counts(
+        V4ShadowConfigSettlement,
+        V4ShadowConfigSettlement.status,
+        V4ShadowConfigSettlement.configuration_key,
+    )
+    # Per-cohort realized outcomes (only this cohort's own settlements).
+    realized: dict[str, list] = {}
+    for x in db.query(V4ShadowConfigSettlement).filter_by(status="SETTLED"):
+        realized.setdefault(x.configuration_key, []).append(x)
+
+    rows = []
+    for key in _CONFIG_DISPLAY_ORDER:
+        r = results.get(key, {})
+        e = entries.get(key, {})
+        st = settlements.get(key, {})
+        settled_rows = realized.get(key, [])
+        n_settled = len(settled_rows)
+        sufficient = n_settled >= SAMPLE_FLOOR
+        wins = sum(1 for x in settled_rows if (x.realized_pnl or 0) > 0)
+        losses = sum(1 for x in settled_rows if (x.realized_pnl or 0) < 0)
+        rets = sorted(
+            float(x.return_on_standardized_capital)
+            for x in settled_rows
+            if x.return_on_standardized_capital is not None
+        )
+        rows.append(
+            {
+                "configuration_key": key,
+                "events": sum(r.values()),
+                "actionable": r.get("RANKED", 0),
+                "no_action": r.get("NO_ACTION", 0),
+                "failed": r.get("FAILED", 0),
+                "entry_observed": e.get("OBSERVED", 0),
+                "entry_failed": e.get("NOT_EXECUTABLE", 0),
+                "settled": st.get("SETTLED", 0),
+                "settlement_failed": st.get("OBSERVATION_FAILED", 0),
+                "wins": wins if sufficient else None,
+                "losses": losses if sufficient else None,
+                "win_rate": (wins / n_settled) if sufficient and n_settled else None,
+                "average_standardized_return": (sum(rets) / len(rets))
+                if sufficient and rets
+                else None,
+                "median_standardized_return": (rets[len(rets) // 2])
+                if sufficient and rets
+                else None,
+                "average_realized_pnl": (
+                    float(sum(x.realized_pnl or 0 for x in settled_rows)) / n_settled
+                    if sufficient and n_settled
+                    else None
+                ),
+                "average_capital_used": (
+                    float(sum(x.capital_used or 0 for x in settled_rows)) / n_settled
+                    if sufficient and n_settled
+                    else None
+                ),
+                "sample_sufficiency": "SUFFICIENT" if sufficient else "INSUFFICIENT SAMPLE",
+            }
+        )
     return {
         "notice": EXPERIMENTAL_NOTICE,
         "sample_floor": SAMPLE_FLOOR,
         "metrics_note": (
-            "Counts only. Win rate, average/median standardized return and realized P&L are "
-            "reported per configuration only once that configuration has at least "
-            f"{SAMPLE_FLOOR} settled observations. No portfolio drawdown or Sharpe is computed: "
-            "there is no real capital ledger yet, and V3's static-$2,000 accounting is not "
-            "reproduced."
+            "Each cohort's counts and outcomes come only from that cohort's own entry and "
+            "settlement observations. Win rate, average/median standardized return and realized "
+            f"P&L are reported only once a cohort has at least {SAMPLE_FLOOR} settled "
+            "observations. "
+            "No portfolio drawdown or Sharpe is computed: there is no real capital ledger yet, and "
+            "V3's static-$2,000 accounting is not reproduced."
         ),
-        "configurations": [by_key[k] for k in _CONFIG_DISPLAY_ORDER],
+        "configurations": rows,
     }
 
 
@@ -567,7 +672,9 @@ def get_same_event_comparison(event_id: int, db: DbSession) -> dict:
             "direction": v3_decision.strategy_direction,
             "risk_profile": v3_decision.effective_risk_profile,
             "underlying_price": v3_decision.underlying_price,
-            "entry": None if entry is None else {
+            "entry": None
+            if entry is None
+            else {
                 "status": entry.status,
                 "capture_error": entry.capture_error,
                 "contracts": entry.contracts,
@@ -575,7 +682,9 @@ def get_same_event_comparison(event_id: int, db: DbSession) -> dict:
                 "initial_max_risk": entry.initial_max_risk,
                 "source_provider": entry.source_provider,
             },
-            "settlement": None if settlement is None else {
+            "settlement": None
+            if settlement is None
+            else {
                 "status": settlement.status,
                 "realized_pnl": settlement.realized_pnl,
             },
@@ -609,26 +718,56 @@ def get_same_event_comparison(event_id: int, db: DbSession) -> dict:
             .filter_by(shadow_decision_id=v4_decision.id, phase="ENTRY")
             .first()
         )
+        cfg_entries = {
+            e.shadow_config_result_id: e
+            for e in db.query(V4ShadowConfigEntry).filter_by(shadow_decision_id=v4_decision.id)
+        }
+        cfg_settlements = {
+            x.shadow_config_result_id: x
+            for x in db.query(V4ShadowConfigSettlement).filter_by(shadow_decision_id=v4_decision.id)
+        }
         configs = []
         for key in _CONFIG_DISPLAY_ORDER:
             row = config_rows.get(key)
             if row is None:
                 continue
             top = candidates.get(row.rank_1_candidate_id) if row.rank_1_candidate_id else None
-            configs.append({
-                "configuration_key": key,
-                "label": f"${int(row.capital_base):,} {row.risk_profile.title()}",
-                "status": row.status,
-                "no_action_reason": row.no_action_reason,
-                "capital_base": row.capital_base,
-                "max_risk_dollars": row.max_risk_dollars,
-                "strategy": top.strategy if top else None,
-                "expiration": top.expiration if top else None,
-                "entry_cash_required": top.entry_cash_required if top else None,
-                "core_median_return": top.core_median_return if top else None,
-                "core_worst_return": top.core_worst_return if top else None,
-                "stress_worst_return": top.stress_worst_return if top else None,
-            })
+            ce = cfg_entries.get(row.id)
+            cs = cfg_settlements.get(row.id)
+            configs.append(
+                {
+                    "entry": None
+                    if ce is None
+                    else {
+                        "status": ce.status,
+                        "quantity": ce.quantity,
+                        "capital_used": ce.capital_used,
+                        "entry_net_value": ce.entry_net_value,
+                        "observed_at": ce.observed_at,
+                        "market_data_quality": ce.market_data_quality,
+                    },
+                    "settlement": None
+                    if cs is None
+                    else {
+                        "status": cs.status,
+                        "realized_pnl": cs.realized_pnl,
+                        "return_on_standardized_capital": cs.return_on_standardized_capital,
+                        "settled_at": cs.settled_at,
+                    },
+                    "configuration_key": key,
+                    "label": f"${int(row.capital_base):,} {row.risk_profile.title()}",
+                    "status": row.status,
+                    "no_action_reason": row.no_action_reason,
+                    "capital_base": row.capital_base,
+                    "max_risk_dollars": row.max_risk_dollars,
+                    "strategy": top.strategy if top else None,
+                    "expiration": top.expiration if top else None,
+                    "entry_cash_required": top.entry_cash_required if top else None,
+                    "core_median_return": top.core_median_return if top else None,
+                    "core_worst_return": top.core_worst_return if top else None,
+                    "stress_worst_return": top.stress_worst_return if top else None,
+                }
+            )
         v4 = {
             "engine": "V4 experimental shadow",
             "timing_policy_version": v4_decision.decision_timing_policy_version
@@ -638,10 +777,15 @@ def get_same_event_comparison(event_id: int, db: DbSession) -> dict:
             "generated_at": v4_decision.generated_at,
             "underlying_price": v4_decision.underlying_price,
             "market_data_quality": v4_decision.market_data_quality,
-            "entry_observation": None if entry_obs is None else {
-                "status": entry_obs.status, "candidate_id": entry_obs.candidate_id,
+            "entry_observation": None
+            if entry_obs is None
+            else {
+                "status": entry_obs.status,
+                "candidate_id": entry_obs.candidate_id,
             },
-            "settlement": None if v4_settlement is None else {
+            "settlement": None
+            if v4_settlement is None
+            else {
                 "status": v4_settlement.status,
                 "realized_pnl": v4_settlement.realized_pnl,
                 "return_on_standardized_capital": v4_settlement.return_on_standardized_capital,
@@ -652,8 +796,11 @@ def get_same_event_comparison(event_id: int, db: DbSession) -> dict:
     return {
         "notice": EXPERIMENTAL_NOTICE,
         "event": {
-            "id": event.id, "symbol": event.symbol, "company_name": event.company_name,
-            "earnings_date": event.earnings_date, "earnings_time": event.earnings_time,
+            "id": event.id,
+            "symbol": event.symbol,
+            "company_name": event.company_name,
+            "earnings_date": event.earnings_date,
+            "earnings_time": event.earnings_time,
         },
         "timing_note": (
             "V3 observes at 15:55 ET and V4 at 15:30 ET. Their entry prices are taken from "
