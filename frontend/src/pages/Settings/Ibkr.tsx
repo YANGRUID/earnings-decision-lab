@@ -3,7 +3,7 @@ import { useAsync } from "../../hooks/useAsync";
 import { api, ApiError } from "../../api/client";
 import { LoadingState, ErrorState } from "../../components/StatusStates";
 import { formatRelativeTime } from "../../lib/format";
-import type { IbkrStatus } from "../../types/api";
+import type { IbkrStatus, TwsStatus } from "../../types/api";
 
 function overallState(ibkr: IbkrStatus): { label: string; tone: "positive" | "negative" | "neutral" } {
   if (!ibkr.gateway_reachable) return { label: "Gateway offline", tone: "negative" };
@@ -29,6 +29,122 @@ function emojiStatus(ibkr: IbkrStatus): { emoji: string; label: string } {
   return { emoji: "🔴", label: "Authentication Required" };
 }
 
+// IBKR TWS Migration, Phase 3 readiness (Section 20/21) -- the TWS-
+// transport sibling of overallState/emojiStatus above (those two, the
+// existing Web/Client-Portal-Gateway summaries, are unchanged). Keys
+// primarily off reconnect_state where it's more specific than
+// status_label's four coarse buckets (RECONNECTING has no status_label
+// of its own -- see services/system_status.py::TwsStatus's own comment).
+function twsState(tws: TwsStatus): { label: string; tone: "positive" | "negative" | "neutral" | "warning" } {
+  if (tws.reconnect_state === "reconnecting") return { label: "Reconnecting", tone: "warning" };
+  if (tws.status_label === "CONNECTED") return { label: "Ready", tone: "positive" };
+  if (tws.status_label === "AUTH_REQUIRED") return { label: "Authentication required", tone: "negative" };
+  if (tws.reconnect_state === "failed") return { label: "Failed", tone: "negative" };
+  return { label: "Disconnected", tone: "negative" };
+}
+
+function twsEmojiStatus(tws: TwsStatus): { emoji: string; label: string } {
+  const state = twsState(tws);
+  if (state.tone === "positive") return { emoji: "🟢", label: state.label };
+  if (state.tone === "warning") return { emoji: "🟡", label: state.label };
+  if (tws.status_label === "GATEWAY_UNREACHABLE") return { emoji: "⚪", label: state.label };
+  return { emoji: "🔴", label: state.label };
+}
+
+// --------------------------------------------------------------------------
+// Section 21/22 -- IB Gateway / TWS API status card. Deliberately never
+// shows a "Connect IBKR" browser-login button (Section 34: that flow only
+// makes sense for the Web/Client-Portal Gateway below) or any Client
+// Portal-specific copy/URL -- TWS authentication happens manually inside
+// the IB Gateway desktop application itself, entirely outside this app,
+// exactly like the Web card below never sees a password either.
+// --------------------------------------------------------------------------
+
+function TwsGatewayCard({ tws, onRefresh, refreshing }: { tws: TwsStatus; onRefresh: () => void; refreshing: boolean }) {
+  const state = twsState(tws);
+  const emoji = twsEmojiStatus(tws);
+
+  return (
+    <div className="card" style={{ marginBottom: 20, maxWidth: 640 }}>
+      <strong>Status</strong>
+      <p className="text-sm text-muted" style={{ marginTop: 4 }}>
+        Provider: IB Gateway / TWS API
+      </p>
+      <div style={{ fontSize: "1.5rem", fontWeight: 600, marginTop: 6, marginBottom: 16 }}>
+        {emoji.emoji} {emoji.label}
+      </div>
+      <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+        <button className="btn-secondary" onClick={onRefresh} disabled={refreshing}>
+          {refreshing ? "Refreshing…" : "Refresh Status"}
+        </button>
+      </div>
+
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "flex-start",
+          marginTop: 22,
+        }}
+      >
+        <strong>Connection detail</strong>
+        <span className={`pill pill-${state.tone}`}>{state.label}</span>
+      </div>
+      <div className="grid grid-2" style={{ gap: 10, marginTop: 14 }}>
+        <div className="stat">
+          <span className="stat-label">Gateway reachable</span>
+          <span className="stat-value small">{tws.gateway_reachable ? "Yes" : "No"}</span>
+        </div>
+        <div className="stat">
+          <span className="stat-label">API socket connected</span>
+          <span className="stat-value small">{tws.socket_connected ? "Yes" : "No"}</span>
+        </div>
+        <div className="stat">
+          <span className="stat-label">API ready</span>
+          <span className="stat-value small">{tws.api_ready ? "Yes" : "No"}</span>
+        </div>
+        <div className="stat">
+          <span className="stat-label">Market data</span>
+          {/* IBKR TWS Migration, post-cutover cleanup (A10) -- market-data
+              quality is only ever learned from a real marketDataType
+              callback, so it is genuinely unknown until the first quote
+              after a cold restart. Say that plainly instead of an
+              unexplained dash; never fabricate "delayed" before IBKR
+              has actually reported it. */}
+          <span className="stat-value small">
+            {tws.market_data_quality ?? "Unknown — awaiting first market-data observation"}
+          </span>
+        </div>
+        <div className="stat">
+          <span className="stat-label">Last heartbeat</span>
+          <span className="stat-value small">{formatRelativeTime(tws.last_heartbeat)}</span>
+        </div>
+        <div className="stat">
+          <span className="stat-label">Connection state</span>
+          <span className="stat-value small mono">{tws.reconnect_state}</span>
+        </div>
+      </div>
+      {tws.error && (
+        <div className="notice" style={{ marginTop: 14, marginBottom: 0 }}>
+          {tws.error}
+        </div>
+      )}
+      {tws.status_label !== "CONNECTED" && (
+        <div className="notice" style={{ marginTop: 14, marginBottom: 0 }}>
+          <strong>IB Gateway login required.</strong> Authentication is performed directly in IB
+          Gateway, not on this page:
+          <ol style={{ marginTop: 6, marginBottom: 0, paddingLeft: 20 }}>
+            <li>Open IB Gateway on this Mac</li>
+            <li>Complete login / 2FA there</li>
+            <li>Return here</li>
+            <li>Click "Refresh Status" above</li>
+          </ol>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function Ibkr() {
   const status = useAsync(() => api.getSystemStatus(), []);
   const [testing, setTesting] = useState(false);
@@ -40,7 +156,13 @@ export function Ibkr() {
   if (status.error && !status.data) return <ErrorState message={status.error} />;
   if (!status.data) return null;
 
-  const { ibkr } = status.data;
+  const { ibkr, tws } = status.data;
+  // IBKR TWS Migration, Phase 3 readiness (Section 20) -- the single,
+  // authoritative signal for which transport is actually configured:
+  // tws.configured mirrors settings.ibkr_provider == "tws" exactly (see
+  // services/system_status.py::get_tws_status), so this page never
+  // re-derives that from anything client-side.
+  const usingTws = tws.configured;
   const state = overallState(ibkr);
   const emoji = emojiStatus(ibkr);
   const optionsDomain = status.data.providers.domains.find((d) => d.domain === "options");
@@ -105,17 +227,32 @@ export function Ibkr() {
     <div>
       <div className="page-header">
         <h1>Interactive Brokers</h1>
-        <p>
-          This page reflects the real, live session state of whichever Gateway is configured —
-          either one you run yourself and log into by hand at{" "}
-          <span className="mono">https://localhost:5001</span>, or (Phase 4.8A, optional) the
-          automated <span className="mono">ibkr-gateway</span> container that logs in on your
-          behalf so the session stays up without a human re-authenticating every few hours. Either
-          way, this backend application never holds your IBKR username or password itself — only
-          the automated container's own environment does, when that path is configured. See
-          docs/ibkr_gateway_runtime.md for the full setup and security model.
-        </p>
+        {usingTws ? (
+          <p>
+            This page reflects the real, live state of this deployment's IB Gateway / TWS API
+            connection — a single, persistent socket connection this backend process owns.
+            Authentication happens manually inside the IB Gateway desktop application itself, on
+            this Mac; this backend application never holds your IBKR username, password, or 2FA
+            code. The Web/Client-Portal-Gateway path below this section still exists as manual
+            rollback support, but is not the transport currently configured.
+          </p>
+        ) : (
+          <p>
+            This page reflects the real, live session state of whichever Gateway is configured —
+            either one you run yourself and log into by hand at{" "}
+            <span className="mono">https://localhost:5001</span>, or (Phase 4.8A, optional) the
+            automated <span className="mono">ibkr-gateway</span> container that logs in on your
+            behalf so the session stays up without a human re-authenticating every few hours. Either
+            way, this backend application never holds your IBKR username or password itself — only
+            the automated container's own environment does, when that path is configured. See
+            docs/ibkr_gateway_runtime.md for the full setup and security model.
+          </p>
+        )}
       </div>
+
+      {usingTws && <TwsGatewayCard tws={tws} onRefresh={refreshStatus} refreshing={status.loading} />}
+
+      {!usingTws && (
       <div className="card" style={{ marginBottom: 20, maxWidth: 640 }}>
         <strong>Status</strong>
         <div style={{ fontSize: "1.5rem", fontWeight: 600, marginTop: 6, marginBottom: 16 }}>
@@ -194,6 +331,7 @@ export function Ibkr() {
           </p>
         )}
       </div>
+      )}
 
       {ibkrProvider && (
         <div className="card" style={{ maxWidth: 640 }}>

@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { Link } from "react-router-dom";
 import { api } from "../api/client";
 import { useAsync } from "../hooks/useAsync";
@@ -36,7 +36,12 @@ async function fetchResearchedOverviews(): Promise<ResearchOverview[]> {
 
 export function Dashboard() {
   const navigate = useNavigate();
-  const [query, setQuery] = useState("");
+  const [searchParams] = useSearchParams();
+  // Pre-fills from a real navigation intent (e.g. a dashboard earnings
+  // card for a symbol not yet researched links here as
+  // /search?ticker=SYMBOL) -- never auto-submits, so the user still
+  // confirms before a real preparation job is queued.
+  const [query, setQuery] = useState(() => searchParams.get("ticker") ?? "");
   const overviews = useAsync(fetchResearchedOverviews, []);
 
   const submit = (e: React.FormEvent) => {

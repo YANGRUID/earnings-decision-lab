@@ -36,6 +36,17 @@ function RateRow({ label, rate }: { label: string; rate: Rate }) {
 const CONFIDENCE_BUCKETS = ["<60%", "60-70%", "70-80%", "80-90%", "90%+"];
 const DTE_BUCKETS = ["0-3", "4-7", "8-14", "15-30", "30+"];
 const RISK_PROFILES: RiskProfile[] = ["conservative", "moderate", "aggressive"];
+// V4.1 methodology foundation (2026-08-31) -- the only two real engine
+// versions this codebase has ever written to DecisionSnapshot.engine_version
+// (services/decision_snapshot_freezing.py::ENGINE_VERSION, analytics/
+// decision/v4_methodology.py::ENGINE_VERSION_V4). V4 has zero official
+// decisions today -- selecting it is expected to show an honest empty
+// state, never a fabricated row.
+const ENGINE_COHORTS = [
+  { value: "", label: "All Engines" },
+  { value: "options-decision-engine-v3", label: "V3" },
+  { value: "options-decision-engine-v4", label: "V4" },
+];
 
 export function BenchmarkTrackRecord() {
   const [strategy, setStrategy] = useState("");
@@ -43,6 +54,7 @@ export function BenchmarkTrackRecord() {
   const [dteBucket, setDteBucket] = useState("");
   const [riskProfile, setRiskProfile] = useState<RiskProfile | "">("");
   const [ivRegime, setIvRegime] = useState("");
+  const [engineVersion, setEngineVersion] = useState("");
 
   const record = useAsync(
     () =>
@@ -52,8 +64,9 @@ export function BenchmarkTrackRecord() {
         dteBucket: dteBucket || undefined,
         riskProfile: riskProfile || undefined,
         ivRegime: ivRegime.trim() || undefined,
+        engineVersion: engineVersion || undefined,
       }),
-    [strategy, confidenceBucket, dteBucket, riskProfile, ivRegime]
+    [strategy, confidenceBucket, dteBucket, riskProfile, ivRegime, engineVersion]
   );
   const calibration = useAsync(() => api.getBenchmarkCalibration(), []);
 
@@ -70,7 +83,12 @@ export function BenchmarkTrackRecord() {
   return (
     <div>
       <div className="page-header">
-        <h1>AI Earnings Analyst Track Record</h1>
+        <h1>V3 Historical Control</h1>
+        <div className="notice" data-testid="v3-control-notice">
+          <strong>Historical control cohort.</strong> Legacy V3 methodology, observed at 15:55 ET
+          (<span className="mono">v3-pre-earnings-1555et-v1</span>). This is not the current V4
+          decision engine; it is retained as the benchmark V4 is forward-tested against.
+        </div>
         <p>
           Verified performance of the real $2,000 Moderate AI Benchmark Portfolio — computed only
           over decisions with a real, captured entry and a real, captured exit (Phase 4.4/4.5).
@@ -82,6 +100,13 @@ export function BenchmarkTrackRecord() {
         className="card"
         style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}
       >
+        <select value={engineVersion} onChange={(e) => setEngineVersion(e.target.value)}>
+          {ENGINE_COHORTS.map((c) => (
+            <option key={c.value} value={c.value}>
+              {c.label}
+            </option>
+          ))}
+        </select>
         <input
           type="text"
           placeholder="Filter by strategy (e.g. iron_condor)"
@@ -129,11 +154,30 @@ export function BenchmarkTrackRecord() {
         <h2>Benchmark Summary</h2>
         <div className="grid grid-3" style={{ gap: 16 }}>
           <div className="stat">
-            <span className="stat-label">Total Decisions</span>
+            <span className="stat-label">Decisions Generated</span>
             <span className="stat-value">{r.total_decisions}</span>
           </div>
           <div className="stat">
-            <span className="stat-label">Settled Decisions</span>
+            <span className="stat-label">Actionable Decisions</span>
+            <span className="stat-value">{r.actionable_decisions}</span>
+            <span className="text-sm text-faint">A real strategy was recommended</span>
+          </div>
+          <div className="stat">
+            <span className="stat-label">No-Action Decisions</span>
+            <span className="stat-value">{r.no_action_decisions}</span>
+            <span className="text-sm text-faint">The engine found nothing actionable</span>
+          </div>
+          <div className="stat">
+            <span className="stat-label">Entries Captured</span>
+            <span className="stat-value">{r.entries_captured}</span>
+          </div>
+          <div className="stat">
+            <span className="stat-label">Entry Capture Failed</span>
+            <span className="stat-value">{r.entries_capture_failed}</span>
+            <span className="text-sm text-faint">Of actionable decisions only</span>
+          </div>
+          <div className="stat">
+            <span className="stat-label">Settled</span>
             <span className="stat-value">{r.settled_decisions}</span>
           </div>
         </div>
@@ -147,8 +191,14 @@ export function BenchmarkTrackRecord() {
       {r.settled_decisions === 0 ? (
         <div className="card">
           <p className="text-sm text-muted" style={{ margin: 0 }}>
-            No settled trades available. Metrics appear once at least one decision has a real,
-            captured exit.
+            {engineVersion === "options-decision-engine-v4"
+              ? "V4 has zero official decisions today — it is experimental and disabled for " +
+                "official trading (see the V4.1 methodology foundation). This honest empty " +
+                "state is expected, not an error."
+              : "No settled trades available. Performance metrics (win rate, R-multiples, " +
+                "accuracy) appear only once at least one decision has a real, captured exit " +
+                "— the counts above are real and honest in the meantime, they just aren't a " +
+                "performance outcome yet."}
           </p>
         </div>
       ) : (
@@ -174,15 +224,77 @@ export function BenchmarkTrackRecord() {
                 <span className="stat-value">{num(r.profit_factor)}</span>
               </div>
               <div className="stat">
-                <span className="stat-label">Max Drawdown</span>
+                <span className="stat-label">
+                  {r.legacy_capital_caveat ? "V3 Legacy Aggregate Loss" : "Max Drawdown"}
+                </span>
                 <span className="stat-value">{money(r.max_drawdown)}</span>
                 <span className="text-sm text-faint">
-                  {r.max_drawdown_pct !== null
-                    ? `${num(r.max_drawdown_pct, 1)}% of peak equity`
-                    : ""}
+                  {r.legacy_capital_caveat
+                    ? "Not comparable as a portfolio drawdown percentage — see below"
+                    : r.max_drawdown_pct !== null
+                      ? `${num(r.max_drawdown_pct, 1)}% of peak equity`
+                      : ""}
                 </span>
               </div>
             </div>
+            {/* Post-official-run cleanup (2026-08-27), Section 6 --
+                communication only, no metric here changed. */}
+            <p className="text-sm text-faint" style={{ marginTop: 12, marginBottom: 0 }}>
+              R-multiples are realized: computed from an actual exit at executable bid/ask before
+              expiration, not a strategy's theoretical max loss/profit at expiration. Early-exit
+              spread cost can push a realized loss past the defined-risk maximum shown at entry.
+            </p>
+            {r.legacy_capital_caveat && (
+              <p className="text-sm text-faint" style={{ marginTop: 8, marginBottom: 0 }}>
+                {r.legacy_capital_caveat}
+              </p>
+            )}
+          </div>
+
+          <div className="card">
+            <h2>Standardized Per-Decision Metrics</h2>
+            <p className="text-sm text-faint" style={{ marginTop: 0 }}>
+              Each decision graded independently against the same $2,000 standardized capital —
+              not a shared portfolio, so this deliberately never shows a portfolio drawdown.
+            </p>
+            <div className="grid grid-3" style={{ gap: 16 }}>
+              <div className="stat">
+                <span className="stat-label">N</span>
+                <span className="stat-value">{r.standardized.n}</span>
+                <span className="text-sm text-faint">
+                  {r.standardized.wins} wins / {r.standardized.losses} losses
+                </span>
+              </div>
+              <div className="stat">
+                <span className="stat-label">Mean Return on Standardized Capital</span>
+                <span className="stat-value">
+                  {r.standardized.mean_return_on_standardized_capital !== null
+                    ? `${(Number(r.standardized.mean_return_on_standardized_capital) * 100).toFixed(1)}%`
+                    : "—"}
+                </span>
+              </div>
+              <div className="stat">
+                <span className="stat-label">Median Return on Standardized Capital</span>
+                <span className="stat-value">
+                  {r.standardized.median_return_on_standardized_capital !== null
+                    ? `${(Number(r.standardized.median_return_on_standardized_capital) * 100).toFixed(1)}%`
+                    : "—"}
+                </span>
+              </div>
+              <div className="stat">
+                <span className="stat-label">Total Realized P&amp;L</span>
+                <span className="stat-value">{money(r.standardized.total_realized_pnl)}</span>
+              </div>
+              <div className="stat">
+                <span className="stat-label">Portfolio Drawdown</span>
+                <span className="stat-value">
+                  {r.standardized.portfolio_drawdown_available ? "Available" : "Not Available"}
+                </span>
+              </div>
+            </div>
+            <p className="text-sm text-faint" style={{ marginTop: 8, marginBottom: 0 }}>
+              {r.standardized.portfolio_drawdown_reason}
+            </p>
           </div>
 
           <div className="grid grid-3" style={{ gap: 16 }}>
@@ -211,11 +323,19 @@ export function BenchmarkTrackRecord() {
 
       {calibration.data && calibration.data.settled_decisions > 0 && (
         <div className="card">
-          <h2>Probability Calibration</h2>
+          {/* V4.1 methodology foundation (2026-08-31), Section 12 --
+              read-side terminology fix only, no stored value changed.
+              The underlying number is historical_compatibility.compatible_pct
+              (analytics/options/move_compatibility.py) -- a historical base
+              rate of this company's own past earnings moves against a
+              strategy's breakeven distance, never a calibrated probability
+              of profit. See services/decision_snapshot_freezing.py and
+              the forensic audit's Part I Section 12. */}
+          <h2>Historical Compatibility vs. Realized Outcome</h2>
           <table>
             <thead>
               <tr>
-                <th>Predicted probability</th>
+                <th>Historical Move Compatibility</th>
                 <th>N</th>
                 <th>Realized win rate</th>
               </tr>
@@ -231,8 +351,15 @@ export function BenchmarkTrackRecord() {
             </tbody>
           </table>
           <p className="text-sm text-faint" style={{ marginBottom: 0 }}>
-            Whether the AI's stated probability actually correlates with the real settlement
-            outcome — buckets with very few decisions are not statistically meaningful yet.
+            Whether a company's own historical earnings-move frequency actually correlates with
+            the real settlement outcome — buckets with very few decisions are not statistically
+            meaningful yet.
+          </p>
+          <p className="text-sm text-faint" style={{ marginTop: 4, marginBottom: 0 }}>
+            This is not a calibrated probability of profit. It is a backward-looking base rate:
+            how often this company's own past earnings moves would have cleared a strategy's
+            breakeven distance — never a forecast, and never adjusted for the real Wilson
+            confidence interval also computed elsewhere for this same figure.
           </p>
         </div>
       )}

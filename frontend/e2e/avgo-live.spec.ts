@@ -6,12 +6,31 @@ import { test, expect } from "@playwright/test";
  * CI suite (options-decision-engine.spec.ts): this hits the real dev
  * Docker stack (frontend on :5173, backend on :8000 with a real IBKR
  * connection), matching Part 56's "for local live QA use real IBKR/
- * current DB data." Skipped automatically under CI, and requires the
- * dev Docker containers (see docker compose) to already be running.
+ * current DB data." Requires the dev Docker containers (see docker
+ * compose) to already be running.
+ *
+ * OPT-IN ONLY (V4.5 final wiring). This used to skip on CI alone, which
+ * meant a plain local `npx playwright test` silently ran it against the
+ * real stack. That is not a safe default: this spec's second step clicks
+ * "Generate New Decision", which writes a REAL V3 decision to the live
+ * database and spends live IBKR market-data requests. Run during the
+ * 15:55 ET capture window it would contend with the official job.
+ *
+ * It now runs only when explicitly asked for:
+ *
+ *   RUN_LIVE_QA=1 npx playwright test e2e/avgo-live.spec.ts
+ *
+ * Never enable it in CI, and never inside a pre-capture freeze window.
  */
 test.use({ baseURL: "http://localhost:5173" });
 
-test.skip(!!process.env.CI, "Live IBKR-backed test -- local QA only, never in CI.");
+const LIVE_QA_ENABLED = process.env.RUN_LIVE_QA === "1" && !process.env.CI;
+
+test.skip(
+  !LIVE_QA_ENABLED,
+  "Live IBKR-backed QA test -- writes a real V3 decision to the live database. " +
+    "Opt in explicitly with RUN_LIVE_QA=1, outside any pre-capture freeze window.",
+);
 
 test("AVGO actionable case renders a real recommendation", async ({ page }) => {
   test.slow();

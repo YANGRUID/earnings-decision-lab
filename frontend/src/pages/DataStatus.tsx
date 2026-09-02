@@ -56,9 +56,11 @@ export function DataStatus() {
     embedding_model: embeddingModel,
     evaluation,
     ibkr,
+    tws,
     market_session: marketSession,
     providers,
   } = status.data;
+  const usingTws = tws.configured;
 
   return (
     <div>
@@ -81,18 +83,45 @@ export function DataStatus() {
               {MARKET_SESSION_LABELS[marketSession] ?? marketSession}
             </span>
           </div>
-          <div className="stat">
-            <span className="stat-label">IBKR Gateway</span>
-            <span
-              className={`pill ${ibkr.gateway_reachable && ibkr.authenticated ? "pill-positive" : "pill-negative"}`}
-            >
-              {ibkr.gateway_reachable
-                ? ibkr.authenticated
-                  ? "running & authenticated"
-                  : "running, not authenticated"
-                : "offline"}
-            </span>
-          </div>
+          {usingTws ? (
+            <>
+              <div className="stat">
+                <span className="stat-label">Interactive Brokers</span>
+                <span className="stat-value small">Transport: IB Gateway / TWS API</span>
+              </div>
+              <div className="stat">
+                <span className="stat-label">Connection</span>
+                <span className={`pill ${tws.status_label === "CONNECTED" ? "pill-positive" : "pill-negative"}`}>
+                  {tws.status_label === "CONNECTED"
+                    ? "ready"
+                    : tws.status_label === "AUTH_REQUIRED"
+                      ? "authentication required"
+                      : "unreachable"}
+                </span>
+              </div>
+              <div className="stat">
+                <span className="stat-label">Market data</span>
+                {/* See Settings/Ibkr.tsx for why this is spelled out
+                    rather than shown as a dash. */}
+                <span className="stat-value small">
+                  {tws.market_data_quality ?? "Unknown — awaiting first market-data observation"}
+                </span>
+              </div>
+            </>
+          ) : (
+            <div className="stat">
+              <span className="stat-label">IBKR Gateway</span>
+              <span
+                className={`pill ${ibkr.gateway_reachable && ibkr.authenticated ? "pill-positive" : "pill-negative"}`}
+              >
+                {ibkr.gateway_reachable
+                  ? ibkr.authenticated
+                    ? "running & authenticated"
+                    : "running, not authenticated"
+                  : "offline"}
+              </span>
+            </div>
+          )}
           <div className="stat">
             <span className="stat-label">Manage connection</span>
             <Link to="/settings/ibkr" className="text-sm text-link">

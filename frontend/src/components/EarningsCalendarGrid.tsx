@@ -68,6 +68,16 @@ export function EarningsCalendarGrid() {
     list.push(event);
     eventsByDay.set(day, list);
   }
+  // Largest market cap first within each day, so the MAX_TICKERS_PER_CELL
+  // names actually shown are the most significant ones -- the "+N more"
+  // overflow is the smaller-cap remainder, not an arbitrary API-order cut.
+  for (const list of eventsByDay.values()) {
+    list.sort((a, b) => {
+      const capA = a.market_cap !== null ? Number(a.market_cap) : -Infinity;
+      const capB = b.market_cap !== null ? Number(b.market_cap) : -Infinity;
+      return capB - capA;
+    });
+  }
 
   const totalDays = daysInMonth(cursor.year, cursor.month);
   const leadingBlanks = firstWeekdayOfMonth(cursor.year, cursor.month);

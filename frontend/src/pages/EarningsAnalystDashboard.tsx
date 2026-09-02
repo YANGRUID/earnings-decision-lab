@@ -4,15 +4,21 @@ import { useAsync } from "../hooks/useAsync";
 import { ErrorState, LoadingState } from "../components/StatusStates";
 import { MovePill } from "../components/MovePill";
 import { EarningsCalendarGrid } from "../components/EarningsCalendarGrid";
+import { DashboardV4Header } from "../components/v4/DashboardV4Header";
+import { HistoricalCompatibilityValue } from "../components/HistoricalCompatibility";
+import { TickerSearchBar } from "../components/TickerSearchBar";
+import { HISTORICAL_MOVE_COMPATIBILITY_EXPLANATION } from "../lib/historicalCompatibility";
 import {
   deriveLifecycleStage,
   earningsCountdownLabel,
   LIFECYCLE_LABELS,
+  LIFECYCLE_PILL_CLASS,
   TIMING_LABELS,
 } from "../lib/decisionLifecycle";
-import { formatMoney, formatPlainPercent } from "../lib/format";
+import { formatMoney, formatPlainPercent, formatRelativeTime, providerLabel } from "../lib/format";
 import type {
   DecisionSnapshot,
+  DomainStatus,
   EarningsCalendarEvent,
   EntryCaptureAttempt,
   Rate,
@@ -30,18 +36,27 @@ import type {
 interface DashboardCore {
   events: EarningsCalendarEvent[];
   decisions: DecisionSnapshot[];
-  capturedEntries: EntryCaptureAttempt[];
+  // Post-live correction (2026-08-25): every real entry attempt, not
+  // just captured ones -- a status="captured" filter here silently made
+  // every real FAILED attempt invisible to deriveLifecycleStage, which
+  // is exactly why the Dashboard showed "Pending Entry" for Aug 25's
+  // real entry failures instead of "Entry Failed".
+  entries: EntryCaptureAttempt[];
   capturedSettlements: SettlementCaptureAttempt[];
+  earningsCalendarStatus: DomainStatus | null;
 }
 
 async function fetchDashboardCore(): Promise<DashboardCore> {
-  const [events, decisions, capturedEntries, capturedSettlements] = await Promise.all([
+  const [events, decisions, entries, capturedSettlements, systemStatus] = await Promise.all([
     api.listUpcomingEarnings({ limit: 100 }),
     api.listDecisionSnapshots({ limit: 200 }),
-    api.listBenchmarkEntries({ status: "captured", limit: 200 }),
+    api.listBenchmarkEntries({ limit: 200 }),
     api.listAllSettlements({ status: "captured", limit: 200 }),
+    api.getSystemStatus(),
   ]);
-  return { events, decisions, capturedEntries, capturedSettlements };
+  const earningsCalendarStatus =
+    systemStatus.providers.domains.find((d) => d.domain === "earnings_calendar") ?? null;
+  return { events, decisions, entries, capturedSettlements, earningsCalendarStatus };
 }
 
 /** Best-effort, supplementary market context (implied move / historical
@@ -70,8 +85,9 @@ function decisionStatusBadge(stage: ReturnType<typeof deriveLifecycleStage> | nu
   if (stage === null) {
     return <span className="pill pill-neutral">No AI decision generated yet</span>;
   }
-  const cls = stage === "settled" ? "pill-positive" : stage === "entered" ? "pill-neutral" : "pill-neutral";
-  return <span className={`pill ${cls}`}>{LIFECYCLE_LABELS[stage]}</span>;
+  return (
+    <span className={`pill ${LIFECYCLE_PILL_CLASS[stage]}`}>{LIFECYCLE_LABELS[stage]}</span>
+  );
 }
 
 function UpcomingEarningsCard({
@@ -87,16 +103,23 @@ function UpcomingEarningsCard({
   settlements: SettlementCaptureAttempt[];
   overview: ResearchOverview | undefined;
 }) {
-  const stage = decision ? deriveLifecycleStage(entries, settlements) : null;
+  const stage = decision ? deriveLifecycleStage(entries, settlements, decision) : null;
   const impliedMove = overview?.latest_volatility_snapshot?.implied_move_pct ?? null;
   const historicalMove = overview?.historical_moves?.average_abs_move_pct ?? null;
+  // GET /research/{symbol}/overview always returns 200 (company: null
+  // for a symbol nobody has researched yet, never a 404 -- see api/
+  // routers/research.py::research_overview) -- overview.company is the
+  // real signal for "has this ticker already been searched," not
+  // whether the overview call itself succeeded. Already-researched ->
+  // straight to that company's real workspace; otherwise -> Search,
+  // pre-filled, so preparing it is one click away rather than a re-typed
+  // ticker.
+  const destination = overview?.company
+    ? `/company/${event.symbol}`
+    : `/search?ticker=${event.symbol}`;
 
   return (
-    <Link
-      to={`/earnings-calendar/${event.symbol}`}
-      className="card ticker-card"
-      style={{ display: "block" }}
-    >
+    <Link to={destination} className="card ticker-card" style={{ display: "block" }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
         <div>
           <div className="ticker-card-symbol">{event.symbol}</div>
@@ -150,7 +173,7 @@ function UpcomingEarningsSection({ core }: { core: DashboardCore }) {
     }
   }
   const entriesByDecisionId = new Map<number, EntryCaptureAttempt[]>();
-  for (const e of core.capturedEntries) {
+  for (const e of core.entries) {
     const list = entriesByDecisionId.get(e.decision_snapshot_id) ?? [];
     list.push(e);
     entriesByDecisionId.set(e.decision_snapshot_id, list);
@@ -163,19 +186,35 @@ function UpcomingEarningsSection({ core }: { core: DashboardCore }) {
   }
 
   if (core.events.length === 0) {
+    const activeProvider =
+      core.earningsCalendarStatus?.providers.find(
+        (p) => p.provider === core.earningsCalendarStatus?.primary
+      ) ?? null;
+    const lastSync = activeProvider?.last_success_at ?? null;
     return (
       <div className="card">
         <p className="text-sm text-muted" style={{ margin: 0 }}>
-          No upcoming earnings on the calendar yet — the daily Finnhub sync populates this once
-          it has run (services/scheduler.py::run_earnings_calendar_sync_job).
+          No upcoming earnings found — the daily sync populates this once it has run
+          (services/scheduler.py::run_earnings_calendar_sync_job).
+        </p>
+        <p className="text-sm text-muted" style={{ margin: "0.5rem 0 0" }}>
+          Provider: {providerLabel(core.earningsCalendarStatus?.primary ?? null)}
+          {" · "}
+          Last successful sync: {lastSync ? formatRelativeTime(lastSync) : "never"}
         </p>
       </div>
     );
   }
 
+  const sortedEvents = [...core.events].sort((a, b) => {
+    const capA = a.market_cap !== null ? Number(a.market_cap) : -Infinity;
+    const capB = b.market_cap !== null ? Number(b.market_cap) : -Infinity;
+    return capB - capA;
+  });
+
   return (
     <div className="grid grid-3">
-      {core.events.map((event) => {
+      {sortedEvents.map((event) => {
         const decision = decisionByEventId.get(event.id);
         return (
           <UpcomingEarningsCard
@@ -196,24 +235,38 @@ function UpcomingEarningsSection({ core }: { core: DashboardCore }) {
 // Section B -- AI Decisions
 // --------------------------------------------------------------------------
 
-function riskRewardCell(entry: EntryCaptureAttempt | undefined) {
-  if (!entry || entry.status !== "captured") {
-    return <span className="text-faint">Awaiting entry</span>;
+function riskRewardCell(
+  entry: EntryCaptureAttempt | undefined,
+  stage: ReturnType<typeof deriveLifecycleStage>
+) {
+  if (entry && entry.status === "captured") {
+    return (
+      <span className="mono">
+        Risk {entry.initial_max_risk ? `$${formatMoney(entry.initial_max_risk)}` : "—"}
+        {" · "}
+        {entry.capital_utilization ? `${formatMoney(entry.capital_utilization, 1)}%` : "—"} of
+        capital
+      </span>
+    );
   }
-  return (
-    <span className="mono">
-      Risk {entry.initial_max_risk ? `$${formatMoney(entry.initial_max_risk)}` : "—"}
-      {" · "}
-      {entry.capital_utilization ? `${formatMoney(entry.capital_utilization, 1)}%` : "—"} of
-      capital
-    </span>
-  );
+  if (stage === "no_action") {
+    return <span className="text-faint">No strategy recommended</span>;
+  }
+  if (stage === "entry_failed") {
+    return <span className="text-faint">Entry capture failed</span>;
+  }
+  return <span className="text-faint">Awaiting entry</span>;
 }
 
 function AiDecisionsSection({ core }: { core: DashboardCore }) {
-  const researched = core.decisions.filter((d) => d.strategy_type !== null && d.legs !== null);
+  // Post-live correction (2026-08-25): every real decision, not just
+  // ones with a recommended strategy -- a no-action decision
+  // (strategy_type/legs both null, see services/decision_snapshot_
+  // freezing.py) is a real, honest outcome that used to be silently
+  // dropped from this table entirely.
+  const researched = core.decisions;
   const entriesByDecisionId = new Map<number, EntryCaptureAttempt[]>();
-  for (const e of core.capturedEntries) {
+  for (const e of core.entries) {
     const list = entriesByDecisionId.get(e.decision_snapshot_id) ?? [];
     list.push(e);
     entriesByDecisionId.set(e.decision_snapshot_id, list);
@@ -243,7 +296,7 @@ function AiDecisionsSection({ core }: { core: DashboardCore }) {
             <th>Ticker</th>
             <th>Strategy</th>
             <th>Direction</th>
-            <th>Confidence</th>
+            <th title={HISTORICAL_MOVE_COMPATIBILITY_EXPLANATION}>Hist. Compatibility</th>
             <th>Risk / Reward</th>
             <th>Status</th>
           </tr>
@@ -252,7 +305,7 @@ function AiDecisionsSection({ core }: { core: DashboardCore }) {
           {researched.map((d) => {
             const entries = entriesByDecisionId.get(d.id) ?? [];
             const settlements = settlementsByDecisionId.get(d.id) ?? [];
-            const stage = deriveLifecycleStage(entries, settlements);
+            const stage = deriveLifecycleStage(entries, settlements, d);
             const capturedEntry = entries.find((e) => e.status === "captured");
             return (
               <tr key={d.id}>
@@ -261,16 +314,14 @@ function AiDecisionsSection({ core }: { core: DashboardCore }) {
                     {d.ticker}
                   </Link>
                 </td>
-                <td className="mono">{d.strategy_type}</td>
+                <td className="mono">{d.strategy_type ?? "—"}</td>
                 <td className="mono">{d.strategy_direction}</td>
                 <td className="mono">
-                  {d.estimated_probability ? formatPlainPercent(d.estimated_probability, 0) : "—"}
+                  <HistoricalCompatibilityValue snapshot={d} compact />
                 </td>
-                <td>{riskRewardCell(capturedEntry)}</td>
+                <td>{riskRewardCell(capturedEntry, stage)}</td>
                 <td>
-                  <span
-                    className={`pill ${stage === "settled" ? "pill-positive" : "pill-neutral"}`}
-                  >
+                  <span className={`pill ${LIFECYCLE_PILL_CLASS[stage]}`}>
                     {LIFECYCLE_LABELS[stage]}
                   </span>
                 </td>
@@ -359,22 +410,36 @@ function PerformanceSummarySection() {
 // --------------------------------------------------------------------------
 
 export function EarningsAnalystDashboard() {
+  // V4 consolidation, Section 18 -- the TODAY / V4 / readiness header reads
+  // its own endpoints and renders immediately. Only the V3-era sections
+  // below wait on the (heavier) V3 dashboard core, so a slow control-cohort
+  // query can never blank the primary V4 terminal view.
+  return (
+    <div>
+      <div className="page-header">
+        <h1>Dashboard</h1>
+        <p>
+          Real, prospective forward-test evidence. V4 is the experimental engine under test; V3 is the
+          historical control. Nothing here is estimated or back-filled.
+        </p>
+      </div>
+      <DashboardV4Header />
+      <TickerSearchBar />
+      <V3DashboardSections />
+    </div>
+  );
+}
+
+function V3DashboardSections() {
   const core = useAsync(fetchDashboardCore, []);
 
-  if (core.loading && !core.data) return <LoadingState label="Loading dashboard…" />;
+  if (core.loading && !core.data) return <LoadingState label="Loading V3 control sections…" />;
   if (core.error && !core.data) return <ErrorState message={core.error} />;
   if (!core.data) return null;
 
   return (
-    <div>
-      <div className="page-header">
-        <h1>AI Earnings Analyst Dashboard</h1>
-        <p>
-          Real, verified forward-test data — upcoming earnings, what the AI actually decided, and
-          how the real $2,000 benchmark portfolio has performed. Nothing here is estimated or
-          back-filled.
-        </p>
-      </div>
+    <>
+
 
       <h2 style={{ fontSize: 15, textTransform: "uppercase", letterSpacing: "0.03em" }}>
         Earnings Calendar
@@ -397,6 +462,6 @@ export function EarningsAnalystDashboard() {
         Performance Summary
       </h2>
       <PerformanceSummarySection />
-    </div>
+    </>
   );
 }

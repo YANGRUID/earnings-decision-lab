@@ -251,12 +251,19 @@ tr:hover td {
   color: var(--color-text-muted);
   border: 1px solid var(--color-border);
 }
+.pill-warning {
+  background: var(--color-warning-bg);
+  color: var(--color-warning-text);
+}
 
 .positive {
   color: var(--color-positive);
 }
 .negative {
   color: var(--color-negative);
+}
+.warning {
+  color: var(--color-warning-text);
 }
 
 .notice {
@@ -265,6 +272,24 @@ tr:hover td {
   border-radius: var(--radius);
   padding: 10px 14px;
   font-size: 13px;
+  margin-bottom: 16px;
+}
+.notice-critical {
+  background: var(--color-negative-bg);
+  color: var(--color-negative);
+  border-radius: var(--radius);
+  padding: 10px 14px;
+  font-size: 13px;
+  font-weight: 600;
+  margin-bottom: 16px;
+}
+.notice-success {
+  background: var(--color-positive-bg);
+  color: var(--color-positive);
+  border-radius: var(--radius);
+  padding: 10px 14px;
+  font-size: 13px;
+  font-weight: 600;
   margin-bottom: 16px;
 }
 

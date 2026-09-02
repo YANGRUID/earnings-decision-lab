@@ -3,6 +3,7 @@ import { api } from "../api/client";
 import { useAsync } from "../hooks/useAsync";
 import { ErrorState, LoadingState } from "../components/StatusStates";
 import { MovePill } from "../components/MovePill";
+import { TickerSearchBar } from "../components/TickerSearchBar";
 
 export function HistoricalReplay() {
   const replay = useAsync(() => api.getReplaySummary(), []);
@@ -22,6 +23,8 @@ export function HistoricalReplay() {
           options snapshot exists — never a fabricated options-chain reconstruction.
         </p>
       </div>
+
+      <TickerSearchBar />
 
       <div className="card">
         <h2>Why there's no options-chain replay yet</h2>

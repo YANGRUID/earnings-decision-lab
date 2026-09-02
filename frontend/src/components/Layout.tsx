@@ -7,25 +7,67 @@ const THEME_OPTIONS: { value: ThemePreference; label: string }[] = [
   { value: "system", label: "System" },
 ];
 
-const NAV_ITEMS = [
-  // The homepage -- points at the real index route "/" (not "/dashboard")
-  // so this link shows "active" for whichever of the two equivalent URLs
-  // the user is actually on; "/dashboard" is still a real, directly
-  // addressable route (see App.tsx), just not the one this nav link uses.
-  { to: "/", label: "Dashboard", end: true },
-  { to: "/search", label: "Search", end: true },
+// V4 product consolidation (2026-09-02) -- information architecture.
+//
+// The product is now V4-first: the decision engine and its forward test are
+// the primary surfaces, and V3 is retained as the historical control cohort
+// rather than as the headline product. Nothing was deleted -- every V3 and
+// legacy surface below still resolves to the same route it always did, it
+// simply no longer competes with V4 for the top of the navigation.
+//
+// Every entry here points at a route that actually exists in App.tsx.
+
+type NavItem = { to: string; label: string; end?: boolean };
+
+const HOME_NAV_ITEMS: NavItem[] = [{ to: "/", label: "Dashboard", end: true }];
+
+const RESEARCH_NAV_ITEMS: NavItem[] = [
+  { to: "/search", label: "Company Search", end: true },
   { to: "/research", label: "AI Research" },
-  { to: "/historical-replay", label: "Cross-Company Replay" },
-  { to: "/track-record", label: "AI Track Record" },
-  { to: "/benchmark-track-record", label: "Benchmark Track Record" },
 ];
 
-const SETTINGS_NAV_ITEMS = [
+// The decision engine is the product. V4 leads.
+const DECISION_NAV_ITEMS: NavItem[] = [
+  { to: "/v4-decision-lab", label: "V4 Decision Lab" },
+  { to: "/candidate-explorer", label: "Candidate Explorer" },
+  { to: "/same-event-comparison", label: "Same-Event Comparison" },
+];
+
+// V4 forward evidence first, V3 control second -- the ordering is the
+// claim: V4 is what we are testing, V3 is what we are testing against.
+const PERFORMANCE_NAV_ITEMS: NavItem[] = [
+  { to: "/v4-shadow-track-record", label: "V4 Forward Track Record" },
+  { to: "/benchmark-track-record", label: "V3 Control Track Record" },
+];
+
+const OPERATIONS_NAV_ITEMS: NavItem[] = [{ to: "/operations", label: "Live Operations" }];
+
+const SETTINGS_NAV_ITEMS: NavItem[] = [
   { to: "/settings/providers", label: "Data Providers" },
   { to: "/settings/ai-provider", label: "AI Provider" },
-  { to: "/settings/ibkr", label: "IBKR" },
+  { to: "/settings/ibkr", label: "IBKR / TWS" },
   { to: "/settings/usage", label: "API Usage" },
   { to: "/system-status", label: "System Status" },
+];
+
+// Retained, not removed. These remain fully reachable and their data
+// remains auditable -- they are simply no longer part of the primary
+// workflow. "AI Decision Journal" is the old on-demand AIDecisionVersion
+// history; it is explicitly NOT the official forward test, and keeping it
+// under this heading is what stops the two being confused.
+const LEGACY_NAV_ITEMS: NavItem[] = [
+  { to: "/track-record", label: "AI Decision Journal" },
+  { to: "/historical-replay", label: "Cross-Company Replay" },
+];
+
+const NAV_SECTIONS: { heading: string | null; items: NavItem[] }[] = [
+  { heading: null, items: HOME_NAV_ITEMS },
+  { heading: "Research", items: RESEARCH_NAV_ITEMS },
+  { heading: "Decision Engine", items: DECISION_NAV_ITEMS },
+  { heading: "Performance", items: PERFORMANCE_NAV_ITEMS },
+  { heading: "Operations", items: OPERATIONS_NAV_ITEMS },
+  { heading: "Settings", items: SETTINGS_NAV_ITEMS },
+  { heading: "Legacy / Control", items: LEGACY_NAV_ITEMS },
 ];
 
 export function Layout() {
@@ -37,30 +79,25 @@ export function Layout() {
           Earnings Decision Lab
           <small>Research &amp; analytics</small>
         </div>
-        <nav className="sidebar-nav">
-          {NAV_ITEMS.map((item) => (
-            <NavLink
-              key={item.to}
-              to={item.to}
-              end={item.end}
-              className={({ isActive }) => (isActive ? "active" : "")}
-            >
-              {item.label}
-            </NavLink>
-          ))}
-        </nav>
-        <div className="sidebar-nav-heading">Settings</div>
-        <nav className="sidebar-nav">
-          {SETTINGS_NAV_ITEMS.map((item) => (
-            <NavLink
-              key={item.to}
-              to={item.to}
-              className={({ isActive }) => (isActive ? "active" : "")}
-            >
-              {item.label}
-            </NavLink>
-          ))}
-        </nav>
+        {NAV_SECTIONS.map((section) => (
+          <div key={section.heading ?? "home"}>
+            {section.heading && (
+              <div className="sidebar-nav-heading">{section.heading}</div>
+            )}
+            <nav className="sidebar-nav">
+              {section.items.map((item) => (
+                <NavLink
+                  key={item.to}
+                  to={item.to}
+                  end={item.end}
+                  className={({ isActive }) => (isActive ? "active" : "")}
+                >
+                  {item.label}
+                </NavLink>
+              ))}
+            </nav>
+          </div>
+        ))}
         <div style={{ flex: 1 }} />
         <div className="sidebar-nav-heading">Theme</div>
         <div className="theme-toggle">

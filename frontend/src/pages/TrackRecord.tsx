@@ -1,8 +1,24 @@
 import { useState } from "react";
+import { Link } from "react-router-dom";
 import { api, ApiError } from "../api/client";
 import { useAsync } from "../hooks/useAsync";
 import { ErrorState, LoadingState } from "../components/StatusStates";
-import type { DecisionDirection, Rate } from "../types/api";
+import { HistoricalCompatibilityValue } from "../components/HistoricalCompatibility";
+import {
+  deriveLifecycleStage,
+  LIFECYCLE_LABELS,
+  LIFECYCLE_PILL_CLASS,
+  TIMING_LABELS,
+} from "../lib/decisionLifecycle";
+import { HISTORICAL_MOVE_COMPATIBILITY_EXPLANATION } from "../lib/historicalCompatibility";
+import type {
+  DecisionDirection,
+  DecisionSnapshot,
+  EarningsCalendarEvent,
+  EntryCaptureAttempt,
+  Rate,
+  SettlementCaptureAttempt,
+} from "../types/api";
 
 const DIRECTION_LABELS: Record<DecisionDirection, string> = {
   strong_bullish: "Strongly Bullish",
@@ -113,6 +129,303 @@ function RateRow({ label, rate }: { label: string; rate: Rate }) {
   );
 }
 
+// --------------------------------------------------------------------------
+// Post-live correction (2026-08-25) -- Section 4: this page was entirely
+// backed by the legacy AIDecisionVersion journal (services/track_
+// record.py, GET /research/track-record) and had no idea the real,
+// official forward-test DecisionSnapshot pipeline (Phase 4) even
+// existed -- Aug 25's 8 real DecisionSnapshots were invisible here. This
+// section reads that pipeline's own already-existing, read-only
+// endpoints (GET /decision-snapshots, GET /benchmark/entries, GET
+// /settlements) -- the same ones the Dashboard and Operations already
+// use -- never a new write path, never merged with the legacy journal
+// below it. No fabricated performance metric: this is a real, honest
+// archive of what was decided/entered/settled, not a win-rate claim --
+// see BenchmarkTrackRecord.tsx for real performance metrics, which
+// still require real settlement.
+// --------------------------------------------------------------------------
+
+async function fetchOfficialArchive() {
+  const [decisions, entries, settlements, events] = await Promise.all([
+    api.listDecisionSnapshots({ limit: 200 }),
+    api.listBenchmarkEntries({ limit: 200 }),
+    api.listAllSettlements({ status: "captured", limit: 200 }),
+    // Best-effort: only covers events still status=UPCOMING (no bulk
+    // "by id, any status" endpoint exists) -- a genuinely archived event
+    // falls back to "—" below rather than failing the whole page.
+    api.listUpcomingEarnings({ limit: 200 }),
+  ]);
+  return { decisions, entries, settlements, events };
+}
+
+function OfficialDecisionArchive() {
+  const archive = useAsync(fetchOfficialArchive, []);
+
+  if (archive.loading && !archive.data) return <LoadingState label="Loading official archive…" />;
+  if (archive.error && !archive.data) return <ErrorState message={archive.error} />;
+  if (!archive.data) return null;
+
+  const { decisions, entries, settlements, events } = archive.data;
+
+  const eventById = new Map(events.map((e) => [e.id, e]));
+  const entriesByDecisionId = new Map<number, EntryCaptureAttempt[]>();
+  for (const e of entries) {
+    const list = entriesByDecisionId.get(e.decision_snapshot_id) ?? [];
+    list.push(e);
+    entriesByDecisionId.set(e.decision_snapshot_id, list);
+  }
+  const settlementsByDecisionId = new Map<number, SettlementCaptureAttempt[]>();
+  for (const s of settlements) {
+    const list = settlementsByDecisionId.get(s.decision_snapshot_id) ?? [];
+    list.push(s);
+    settlementsByDecisionId.set(s.decision_snapshot_id, list);
+  }
+
+  const sorted = [...decisions].sort((a, b) => b.generated_at.localeCompare(a.generated_at));
+
+  return (
+    <div className="card">
+      <h2>Official Forward-Test Decision Archive</h2>
+      <p className="text-sm text-muted" style={{ marginTop: 0 }}>
+        Every real, immutable DecisionSnapshot frozen by the official scheduled pipeline —
+        distinct from the on-demand journal below. No settlement, no outcome metric: real
+        performance requires a real, captured post-earnings exit (see Benchmark Track Record).
+      </p>
+      {sorted.length === 0 ? (
+        <p className="text-sm text-faint" style={{ marginBottom: 0 }}>
+          No official decisions have been generated yet.
+        </p>
+      ) : (
+        <table>
+          <thead>
+            <tr>
+              <th>Ticker</th>
+              <th>Earnings</th>
+              <th>Generated</th>
+              <th>Direction</th>
+              <th>Strategy</th>
+              <th>Expiration</th>
+              <th title={HISTORICAL_MOVE_COMPATIBILITY_EXPLANATION}>Hist. Compatibility</th>
+              <th>Score</th>
+              <th>Entry</th>
+              <th>Settlement</th>
+              <th>Data Quality</th>
+            </tr>
+          </thead>
+          <tbody>
+            {sorted.map((d) => (
+              <ArchiveRow
+                key={d.id}
+                decision={d}
+                entries={entriesByDecisionId.get(d.id) ?? []}
+                settlements={settlementsByDecisionId.get(d.id) ?? []}
+                event={eventById.get(d.earnings_calendar_event_id)}
+              />
+            ))}
+          </tbody>
+        </table>
+      )}
+    </div>
+  );
+}
+
+// --------------------------------------------------------------------------
+// Phase 4 market-data-quality hardening (2026-08-26), Section 17 -- a
+// real, honest label per row, never invisibly combining a delayed
+// capture with a live one. Prefers the most recent settlement's label
+// (the fuller, later picture) when one exists, else the entry's.
+// --------------------------------------------------------------------------
+
+const QUALITY_PILL_CLASS: Record<string, string> = {
+  VERIFIED_LIVE: "pill-positive",
+  DELAYED_DATA: "pill-warning",
+  UNKNOWN_QUALITY: "pill-neutral",
+};
+
+const QUALITY_LABEL_TEXT: Record<string, string> = {
+  VERIFIED_LIVE: "Verified Live",
+  DELAYED_DATA: "Delayed Data",
+  UNKNOWN_QUALITY: "Unknown Quality",
+};
+
+function DataQualityPill({
+  entries,
+  settlements,
+}: {
+  entries: EntryCaptureAttempt[];
+  settlements: SettlementCaptureAttempt[];
+}) {
+  const source = settlements.length > 0 ? settlements[settlements.length - 1] : entries[entries.length - 1];
+  if (!source) return <span className="text-faint text-sm">—</span>;
+  const label = source.market_data_quality_label;
+  return (
+    <span
+      className={`pill ${QUALITY_PILL_CLASS[label] ?? "pill-neutral"}`}
+      title="Real, per-capture market-data quality — never invisibly combined across a live and a delayed capture."
+    >
+      {QUALITY_LABEL_TEXT[label] ?? label}
+    </span>
+  );
+}
+
+// --------------------------------------------------------------------------
+// Phase 4 quote-observability hardening (2026-08-26), Section 13 --
+// expandable quote-acquisition diagnostics attached to the row's own
+// entry/settlement attempt, fetched only once expanded (never on every
+// row's mount). Mirrors Operations.tsx's PipelineRow expand pattern.
+// --------------------------------------------------------------------------
+
+function ArchiveRow({
+  decision,
+  entries,
+  settlements,
+  event,
+}: {
+  decision: DecisionSnapshot;
+  entries: EntryCaptureAttempt[];
+  settlements: SettlementCaptureAttempt[];
+  event: EarningsCalendarEvent | undefined;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const stage = deriveLifecycleStage(entries, settlements, decision);
+  const failedEntry = [...entries].reverse().find((e) => e.status === "failed");
+  const failedSettlement = [...settlements].reverse().find((s) => s.status === "failed");
+  const diagnosticAttempt = failedEntry ?? failedSettlement;
+  const clickable = diagnosticAttempt !== undefined;
+
+  return (
+    <>
+      <tr
+        onClick={clickable ? () => setExpanded((e) => !e) : undefined}
+        style={clickable ? { cursor: "pointer" } : undefined}
+      >
+        <td className="mono">
+          <Link
+            to={`/company/${decision.ticker}`}
+            className="text-link"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {decision.ticker}
+          </Link>
+        </td>
+        <td className="text-sm mono">
+          {event
+            ? `${new Date(`${event.earnings_date}T00:00:00`).toLocaleDateString(undefined, { month: "short", day: "numeric" })} ${TIMING_LABELS[event.earnings_time]}`
+            : "—"}
+        </td>
+        <td className="text-sm mono">
+          {new Date(decision.generated_at).toLocaleDateString(undefined, {
+            month: "short",
+            day: "numeric",
+          })}
+        </td>
+        <td className="mono">{decision.strategy_direction}</td>
+        <td className="mono">{decision.strategy_type ?? "No action"}</td>
+        <td className="mono">{decision.selected_expiration ?? "—"}</td>
+        <td className="mono">
+          <HistoricalCompatibilityValue snapshot={decision} compact />
+        </td>
+        <td className="mono">{decision.strategy_score !== null ? decision.strategy_score : "—"}</td>
+        <td>
+          <span className={`pill ${LIFECYCLE_PILL_CLASS[stage]}`}>{LIFECYCLE_LABELS[stage]}</span>
+          {clickable && (
+            <span className="text-faint text-sm" style={{ marginLeft: 6 }}>
+              {expanded ? "▾" : "▸"} diagnostics
+            </span>
+          )}
+        </td>
+        <td className="text-sm">
+          {settlements.some((s) => s.status === "captured") ? "Settled" : "—"}
+        </td>
+        <td>
+          <DataQualityPill entries={entries} settlements={settlements} />
+        </td>
+      </tr>
+      {expanded && diagnosticAttempt && (
+        <tr>
+          <td colSpan={11} style={{ background: "var(--color-bg)" }}>
+            <QuoteDiagnosticsPanel
+              ticker={decision.ticker}
+              entryCaptureAttemptId={failedEntry?.id}
+              settlementCaptureAttemptId={failedEntry ? undefined : failedSettlement?.id}
+            />
+          </td>
+        </tr>
+      )}
+    </>
+  );
+}
+
+function QuoteDiagnosticsPanel({
+  ticker,
+  entryCaptureAttemptId,
+  settlementCaptureAttemptId,
+}: {
+  ticker: string;
+  entryCaptureAttemptId: number | undefined;
+  settlementCaptureAttemptId: number | undefined;
+}) {
+  const diagnostics = useAsync(() => {
+    if (entryCaptureAttemptId !== undefined) {
+      return api.getEntryQuoteDiagnostics(entryCaptureAttemptId);
+    }
+    if (settlementCaptureAttemptId !== undefined) {
+      return api.getSettlementQuoteDiagnostics(settlementCaptureAttemptId);
+    }
+    return Promise.reject(new Error("no capture attempt id"));
+  }, [entryCaptureAttemptId, settlementCaptureAttemptId]);
+
+  if (diagnostics.loading && !diagnostics.data) {
+    return (
+      <div className="text-sm text-muted" style={{ padding: "8px 4px" }}>
+        Loading quote diagnostics…
+      </div>
+    );
+  }
+  if (diagnostics.error || !diagnostics.data) {
+    return (
+      <div className="text-sm text-muted" style={{ padding: "8px 4px" }}>
+        No quote-acquisition telemetry on record for this attempt — likely a legacy capture
+        predating this diagnostic table.
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ padding: "8px 4px" }}>
+      <div className="text-sm text-muted mono" style={{ marginBottom: 6 }}>
+        {ticker} · ENTRY QUOTE DIAGNOSTICS
+      </div>
+      {diagnostics.data.legs.map((leg, i) => (
+        <div key={i} style={{ marginBottom: 10 }}>
+          <div className="text-sm mono" style={{ marginBottom: 2 }}>
+            Leg {leg.leg_index ?? "—"} · {leg.option_type?.toUpperCase() ?? "—"}{" "}
+            {leg.strike ?? "—"}
+          </div>
+          <div className="text-sm text-muted" style={{ marginBottom: 4 }}>
+            Required executable side: {leg.required_side.toUpperCase()} · Contract resolved:{" "}
+            {leg.contract_resolved ? "yes" : "no"}
+          </div>
+          {leg.attempts.map((a) => (
+            <div
+              key={a.snapshot_attempt_number}
+              className="text-sm mono text-faint"
+              style={{ paddingLeft: 12 }}
+            >
+              Attempt {a.snapshot_attempt_number} — elapsed: {a.elapsed_ms}ms · bid:{" "}
+              {a.bid ?? "—"} · ask: {a.ask ?? "—"} · last: {a.last_price ?? "—"}
+              {a.market_data_quality ? ` · quality: ${a.market_data_quality}` : ""}
+            </div>
+          ))}
+          <div className="text-sm" style={{ marginTop: 4, fontWeight: 600 }}>
+            Result: {leg.result_label}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 export function TrackRecord() {
   const [window, setWindow] = useState<"all_time" | "last_10">("all_time");
   const [ticker, setTicker] = useState("");
@@ -137,6 +450,17 @@ export function TrackRecord() {
           future profitability. Some older decisions lack real point-in-time options pricing, so
           strategy-level P&amp;L statistics are only ever shown when valid option snapshots were
           actually captured — never estimated.
+        </p>
+      </div>
+
+      <OfficialDecisionArchive />
+
+      <div className="page-header" style={{ marginTop: 24 }}>
+        <h1 style={{ fontSize: 18 }}>On-Demand / Legacy Analysis</h1>
+        <p>
+          The original AI Options Decision journal — decisions you generate and finalize manually
+          from the Search page, graded against real settled outcomes below. A separate system from
+          the official archive above; nothing here is ever merged into or overwritten by it.
         </p>
       </div>
 

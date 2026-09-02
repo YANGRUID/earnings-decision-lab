@@ -47,8 +47,32 @@ function ibkrStatus(overrides: Record<string, unknown> = {}) {
   };
 }
 
-async function mockSystemStatus(route: Route, ibkr: Record<string, unknown>) {
-  await route.fulfill({ json: { ...BASE_SYSTEM_STATUS, ibkr } });
+// IBKR TWS Migration, Phase 3 readiness (Section 41) -- the TWS-transport
+// sibling of ibkrStatus above (that one, the existing Web/Client-Portal-
+// Gateway fixture, is unchanged). configured: false by default -- every
+// existing test in this file that doesn't pass a tws override keeps
+// getting the exact same "Web is active" shape it always has.
+function twsStatus(overrides: Record<string, unknown> = {}) {
+  return {
+    configured: false,
+    gateway_reachable: false,
+    socket_connected: false,
+    api_ready: false,
+    market_data_quality: null,
+    error: null,
+    status_label: "NOT_CONFIGURED",
+    last_heartbeat: null,
+    reconnect_state: "disconnected",
+    ...overrides,
+  };
+}
+
+async function mockSystemStatus(
+  route: Route,
+  ibkr: Record<string, unknown>,
+  tws: Record<string, unknown> = twsStatus()
+) {
+  await route.fulfill({ json: { ...BASE_SYSTEM_STATUS, ibkr, tws } });
 }
 
 test.describe("Settings -> Interactive Brokers", () => {
@@ -162,5 +186,127 @@ test.describe("Settings -> Interactive Brokers", () => {
 
     await expect.poll(() => callCount).toBeGreaterThan(callsAfterLoad);
     await expect(page.getByText("⚪ Gateway Offline")).toBeVisible();
+  });
+});
+
+// --------------------------------------------------------------------------
+// IBKR TWS Migration, Phase 3 readiness (Section 41) -- provider-aware
+// rendering when ibkr_provider=tws is configured. Every backend response
+// here is a hand-labeled fixture, exactly like the Web suite above --
+// this suite never talks to a real IB Gateway either.
+// --------------------------------------------------------------------------
+
+test.describe("Settings -> Interactive Brokers (TWS transport)", () => {
+  test("TWS READY: no Connect IBKR button, shows provider and market data quality", async ({
+    page,
+  }) => {
+    await page.route("**/system-status", (route) =>
+      mockSystemStatus(
+        route,
+        ibkrStatus(),
+        twsStatus({
+          configured: true,
+          gateway_reachable: true,
+          socket_connected: true,
+          api_ready: true,
+          market_data_quality: "delayed",
+          status_label: "CONNECTED",
+          reconnect_state: "ready",
+        })
+      )
+    );
+
+    await page.goto("/settings/ibkr");
+
+    await expect(page.getByText("🟢 Ready")).toBeVisible();
+    await expect(page.getByText("Provider: IB Gateway / TWS API")).toBeVisible();
+    await expect(page.getByText("delayed")).toBeVisible();
+    await expect(page.getByRole("button", { name: "Connect IBKR" })).not.toBeVisible();
+    await expect(page.getByText("https://localhost:5001")).not.toBeVisible();
+  });
+
+  test("TWS AUTH REQUIRED: shows manual IB Gateway login instructions, no browser-login button", async ({
+    page,
+  }) => {
+    await page.route("**/system-status", (route) =>
+      mockSystemStatus(
+        route,
+        ibkrStatus(),
+        twsStatus({
+          configured: true,
+          gateway_reachable: true,
+          socket_connected: true,
+          api_ready: false,
+          status_label: "AUTH_REQUIRED",
+          reconnect_state: "connected",
+        })
+      )
+    );
+
+    await page.goto("/settings/ibkr");
+
+    await expect(page.getByText("🔴 Authentication required")).toBeVisible();
+    await expect(page.getByText("IB Gateway login required.")).toBeVisible();
+    await expect(page.getByText("Open IB Gateway on this Mac")).toBeVisible();
+    await expect(page.getByRole("button", { name: "Connect IBKR" })).not.toBeVisible();
+  });
+
+  test("TWS DISCONNECTED: gateway unreachable renders as Disconnected", async ({ page }) => {
+    await page.route("**/system-status", (route) =>
+      mockSystemStatus(
+        route,
+        ibkrStatus(),
+        twsStatus({
+          configured: true,
+          gateway_reachable: false,
+          socket_connected: false,
+          api_ready: false,
+          status_label: "GATEWAY_UNREACHABLE",
+          error: "could not reach IB Gateway/TWS",
+          reconnect_state: "disconnected",
+        })
+      )
+    );
+
+    await page.goto("/settings/ibkr");
+
+    await expect(page.getByText("⚪ Disconnected")).toBeVisible();
+    await expect(page.getByText("could not reach IB Gateway/TWS")).toBeVisible();
+  });
+
+  test("TWS RECONNECTING: shown as its own distinct state, not lumped into offline", async ({
+    page,
+  }) => {
+    await page.route("**/system-status", (route) =>
+      mockSystemStatus(
+        route,
+        ibkrStatus(),
+        twsStatus({
+          configured: true,
+          gateway_reachable: true,
+          socket_connected: false,
+          api_ready: false,
+          status_label: "GATEWAY_UNREACHABLE",
+          reconnect_state: "reconnecting",
+        })
+      )
+    );
+
+    await page.goto("/settings/ibkr");
+
+    await expect(page.getByText("🟡 Reconnecting")).toBeVisible();
+  });
+
+  test("Web rollback: with tws not configured, the Web card and Connect IBKR still render unchanged", async ({
+    page,
+  }) => {
+    await page.route("**/system-status", (route) => mockSystemStatus(route, ibkrStatus()));
+
+    await page.goto("/settings/ibkr");
+
+    await expect(page.getByText("🟢 Connected")).toBeVisible();
+    await expect(page.getByText("IBKR: CONNECTED")).toBeVisible();
+    await expect(page.getByRole("button", { name: "Connect IBKR" })).toBeVisible();
+    await expect(page.getByText("Provider: IB Gateway / TWS API")).not.toBeVisible();
   });
 });

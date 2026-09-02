@@ -33,6 +33,8 @@ export function formatPlainPercent(value: string | null, digits = 1): string {
 export const PROVIDER_LABELS: Record<string, string> = {
   tiingo: "Tiingo",
   alpha_vantage: "Alpha Vantage",
+  earningsapi: "EarningsAPI",
+  finnhub: "Finnhub",
   sec_edgar: "SEC EDGAR",
   ibkr: "Interactive Brokers",
   deepseek: "DeepSeek",
@@ -62,6 +64,7 @@ export const CREDENTIAL_PROVIDERS = [
 export const DOMAIN_LABELS: Record<string, string> = {
   price_history: "Market Price Data",
   earnings_estimates: "Earnings Estimates",
+  earnings_calendar: "Earnings Calendar",
   filings: "SEC Filings",
   options: "Options Data",
   llm: "AI / LLM",

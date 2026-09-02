@@ -2,13 +2,16 @@ import { useParams } from "react-router-dom";
 import { api } from "../api/client";
 import { useAsync } from "../hooks/useAsync";
 import { ErrorState, LoadingState } from "../components/StatusStates";
+import { HistoricalCompatibilityValue } from "../components/HistoricalCompatibility";
+import { HISTORICAL_MOVE_COMPATIBILITY_LABEL } from "../lib/historicalCompatibility";
 import {
   deriveLifecycleStage,
   earningsCountdownLabel,
   LIFECYCLE_LABELS,
+  LIFECYCLE_PILL_CLASS,
   TIMING_LABELS,
 } from "../lib/decisionLifecycle";
-import { formatMoney, formatPlainPercent } from "../lib/format";
+import { formatMoney } from "../lib/format";
 import type {
   AIThesisVersion,
   DecisionSnapshot,
@@ -287,7 +290,7 @@ export function EarningsCalendarDetail() {
     );
   }
 
-  const stage = decision ? deriveLifecycleStage(entries, settlements) : null;
+  const stage = decision ? deriveLifecycleStage(entries, settlements, decision) : null;
 
   return (
     <div>
@@ -339,7 +342,7 @@ export function EarningsCalendarDetail() {
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
               <h2 style={{ margin: 0 }}>AI Recommendation</h2>
               {stage && (
-                <span className={`pill ${stage === "settled" ? "pill-positive" : "pill-neutral"}`}>
+                <span className={`pill ${LIFECYCLE_PILL_CLASS[stage]}`}>
                   {LIFECYCLE_LABELS[stage]}
                 </span>
               )}
@@ -354,11 +357,9 @@ export function EarningsCalendarDetail() {
                 <span className="stat-value small">{decision.strategy_direction}</span>
               </div>
               <div className="stat">
-                <span className="stat-label">Probability</span>
+                <span className="stat-label">{HISTORICAL_MOVE_COMPATIBILITY_LABEL}</span>
                 <span className="stat-value small">
-                  {decision.estimated_probability
-                    ? formatPlainPercent(decision.estimated_probability, 0)
-                    : "Not available"}
+                  <HistoricalCompatibilityValue snapshot={decision} />
                 </span>
               </div>
             </div>

@@ -4,7 +4,7 @@ import { api, ApiError } from "../api/client";
 import { useAsync } from "../hooks/useAsync";
 import { Markdown } from "../components/Markdown";
 import { dataStateLabel, formatRelativeTime, providerLabel } from "../lib/format";
-import type { AIResearchHistoryItem, ResearchOverview } from "../types/api";
+import type { AIResearchHistoryItem, ResearchOverview, ResearchQueryResponse } from "../types/api";
 
 const DEFAULT_EXAMPLE_QUESTIONS = [
   "What were MU's last two earnings results?",
@@ -298,6 +298,53 @@ function AnswerPanel({ item }: { item: AIResearchHistoryItem }) {
   );
 }
 
+// Part A11 -- an honest state instead of ever rendering AnswerPanel with
+// nothing real behind it. Only "completed" and "insufficient_evidence"
+// carry a real, persisted answer (see ask() below); every other status
+// gets its own plain, honest notice instead.
+// V4 consolidation, Section 42 -- a live "Preparing research for X…"
+// state with queue position and current stage, read from the real
+// preparation-progress endpoint, instead of a generic not-ready notice.
+function PreparingNotice({ tickers }: { tickers: string }) {
+  const progress = useAsync(() => api.getOperationsPreparationProgress(), []);
+  const p = progress.data;
+  const working = p?.current_symbol && tickers.includes(p.current_symbol);
+  return (
+    <div className="notice" data-testid="research-preparing">
+      <strong>Preparing research for {tickers || "this company"}…</strong>{" "}
+      {p ? (
+        working ? (
+          <>Current stage: {p.current_stage ?? "starting"}{p.step_index != null && p.step_total != null ? ` (${p.step_index}/${p.step_total})` : ""}.</>
+        ) : (
+          <>Queued — {p.queue_depth} job{p.queue_depth === 1 ? "" : "s"} ahead in the preparation queue{p.worker_active ? "" : "; worker is idle"}.</>
+        )
+      ) : (
+        <>Queued for preparation.</>
+      )}{" "}
+      It runs automatically; ask again in a few minutes.
+    </div>
+  );
+}
+
+function StatusNoticePanel({ notice }: { notice: ResearchQueryResponse }) {
+  if (notice.status === "preparing") {
+    const tickers = notice.preparing.map((p) => p.ticker).join(", ");
+    return <PreparingNotice tickers={tickers} />;
+  }
+  if (notice.status === "company_not_found") {
+    const tickers = notice.unresolved_tickers.join(", ");
+    return (
+      <div className="notice">
+        {tickers || "That ticker"} doesn't look like a real, SEC-listed company.
+      </div>
+    );
+  }
+  if (notice.status === "research_failed") {
+    return <div className="notice">Research preparation failed for this company.</div>;
+  }
+  return null;
+}
+
 export function Research() {
   const [searchParams] = useSearchParams();
   const contextTicker = searchParams.get("ticker")?.toUpperCase() ?? null;
@@ -310,6 +357,7 @@ export function Research() {
     : DEFAULT_EXAMPLE_QUESTIONS;
   const [question, setQuestion] = useState(contextTicker ? `About ${contextTicker}: ` : "");
   const [activeItem, setActiveItem] = useState<AIResearchHistoryItem | null>(null);
+  const [statusNotice, setStatusNotice] = useState<ResearchQueryResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [historyKey, setHistoryKey] = useState(0);
@@ -318,17 +366,27 @@ export function Research() {
     if (!q.trim()) return;
     setLoading(true);
     setError(null);
+    setStatusNotice(null);
     try {
-      await api.researchQuery(q, contextTicker ?? undefined);
-      // Re-fetch the row that was just persisted -- the active-answer panel
-      // always renders a real AIResearchHistoryItem, whether it was just
-      // generated or restored from history, so the two paths never drift.
-      const items = await api.getResearchHistory({
-        ticker: contextTicker ?? undefined,
-        limit: 1,
-      });
-      if (items[0]) setActiveItem(items[0]);
-      setHistoryKey((k) => k + 1);
+      const response = await api.researchQuery(q, contextTicker ?? undefined);
+      if (response.status === "completed" || response.status === "insufficient_evidence") {
+        // Re-fetch the row that was just persisted -- the active-answer
+        // panel always renders a real AIResearchHistoryItem, whether it
+        // was just generated or restored from history, so the two paths
+        // never drift.
+        const items = await api.getResearchHistory({
+          ticker: contextTicker ?? undefined,
+          limit: 1,
+        });
+        if (items[0]) setActiveItem(items[0]);
+        setHistoryKey((k) => k + 1);
+      } else {
+        // preparing / company_not_found / research_failed -- nothing was
+        // persisted (see api/routers/research.py::research_query), so
+        // there's no history row to show; only the honest status notice.
+        setActiveItem(null);
+        setStatusNotice(response);
+      }
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "The research query failed.");
     } finally {
@@ -383,6 +441,7 @@ export function Research() {
       </div>
 
       {error && <div className="notice">{error}</div>}
+      {statusNotice && <StatusNoticePanel notice={statusNotice} />}
 
       <HistoryPanel
         key={historyKey}

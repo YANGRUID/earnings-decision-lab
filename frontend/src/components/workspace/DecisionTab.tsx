@@ -2,7 +2,14 @@ import { useEffect, useState } from "react";
 import { api, ApiError } from "../../api/client";
 import { useAsync } from "../../hooks/useAsync";
 import { ErrorState, LoadingState } from "../StatusStates";
+import { HistoricalCompatibilityValue } from "../HistoricalCompatibility";
 import { Markdown } from "../Markdown";
+import { HISTORICAL_MOVE_COMPATIBILITY_LABEL } from "../../lib/historicalCompatibility";
+import {
+  deriveLifecycleStage,
+  LIFECYCLE_LABELS,
+  LIFECYCLE_PILL_CLASS,
+} from "../../lib/decisionLifecycle";
 import { formatMoney, formatPlainPercent, providerLabel } from "../../lib/format";
 import type {
   AIDecisionVersion,
@@ -256,15 +263,24 @@ function ProbabilityCard({
           <tr>
             <td>Estimated Probability</td>
             <td className="mono">
-              {estimatedProbability
-                ? `${formatPlainPercent(estimatedProbability.probability)} (Empirical earnings ` +
-                  `distribution${estimatedProbability.low_sample_confidence ? ", Low sample confidence" : ""})` +
-                  (estimatedProbability.wilson_lower !== null && estimatedProbability.wilson_upper !== null
-                    ? ` — 95% CI [${formatPlainPercent(estimatedProbability.wilson_lower)}, ${formatPlainPercent(
-                        estimatedProbability.wilson_upper
-                      )}]`
-                    : "")
-                : "Not available"}
+              {estimatedProbability ? (
+                <>
+                  {formatPlainPercent(estimatedProbability.probability)} (Empirical earnings
+                  distribution)
+                  {estimatedProbability.wilson_lower !== null &&
+                    estimatedProbability.wilson_upper !== null &&
+                    ` — 95% CI [${formatPlainPercent(estimatedProbability.wilson_lower)}, ${formatPlainPercent(
+                      estimatedProbability.wilson_upper
+                    )}]`}
+                  {estimatedProbability.low_sample_confidence && (
+                    <div className="pill pill-warning" style={{ marginTop: 4 }}>
+                      LOW SAMPLE — NOT A CALIBRATED PROFIT PROBABILITY
+                    </div>
+                  )}
+                </>
+              ) : (
+                "Not available"
+              )}
             </td>
           </tr>
           <tr>
@@ -644,6 +660,253 @@ function MarketDataHeader({ ticker }: { ticker: string }) {
   );
 }
 
+// --------------------------------------------------------------------------
+// Post-live correction (2026-08-25) -- Section 3: this tab used to show
+// only the legacy, on-demand AIDecisionVersion journal below, so a
+// ticker with a real, official DecisionSnapshot from the scheduled
+// forward-test pipeline (e.g. INTU on Aug 25) still read "No decisions
+// generated yet" -- the official record existed the whole time, this
+// tab just never looked at it. Read-only: GET /decision-snapshots
+// already exists (api/routers/decision_snapshots.py), reused verbatim,
+// never a new write path. This section and the on-demand one below are
+// two genuinely distinct systems (see this file's own "Generate New
+// Decision" action, which only ever touches the on-demand journal) --
+// kept visually and structurally separate, never merged into one.
+// --------------------------------------------------------------------------
+
+function formatDateTime(iso: string): string {
+  return new Date(iso).toLocaleString(undefined, {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+
+function OfficialDecisionCard({ ticker }: { ticker: string }) {
+  const snapshots = useAsync(
+    () => api.listDecisionSnapshots({ ticker, limit: 1 }),
+    [ticker]
+  );
+  const snapshot = snapshots.data?.[0] ?? null;
+  const entries = useAsync(
+    () => (snapshot ? api.getDecisionSnapshotEntries(snapshot.id) : Promise.resolve([])),
+    [snapshot?.id]
+  );
+  const settlements = useAsync(
+    () => (snapshot ? api.getSettlements(snapshot.id) : Promise.resolve([])),
+    [snapshot?.id]
+  );
+
+  // Nothing official exists yet for this ticker -- say nothing here and
+  // let the on-demand section below render on its own; this is never
+  // the only source of "no decision at all" for a ticker.
+  if (snapshots.loading && !snapshots.data) return null;
+  if (!snapshot) return null;
+
+  const stage = deriveLifecycleStage(entries.data ?? undefined, settlements.data ?? undefined, snapshot);
+  const entryList = entries.data ?? [];
+  const settlementList = settlements.data ?? [];
+  const latestEntry = entryList.length > 0 ? entryList[entryList.length - 1] : null;
+  const latestSettlement = settlementList.length > 0 ? settlementList[settlementList.length - 1] : null;
+
+  return (
+    <div className="card" style={{ borderLeft: "3px solid var(--color-positive)" }}>
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "baseline",
+          marginBottom: 4,
+        }}
+      >
+        <h2 style={{ margin: 0 }}>Official Forward-Test Decision</h2>
+        <span className={`pill ${LIFECYCLE_PILL_CLASS[stage]}`}>{LIFECYCLE_LABELS[stage]}</span>
+      </div>
+      <p className="text-sm text-faint" style={{ marginTop: 0 }}>
+        A real, immutable snapshot frozen by the official scheduled decision pipeline — distinct
+        from the on-demand analysis below, which can be regenerated any time. This record can
+        never be edited, overwritten, or hidden by a new on-demand generation.
+      </p>
+
+      <div className="grid grid-4" style={{ gap: 10, marginBottom: 12 }}>
+        <div className="stat">
+          <span className="stat-label">Generated</span>
+          <span className="stat-value small mono">{formatDateTime(snapshot.generated_at)}</span>
+        </div>
+        <div className="stat">
+          <span className="stat-label">Snapshot ID</span>
+          <span className="stat-value small mono">#{snapshot.id}</span>
+        </div>
+        <div className="stat">
+          <span className="stat-label">Direction</span>
+          <span className="stat-value small">{DIRECTION_LABELS[snapshot.strategy_direction]}</span>
+        </div>
+        <div className="stat">
+          <span className="stat-label">Volatility regime</span>
+          <span className="stat-value small">{snapshot.volatility_regime ?? "—"}</span>
+        </div>
+        <div className="stat">
+          <span className="stat-label">Strategy</span>
+          <span className="stat-value small">
+            {snapshot.strategy_type ? categoryLabel(snapshot.strategy_type) : "No action recommended"}
+          </span>
+        </div>
+        <div className="stat">
+          <span className="stat-label">Expiration</span>
+          <span className="stat-value small mono">{snapshot.selected_expiration ?? "—"}</span>
+        </div>
+        <div className="stat">
+          <span className="stat-label">{HISTORICAL_MOVE_COMPATIBILITY_LABEL}</span>
+          <span className="stat-value small">
+            <HistoricalCompatibilityValue snapshot={snapshot} />
+          </span>
+        </div>
+        <div className="stat">
+          <span className="stat-label">Strategy score</span>
+          <span className="stat-value small">
+            {snapshot.strategy_score !== null ? `${snapshot.strategy_score}/100` : "—"}
+          </span>
+        </div>
+        <div className="stat">
+          <span
+            className="stat-label"
+            title="How much real evidence backs this view -- never probability of profit, strategy score, or LLM self-reported confidence."
+          >
+            Evidence confidence
+          </span>
+          <span className="stat-value small">
+            {snapshot.deterministic_confidence_score !== null
+              ? `${snapshot.deterministic_confidence_score}/100`
+              : "—"}
+          </span>
+        </div>
+        <div className="stat">
+          <span className="stat-label">Underlying at decision</span>
+          <span className="stat-value small">
+            {snapshot.underlying_price ? formatMoney(snapshot.underlying_price) : "—"}
+          </span>
+        </div>
+      </div>
+
+      {snapshot.legs && snapshot.legs.length > 0 ? (
+        <table className="legs-table">
+          <thead>
+            <tr>
+              <th>Action</th>
+              <th>Qty</th>
+              <th>Type</th>
+              <th>Strike</th>
+              <th>Premium</th>
+            </tr>
+          </thead>
+          <tbody>
+            {snapshot.legs.map((leg, i) => (
+              <tr key={i}>
+                <td className="mono">{leg.action}</td>
+                <td className="mono">{leg.quantity}</td>
+                <td className="mono">{leg.option_type}</td>
+                <td className="mono">{formatMoney(leg.strike)}</td>
+                <td className="mono">{formatMoney(leg.premium)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      ) : (
+        <p className="text-sm text-muted">
+          The strategy engine found no actionable strategy for this event — a real, honest
+          outcome, not an error.
+        </p>
+      )}
+
+      {latestEntry && (
+        <div style={{ marginTop: 12 }}>
+          <div style={{ fontWeight: 600 }}>Entry</div>
+          {latestEntry.status === "captured" ? (
+            <div className="grid grid-3" style={{ gap: 10, marginTop: 6 }}>
+              <div className="stat">
+                <span className="stat-label">Underlying at entry</span>
+                <span className="stat-value small">
+                  {latestEntry.underlying_price ? formatMoney(latestEntry.underlying_price) : "—"}
+                </span>
+              </div>
+              <div className="stat">
+                <span className="stat-label">Net entry cash</span>
+                <span className="stat-value small">
+                  {latestEntry.net_entry_cash ? formatMoney(latestEntry.net_entry_cash) : "—"}
+                </span>
+              </div>
+              <div className="stat">
+                <span className="stat-label">Max risk</span>
+                <span className="stat-value small">
+                  {latestEntry.initial_max_risk ? formatMoney(latestEntry.initial_max_risk) : "—"}
+                </span>
+              </div>
+            </div>
+          ) : (
+            <p className="text-sm text-negative" style={{ margin: "4px 0 0" }}>
+              {latestEntry.capture_error ?? "Entry capture failed."}
+            </p>
+          )}
+        </div>
+      )}
+
+      {latestSettlement && (
+        <div style={{ marginTop: 12 }}>
+          <div style={{ fontWeight: 600 }}>Settlement</div>
+          {latestSettlement.status === "captured" ? (
+            <div className="grid grid-3" style={{ gap: 10, marginTop: 6 }}>
+              <div className="stat">
+                <span className="stat-label">Realized P&amp;L</span>
+                <span className="stat-value small">
+                  {latestSettlement.realized_pnl ? formatMoney(latestSettlement.realized_pnl) : "—"}
+                </span>
+              </div>
+              <div className="stat">
+                <span className="stat-label">Return</span>
+                <span className="stat-value small">
+                  {latestSettlement.return_pct
+                    ? formatPlainPercent(latestSettlement.return_pct)
+                    : "—"}
+                </span>
+              </div>
+              <div className="stat">
+                <span className="stat-label">Result</span>
+                <span className="stat-value small">
+                  {latestSettlement.is_win === null ? "—" : latestSettlement.is_win ? "Win" : "Loss"}
+                </span>
+              </div>
+            </div>
+          ) : null}
+          {latestSettlement.status === "captured" && (
+            // Post-official-run cleanup (2026-08-27), Section 6 -- this
+            // realized return can exceed the "Max loss (position)" shown
+            // above at decision time: that figure is the strategy's
+            // theoretical max IF held to expiration and settled at
+            // intrinsic value. A real exit before expiration closes at
+            // executable BID/ASK on each leg, paying the bid-ask spread
+            // on the way out (on top of the spread already paid on the
+            // way in) -- real, honest friction, never a pricing error.
+            // Communication only: no P&L/settlement number here changed.
+            <p className="text-sm text-faint" style={{ margin: "8px 0 0" }}>
+              Realized P&amp;L reflects an actual exit at executable bid/ask before expiration, not
+              the strategy's theoretical max loss/profit at expiration. Early-exit spread cost on
+              both legs can make a realized loss larger than the defined-risk maximum shown at
+              entry.
+            </p>
+          )}
+          {latestSettlement.status !== "captured" && (
+            <p className="text-sm text-negative" style={{ margin: "4px 0 0" }}>
+              {latestSettlement.capture_error ?? "Settlement capture failed."}
+            </p>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function DecisionTab({ ticker }: { ticker: string }) {
   const history = useAsync(() => api.getDecisionHistory(ticker), [ticker]);
   const [activeId, setActiveId] = useState<number | null>(null);
@@ -759,8 +1022,11 @@ export function DecisionTab({ ticker }: { ticker: string }) {
     <div>
       <MarketDataHeader ticker={ticker} />
 
+      <OfficialDecisionCard ticker={ticker} />
+
       <div className="card">
-        <p className="text-sm text-muted" style={{ marginTop: 0 }}>
+        <h2 style={{ marginTop: 0 }}>On-Demand / Legacy Analysis</h2>
+        <p className="text-sm text-muted">
           Connects the AI Earnings Thesis to a direction/volatility view and deterministically
           ranks real strategy candidates against it. The view is an AI judgment call grounded in
           real evidence; every number below it (scores, breakevens, max profit/loss) is computed

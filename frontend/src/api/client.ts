@@ -20,9 +20,16 @@ import type {
   IbkrConnectResponse,
   ImpliedMoveRequest,
   ImpliedMoveResponse,
+  OperationsEvents,
+  OperationsFailures,
+  OperationsJobs,
+  OperationsSummary,
   PendingDecisions,
+  PreparationProgress,
   PortfolioSnapshotResponse,
   ProviderDashboard,
+  QuoteDiagnostics,
+  QuoteDiagnosticsSummary,
   ProviderSettingsUpdate,
   ReplaySummary,
   ResearchJob,
@@ -39,6 +46,13 @@ import type {
   TestConnectionResult,
   TrackRecord,
   UsageSummary,
+  V4ShadowCandidatesResponse,
+  V4ShadowDecisionDetail,
+  V4ShadowDecisionsResponse,
+  V4ShadowTrackRecord,
+  V4ShadowConfigurationsResponse,
+  V4TrackRecordByConfiguration,
+  SameEventComparison,
 } from "../types/api";
 
 const BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000/api/v1";
@@ -164,6 +178,37 @@ export const api = {
   getSystemStatus: () => request<SystemStatus>("/system-status"),
   getIbkrConnectUrl: () => request<IbkrConnectResponse>("/ibkr/connect"),
 
+  // V4.5 -- EXPERIMENTAL shadow cohort, read-only.
+  getV4ShadowDecisions: () =>
+    request<V4ShadowDecisionsResponse>("/v4/shadow/decisions"),
+  getV4ShadowDecision: (id: number) =>
+    request<V4ShadowDecisionDetail>(`/v4/shadow/decisions/${id}`),
+  getV4ShadowCandidates: (id: number) =>
+    request<V4ShadowCandidatesResponse>(`/v4/shadow/decisions/${id}/candidates`),
+  getV4ShadowTrackRecord: () =>
+    request<V4ShadowTrackRecord>("/v4/shadow/track-record"),
+  // V4 consolidation -- six-configuration read models. All read-only.
+  getV4ShadowConfigurations: (id: number) =>
+    request<V4ShadowConfigurationsResponse>(`/v4/shadow/decisions/${id}/configurations`),
+  getV4TrackRecordByConfiguration: () =>
+    request<V4TrackRecordByConfiguration>("/v4/shadow/track-record/by-configuration"),
+  getSameEventComparison: (eventId: number) =>
+    request<SameEventComparison>(`/v4/shadow/events/${eventId}/comparison`),
+  getOperationsSummary: () => request<OperationsSummary>("/operations/summary"),
+  getOperationsEvents: () => request<OperationsEvents>("/operations/events"),
+  getOperationsJobs: () => request<OperationsJobs>("/operations/jobs"),
+  getOperationsFailures: () => request<OperationsFailures>("/operations/failures"),
+  getOperationsPreparationProgress: () =>
+    request<PreparationProgress>("/operations/preparation-progress"),
+  getQuoteDiagnosticsSummary: () =>
+    request<QuoteDiagnosticsSummary>("/operations/quote-diagnostics/summary"),
+  getEntryQuoteDiagnostics: (entryCaptureAttemptId: number) =>
+    request<QuoteDiagnostics>(`/operations/quote-diagnostics/entry/${entryCaptureAttemptId}`),
+  getSettlementQuoteDiagnostics: (settlementCaptureAttemptId: number) =>
+    request<QuoteDiagnostics>(
+      `/operations/quote-diagnostics/settlement/${settlementCaptureAttemptId}`
+    ),
+
   getProviderDashboard: () => request<ProviderDashboard>("/settings/providers"),
   updateProviderSettings: (update: ProviderSettingsUpdate) =>
     request<ProviderDashboard>("/settings/providers", {
@@ -262,6 +307,9 @@ export const api = {
       dteBucket?: string;
       riskProfile?: RiskProfile;
       ivRegime?: string;
+      // V4.1 methodology foundation (2026-08-31) -- cohort isolation.
+      // Omitted means every real engine version.
+      engineVersion?: string;
     } = {}
   ) => {
     const qs = new URLSearchParams();
@@ -271,6 +319,7 @@ export const api = {
     if (params.dteBucket) qs.set("dte_bucket", params.dteBucket);
     if (params.riskProfile) qs.set("risk_profile", params.riskProfile);
     if (params.ivRegime) qs.set("iv_regime", params.ivRegime);
+    if (params.engineVersion) qs.set("engine_version", params.engineVersion);
     const suffix = qs.toString() ? `?${qs.toString()}` : "";
     return request<BenchmarkTrackRecord>(`/benchmark/track-record${suffix}`);
   },

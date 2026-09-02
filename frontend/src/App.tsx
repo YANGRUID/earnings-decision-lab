@@ -10,6 +10,10 @@ import { HistoricalReplay } from "./pages/HistoricalReplay";
 import { TrackRecord } from "./pages/TrackRecord";
 import { BenchmarkTrackRecord } from "./pages/BenchmarkTrackRecord";
 import { DataStatus } from "./pages/DataStatus";
+import { V4DecisionLab } from "./pages/V4DecisionLab";
+import { SameEventComparison } from "./pages/SameEventComparison";
+import { V4ShadowTrackRecord } from "./pages/V4ShadowTrackRecord";
+import { Operations } from "./pages/Operations";
 import { DataProviders } from "./pages/Settings/DataProviders";
 import { AiProvider } from "./pages/Settings/AiProvider";
 import { Ibkr } from "./pages/Settings/Ibkr";
@@ -39,6 +43,17 @@ export default function App() {
           <Route path="historical-replay" element={<HistoricalReplay />} />
           <Route path="track-record" element={<TrackRecord />} />
           <Route path="benchmark-track-record" element={<BenchmarkTrackRecord />} />
+          <Route path="operations" element={<Operations />} />
+          {/* V4.5 -- EXPERIMENTAL shadow cohort. Separate routes from the
+              official AI Decision / Benchmark Track Record surfaces. */}
+          <Route path="v4-shadow-lab" element={<V4DecisionLab />} />
+          <Route path="v4-decision-lab" element={<V4DecisionLab />} />
+          <Route path="v4-decision-lab/:id" element={<V4DecisionLab />} />
+          <Route path="candidate-explorer" element={<V4DecisionLab mode="explorer" />} />
+          <Route path="candidate-explorer/:id" element={<V4DecisionLab mode="explorer" />} />
+          <Route path="same-event-comparison" element={<SameEventComparison />} />
+          <Route path="same-event-comparison/:eventId" element={<SameEventComparison />} />
+          <Route path="v4-shadow-track-record" element={<V4ShadowTrackRecord />} />
           <Route path="settings/providers" element={<DataProviders />} />
           <Route path="settings/ai-provider" element={<AiProvider />} />
           <Route path="settings/ibkr" element={<Ibkr />} />

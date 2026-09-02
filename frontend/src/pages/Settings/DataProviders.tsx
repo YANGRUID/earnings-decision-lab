@@ -6,7 +6,13 @@ import { ProviderCredentialForm } from "../../components/settings/ProviderCreden
 import { CREDENTIAL_PROVIDERS, DOMAIN_LABELS, providerLabel, formatRelativeTime } from "../../lib/format";
 import type { DomainStatus, ProviderStatus } from "../../types/api";
 
-const DATA_DOMAINS = ["price_history", "earnings_estimates", "filings", "options"] as const;
+const DATA_DOMAINS = [
+  "price_history",
+  "earnings_estimates",
+  "earnings_calendar",
+  "filings",
+  "options",
+] as const;
 
 function StatusPill({ status }: { status: ProviderStatus }) {
   if (!status.configured) {
@@ -21,9 +27,11 @@ function StatusPill({ status }: { status: ProviderStatus }) {
 function ProviderRow({
   status,
   onTested,
+  ibkrTransport,
 }: {
   status: ProviderStatus;
   onTested: () => void;
+  ibkrTransport?: "web" | "tws";
 }) {
   const [testing, setTesting] = useState(false);
   const [result, setResult] = useState<string | null>(null);
@@ -56,6 +64,11 @@ function ProviderRow({
         </div>
         <StatusPill status={status} />
       </div>
+      {ibkrTransport && (
+        <p className="text-sm text-muted" style={{ marginTop: 4, marginBottom: 0 }}>
+          Active transport: <strong>{ibkrTransport === "tws" ? "IB Gateway / TWS API" : "Web / Client Portal Gateway"}</strong>
+        </p>
+      )}
       <div className="grid grid-3" style={{ gap: 10, marginTop: 10 }}>
         <div className="stat">
           <span className="stat-label">Last successful use</span>
@@ -67,6 +80,7 @@ function ProviderRow({
             {[
               status.capabilities.prices && "prices",
               status.capabilities.earnings_estimates && "estimates",
+              status.capabilities.earnings_calendar && "calendar",
               status.capabilities.filings && "filings",
               status.capabilities.options && "options",
               status.capabilities.greeks && "greeks",
@@ -114,9 +128,11 @@ function ProviderRow({
 function DomainCard({
   domain,
   onChanged,
+  usingTws,
 }: {
   domain: DomainStatus;
   onChanged: () => void;
+  usingTws: boolean;
 }) {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -162,7 +178,13 @@ function DomainCard({
   return (
     <div style={{ marginBottom: 28 }}>
       <h2 style={{ marginBottom: 4 }}>{DOMAIN_LABELS[domain.domain] ?? domain.domain}</h2>
-      {supportsFallback ? (
+      {domain.domain === "earnings_calendar" ? (
+        <p className="text-sm text-muted" style={{ marginTop: 0 }}>
+          <strong>{providerLabel(domain.primary)}</strong> (primary),{" "}
+          <strong>{providerLabel(domain.fallback)}</strong> (fallback) — not currently
+          configurable from Settings.
+        </p>
+      ) : supportsFallback ? (
         <div className="grid grid-2" style={{ gap: 10, marginBottom: 14, maxWidth: 480 }}>
           <div className="field">
             <label>
@@ -205,7 +227,12 @@ function DomainCard({
       )}
       {error && <div className="notice">{error}</div>}
       {domain.providers.map((p) => (
-        <ProviderRow key={p.provider} status={p} onTested={onChanged} />
+        <ProviderRow
+          key={p.provider}
+          status={p}
+          onTested={onChanged}
+          ibkrTransport={p.provider === "ibkr" ? (usingTws ? "tws" : "web") : undefined}
+        />
       ))}
     </div>
   );
@@ -216,6 +243,7 @@ function CapabilityMatrix({ domains }: { domains: DomainStatus[] }) {
   const cols: (keyof ProviderStatus["capabilities"])[] = [
     "prices",
     "earnings_estimates",
+    "earnings_calendar",
     "filings",
     "options",
     "greeks",
@@ -258,11 +286,17 @@ function CapabilityMatrix({ domains }: { domains: DomainStatus[] }) {
 
 export function DataProviders() {
   const dashboard = useAsync(() => api.getProviderDashboard(), []);
+  // IBKR TWS Migration, Phase 3 readiness (Section 31) -- fetched only to
+  // read tws.configured, so this row can honestly say which transport is
+  // active; a real, already-existing GET this app calls elsewhere too,
+  // never a new endpoint.
+  const status = useAsync(() => api.getSystemStatus(), []);
 
   if (dashboard.loading && !dashboard.data) return <LoadingState label="Loading provider settings…" />;
   if (dashboard.error && !dashboard.data) return <ErrorState message={dashboard.error} />;
   if (!dashboard.data) return null;
 
+  const usingTws = status.data?.tws.configured ?? false;
   const domains = dashboard.data.domains.filter((d) =>
     (DATA_DOMAINS as readonly string[]).includes(d.domain)
   );
@@ -280,7 +314,7 @@ export function DataProviders() {
         </p>
       </div>
       {domains.map((d) => (
-        <DomainCard key={d.domain} domain={d} onChanged={dashboard.reload} />
+        <DomainCard key={d.domain} domain={d} onChanged={dashboard.reload} usingTws={usingTws} />
       ))}
       <CapabilityMatrix domains={dashboard.data.domains} />
     </div>
