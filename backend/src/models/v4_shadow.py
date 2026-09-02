@@ -525,3 +525,136 @@ class V4ShadowConfigResult(Base):
             name="uq_v4_shadow_config_result_decision_configuration",
         ),
     )
+
+
+
+# ---------------------------------------------------------------------------
+# Six-cohort forward evidence (V4 activation phase, Sections 4-16).
+#
+# ONE candidate-level MARKET observation per unique selected candidate and
+# phase (shared by every configuration that selected that candidate), plus
+# CONFIGURATION-level position and settlement records that freeze the
+# per-configuration quantity, capital and realized result. Quote evidence is
+# therefore stored once per unique candidate, never once per configuration.
+# All three are append-only under the same reject_snapshot_update() trigger.
+# ---------------------------------------------------------------------------
+
+
+class V4ShadowCandidateObservation(Base):
+    """Executable quote observation for ONE frozen candidate at ONE phase.
+
+    ENTRY: buy legs at ASK, sell legs at BID (the frozen entry quotes).
+    EXIT:  close longs at BID, close shorts at ASK (re-quoted by conId).
+    ``net_executable_value`` is for ONE unit of the structure; quantity is
+    a configuration concern and lives on the configuration rows.
+    """
+
+    __tablename__ = "v4_shadow_candidate_observation"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    shadow_decision_id: Mapped[int] = mapped_column(
+        ForeignKey("v4_shadow_decision.id"), nullable=False, index=True
+    )
+    candidate_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    phase: Mapped[str] = mapped_column(String(8), nullable=False)
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    status: Mapped[str] = mapped_column(String(24), nullable=False)
+    failure_category: Mapped[str | None] = mapped_column(String(48))
+    failure_detail: Mapped[str | None] = mapped_column(Text)
+    net_executable_value: Mapped[Decimal | None] = mapped_column(Numeric(18, 6))
+    market_data_quality: Mapped[str | None] = mapped_column(String(24))
+    source_provider: Mapped[str | None] = mapped_column(String(64))
+    earliest_leg_observed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    latest_leg_observed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    max_leg_timestamp_skew_seconds: Mapped[Decimal | None] = mapped_column(Numeric(18, 6))
+    unique_contract_count: Mapped[int | None] = mapped_column(Integer)
+    legs_json: Mapped[dict | None] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "shadow_decision_id", "candidate_id", "phase",
+            name="uq_v4_shadow_candidate_observation_one_per_candidate_phase",
+        ),
+    )
+
+
+class V4ShadowConfigEntry(Base):
+    """A configuration's frozen POSITION at entry: which candidate, how many
+    contracts, capital used, max risk, and the entry value at the shared
+    candidate observation's executable prices. One per configuration result
+    (idempotent by construction); NO_ACTION configurations get none."""
+
+    __tablename__ = "v4_shadow_config_entry"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    shadow_config_result_id: Mapped[int] = mapped_column(
+        ForeignKey("v4_shadow_config_result.id"), nullable=False, unique=True
+    )
+    shadow_decision_id: Mapped[int] = mapped_column(
+        ForeignKey("v4_shadow_decision.id"), nullable=False, index=True
+    )
+    candidate_observation_id: Mapped[int] = mapped_column(
+        ForeignKey("v4_shadow_candidate_observation.id"), nullable=False, index=True
+    )
+    configuration_key: Mapped[str] = mapped_column(String(48), nullable=False, index=True)
+    candidate_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    status: Mapped[str] = mapped_column(String(24), nullable=False, index=True)
+    quantity: Mapped[int] = mapped_column(Integer, nullable=False)
+    standardized_capital: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False)
+    capital_used: Mapped[Decimal | None] = mapped_column(Numeric(18, 6))
+    max_risk_per_contract: Mapped[Decimal | None] = mapped_column(Numeric(18, 6))
+    max_risk_used: Mapped[Decimal | None] = mapped_column(Numeric(18, 6))
+    entry_net_value: Mapped[Decimal | None] = mapped_column(Numeric(18, 6))
+    pricing_convention: Mapped[str] = mapped_column(String(48), nullable=False)
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    market_data_quality: Mapped[str | None] = mapped_column(String(24))
+    failure_category: Mapped[str | None] = mapped_column(String(48))
+    failure_detail: Mapped[str | None] = mapped_column(Text)
+    timing_policy_version: Mapped[str | None] = mapped_column(String(64))
+    engine_version: Mapped[str | None] = mapped_column(String(48))
+    configuration_version: Mapped[str | None] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class V4ShadowConfigSettlement(Base):
+    """A configuration's realized T+1 result for its frozen position, at the
+    shared EXIT candidate observation's executable prices, times its own
+    quantity. One per configuration result; only configurations with an
+    OBSERVED entry are ever settled."""
+
+    __tablename__ = "v4_shadow_config_settlement"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    shadow_config_result_id: Mapped[int] = mapped_column(
+        ForeignKey("v4_shadow_config_result.id"), nullable=False, unique=True
+    )
+    shadow_decision_id: Mapped[int] = mapped_column(
+        ForeignKey("v4_shadow_decision.id"), nullable=False, index=True
+    )
+    candidate_observation_id: Mapped[int | None] = mapped_column(
+        ForeignKey("v4_shadow_candidate_observation.id"), index=True
+    )
+    configuration_key: Mapped[str] = mapped_column(String(48), nullable=False, index=True)
+    candidate_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    status: Mapped[str] = mapped_column(String(24), nullable=False, index=True)
+    quantity: Mapped[int] = mapped_column(Integer, nullable=False)
+    standardized_capital: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False)
+    capital_used: Mapped[Decimal | None] = mapped_column(Numeric(18, 6))
+    entry_net_value: Mapped[Decimal | None] = mapped_column(Numeric(18, 6))
+    exit_net_value: Mapped[Decimal | None] = mapped_column(Numeric(18, 6))
+    realized_pnl: Mapped[Decimal | None] = mapped_column(Numeric(18, 6))
+    return_on_standardized_capital: Mapped[Decimal | None] = mapped_column(Numeric(18, 8))
+    entry_observed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    settled_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    pricing_convention: Mapped[str] = mapped_column(String(48), nullable=False)
+    market_data_quality: Mapped[str | None] = mapped_column(String(24))
+    failure_category: Mapped[str | None] = mapped_column(String(48))
+    failure_detail: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )

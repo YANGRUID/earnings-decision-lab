@@ -132,3 +132,64 @@ def get_configuration(key: str) -> V4Configuration:
         raise ValueError(
             f"Unknown V4 configuration key {key!r}. Known: {sorted(_BY_KEY)}"
         ) from None
+
+
+# ---------------------------------------------------------------------------
+# Position sizing per configuration (V4 activation phase, Section 8).
+#
+# The six-configuration evaluation decides WHICH structure a configuration
+# would hold. This decides HOW MANY contracts it would hold, so that two
+# configurations selecting the same frozen candidate freeze their own
+# quantity, capital used and max risk while sharing one market observation.
+#
+# Mirrors V3's compute_budget_fit: quantity = floor(usable risk / risk per
+# contract), additionally bounded by the capital base for the entry debit,
+# never below one contract for an eligible candidate. No new percentage is
+# introduced -- both bounds come from the configuration's existing cap and
+# capital base.
+# ---------------------------------------------------------------------------
+from dataclasses import dataclass as _dataclass  # noqa: E402
+
+
+@_dataclass(frozen=True)
+class ConfigurationPosition:
+    configuration_key: str
+    candidate_id: str
+    quantity: int
+    per_contract_entry_cash: Decimal
+    per_contract_max_risk: Decimal
+    capital_used: Decimal
+    max_risk_used: Decimal
+    standardized_capital: Decimal
+
+
+def size_configuration_position(
+    configuration: V4Configuration,
+    *,
+    candidate_id: str,
+    per_contract_entry_cash: Decimal,
+    per_contract_max_risk: Decimal,
+) -> ConfigurationPosition:
+    """Quantity for an already-ELIGIBLE candidate (one contract is known to
+    fit). ``per_contract_entry_cash`` is the signed executable entry cash
+    for one unit (positive = debit); ``per_contract_max_risk`` its bounded
+    max loss for one unit.
+    """
+    risk_bound = (
+        int(configuration.max_risk_dollars / per_contract_max_risk)
+        if per_contract_max_risk > 0
+        else 1
+    )
+    debit = max(per_contract_entry_cash, Decimal(0))
+    capital_bound = int(configuration.capital_base / debit) if debit > 0 else risk_bound
+    quantity = max(1, min(risk_bound, capital_bound))
+    return ConfigurationPosition(
+        configuration_key=configuration.key,
+        candidate_id=candidate_id,
+        quantity=quantity,
+        per_contract_entry_cash=per_contract_entry_cash,
+        per_contract_max_risk=per_contract_max_risk,
+        capital_used=debit * quantity,
+        max_risk_used=per_contract_max_risk * quantity,
+        standardized_capital=configuration.capital_base,
+    )

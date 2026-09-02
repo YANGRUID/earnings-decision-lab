@@ -88,6 +88,7 @@ from models.v4_shadow import (
     V4ShadowRunEvent,
 )
 from services.v4_config_evaluation import evaluate_configuration
+from services.v4_shadow_cohort import freeze_config_entries
 
 #: Section 35 -- a hard safety cap. V4.3.1 already targets tens, not
 #: hundreds, but a runaway generator must never be able to blow the
@@ -228,11 +229,13 @@ def _scenario_cell(r) -> dict:
         "iv_label": r.iv_scenario_label,
         "iv_multiplier": str(r.iv_scenario_multiplier),
         "return_executable": (
-            None if r.return_on_standardized_capital_executable is None
+            None
+            if r.return_on_standardized_capital_executable is None
             else str(r.return_on_standardized_capital_executable)
         ),
         "return_theoretical": (
-            None if r.return_on_standardized_capital_theoretical is None
+            None
+            if r.return_on_standardized_capital_theoretical is None
             else str(r.return_on_standardized_capital_theoretical)
         ),
         "reason_codes": list(r.reason_codes),
@@ -242,8 +245,10 @@ def _scenario_cell(r) -> dict:
 def _expected_move_payload(ctx) -> dict | None:
     if ctx is None:
         return None
+
     def s(v):
         return None if v is None else str(v)
+
     return {
         "spot": s(ctx.spot),
         "observed_at": ctx.observed_at.isoformat() if ctx.observed_at else None,
@@ -322,7 +327,8 @@ def _persist_candidate(
                 "core": [_scenario_cell(r) for r in rankable.scenario_results],
                 "stress": [_scenario_cell(r) for r in getattr(stress, "results", ())],
             }
-            if rankable is not None else None
+            if rankable is not None
+            else None
         ),
         ranking_key={"key": list(ranked.ranking_key)} if ranked.ranking_key else None,
         rank_explanation=rank_explanation or ranked.rationale,
@@ -516,7 +522,12 @@ def generate_shadow_decision(
             if ranked is None:  # pragma: no cover -- defensive
                 continue
             _persist_candidate(
-                db, decision, ranked, source, stress, pairwise.get(source.candidate_id),
+                db,
+                decision,
+                ranked,
+                source,
+                stress,
+                pairwise.get(source.candidate_id),
                 rankable=_rankable,
             )
 
@@ -572,7 +583,9 @@ def generate_shadow_decision(
             except Exception as exc:  # noqa: BLE001 -- Section 8: one config never kills five
                 log.error(
                     "v4 configuration %s failed for decision %s",
-                    configuration.key, decision.id, exc_info=True,
+                    configuration.key,
+                    decision.id,
+                    exc_info=True,
                 )
                 db.add(
                     V4ShadowConfigResult(
@@ -589,6 +602,29 @@ def generate_shadow_decision(
                         excluded_candidate_count=0,
                     )
                 )
+
+        # ------------------------------------------------------------------
+        # Six-cohort ENTRY evidence (activation phase, Sections 5-10): one
+        # candidate-level observation per unique selected candidate, one
+        # position per RANKED configuration, from the SAME frozen quotes.
+        # No provider call. Failures are per-candidate/per-configuration.
+        # ------------------------------------------------------------------
+        db.flush()
+        config_rows = db.query(V4ShadowConfigResult).filter_by(shadow_decision_id=decision.id).all()
+        try:
+            freeze_config_entries(
+                db,
+                decision=decision,
+                config_rows=config_rows,
+                rankable_by_id={r.candidate_id: r for _, r, _ in evaluated},
+                leg_retrieved_at_by_id={
+                    c.candidate_id: c.leg_retrieved_at for c, _, _ in evaluated
+                },
+                observed_at=legal_decision_window_at,
+                market_data_quality=market_data_quality,
+            )
+        except Exception:  # noqa: BLE001 -- never let cohort entries break the freeze
+            log.error("six-cohort entry freeze failed for decision %s", decision.id, exc_info=True)
 
         if truncated:
             db.add(

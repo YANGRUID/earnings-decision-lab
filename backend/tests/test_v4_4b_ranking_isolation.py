@@ -84,6 +84,9 @@ class TestOfficialPathIsolation:
             # rank_candidates. V4-only; not in OFFICIAL_PATH_MODULES, so
             # the invariant that matters is untouched.
             "services/v4_config_evaluation.py",
+            # Six-cohort entry/settlement evidence (activation phase) -- V4-only,
+            # consumes RankableCandidate for per-config sizing.
+            "services/v4_shadow_cohort.py",
             # Read-only V4 dry-run, gated behind ENABLE_INTERNAL_DIAGNOSTICS.
             "api/routers/tws_diagnostics.py",
         )

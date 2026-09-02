@@ -44,6 +44,7 @@ manufacture a trade for every configuration (Section 17).
 
 from __future__ import annotations
 
+import dataclasses
 from dataclasses import dataclass
 from decimal import Decimal
 
@@ -210,6 +211,28 @@ def evaluate_configuration(
             continue
 
         eligible.append(candidate)
+
+    # Configuration-relative capital basis (activation phase). The frozen
+    # V4.4B ranker classifies a candidate CAPITAL_INCOMPATIBLE when
+    # ``capital_utilisation > 1`` and uses utilisation as its last tie-break
+    # band. That input is computed by the CALLER; evaluate_shadow_candidate
+    # fills it against the V3-era $2,000 standardized capital. Left as-is, a
+    # $10,000 configuration could never rank a $3,500 structure it can
+    # afford. So the ranker is fed each configuration's own basis. Ranking
+    # v1's code, bands and order are untouched -- only its capital INPUT is
+    # now the configuration's, which is what "six configurations on shared
+    # evidence" means.
+    eligible = [
+        dataclasses.replace(
+            c,
+            capital_utilisation=(
+                abs(c.entry_cash_required) / configuration.capital_base
+                if c.entry_cash_required is not None
+                else None
+            ),
+        )
+        for c in eligible
+    ]
 
     if not eligible:
         return ConfigurationOutcome(
