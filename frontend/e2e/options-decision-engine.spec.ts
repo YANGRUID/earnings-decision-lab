@@ -26,7 +26,9 @@ const fixtureDates: {
 test.describe("Strategy Lab expiration selection", () => {
   test("Auto expiration renders a real, non-empty comparison", async ({ page }) => {
     await page.goto(`/company/${TICKER}`);
-    await page.getByRole("button", { name: "Strategy Lab" }).click();
+    // V4 consolidation: the V3 Strategy Lab now lives under Historical / Control.
+    await page.getByRole("button", { name: "Historical / Control", exact: true }).click();
+    await page.getByRole("button", { name: "V3 strategy lab" }).click();
 
     const expirationHeading = page.getByRole("heading", { name: "Expiration" });
     await expect(expirationHeading).toBeVisible();
@@ -51,7 +53,9 @@ test.describe("Strategy Lab expiration selection", () => {
 
   test("Manual expiration changes the active expiration and strategy set", async ({ page }) => {
     await page.goto(`/company/${TICKER}`);
-    await page.getByRole("button", { name: "Strategy Lab" }).click();
+    // V4 consolidation: the V3 Strategy Lab now lives under Historical / Control.
+    await page.getByRole("button", { name: "Historical / Control", exact: true }).click();
+    await page.getByRole("button", { name: "V3 strategy lab" }).click();
     await expect(page.getByText(/Auto selected:/)).toBeVisible();
 
     // Strategies initially reflect the default resolver pick.
@@ -73,7 +77,9 @@ test.describe("Strategy Lab expiration selection", () => {
 test.describe("AI Decision", () => {
   test("Risk profile selector is present and changes what is requested", async ({ page }) => {
     await page.goto(`/company/${TICKER}`);
-    await page.getByRole("button", { name: "AI Decision" }).click();
+    // V4 consolidation: on-demand V3 analysis now lives under Historical / Control.
+    await page.getByRole("button", { name: "Historical / Control", exact: true }).click();
+    await page.getByRole("button", { name: "On-demand V3 analysis" }).click();
 
     const riskSelect = page.getByLabel("Risk profile");
     await expect(riskSelect).toBeVisible();
@@ -87,7 +93,9 @@ test.describe("AI Decision", () => {
   test("Budget affects sizing without exceeding the configured risk cap", async ({ page }) => {
     test.slow();
     await page.goto(`/company/${TICKER}`);
-    await page.getByRole("button", { name: "AI Decision" }).click();
+    // V4 consolidation: on-demand V3 analysis now lives under Historical / Control.
+    await page.getByRole("button", { name: "Historical / Control", exact: true }).click();
+    await page.getByRole("button", { name: "On-demand V3 analysis" }).click();
 
     await page.getByLabel("Risk profile").selectOption("moderate");
     await page.getByPlaceholder("e.g. 500").fill("3000");
@@ -109,7 +117,9 @@ test.describe("AI Decision", () => {
 
   test("Probability fields show a real sample size, never a bare percentage", async ({ page }) => {
     await page.goto(`/company/${TICKER}`);
-    await page.getByRole("button", { name: "AI Decision" }).click();
+    // V4 consolidation: on-demand V3 analysis now lives under Historical / Control.
+    await page.getByRole("button", { name: "Historical / Control", exact: true }).click();
+    await page.getByRole("button", { name: "On-demand V3 analysis" }).click();
     await page.getByRole("button", { name: "Generate New Decision" }).click();
 
     const reliability = page.getByText("Historical Reliability");
@@ -130,7 +140,9 @@ test.describe("AI Decision", () => {
 
   test("True Strategy Win Rate is always honestly Unavailable, never fabricated", async ({ page }) => {
     await page.goto(`/company/${TICKER}`);
-    await page.getByRole("button", { name: "AI Decision" }).click();
+    // V4 consolidation: on-demand V3 analysis now lives under Historical / Control.
+    await page.getByRole("button", { name: "Historical / Control", exact: true }).click();
+    await page.getByRole("button", { name: "On-demand V3 analysis" }).click();
     await page.getByRole("button", { name: "Generate New Decision" }).click();
 
     await expect(page.getByText("Historical Reliability")).toBeVisible({ timeout: 30_000 });
@@ -143,7 +155,9 @@ test.describe("AI Decision", () => {
 
   test("Why Not Alternative appears on the #1 recommendation with real numbers", async ({ page }) => {
     await page.goto(`/company/${TICKER}`);
-    await page.getByRole("button", { name: "AI Decision" }).click();
+    // V4 consolidation: on-demand V3 analysis now lives under Historical / Control.
+    await page.getByRole("button", { name: "Historical / Control", exact: true }).click();
+    await page.getByRole("button", { name: "On-demand V3 analysis" }).click();
     await page.getByRole("button", { name: "Generate New Decision" }).click();
 
     await expect(page.getByRole("heading", { name: "#1 Recommended" }).or(
