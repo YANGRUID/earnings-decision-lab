@@ -529,8 +529,16 @@ class IBKRTWSProvider(OptionsDataProvider):
         scoped to one month, never mixes contract series) -- this is a
         genuine TWS-only concern.
         """
-        rows = self._connection.request_sec_def_opt_params(ticker.upper(), "STK", underlying_conid)
-        candidates = [r for r in rows if r["trading_class"] == ticker.upper()]
+        # Class shares (Section 37, live-confirmed 2026-09-02): the underlying
+        # symbol sent to reqSecDefOptParams must be IBKR's own form ("BF B",
+        # "BRK B"); sending the canonical dotted ticker draws error 322 "No
+        # derivatives found". IBKR's option trading class for a class share
+        # drops the separator entirely ("BFB", "BRKB"), so the trading-class
+        # filter accepts those forms too -- still never a "2"-prefixed variant.
+        wire_symbol = ibkr_symbol(ticker)
+        acceptable_classes = {wire_symbol, wire_symbol.replace(" ", ""), ticker.upper()}
+        rows = self._connection.request_sec_def_opt_params(wire_symbol, "STK", underlying_conid)
+        candidates = [r for r in rows if r["trading_class"] in acceptable_classes]
         if not candidates:
             return None
         smart = next((r for r in candidates if r["exchange"] == "SMART"), None)
