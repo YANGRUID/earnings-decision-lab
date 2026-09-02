@@ -1139,8 +1139,18 @@ class SchedulerJobView:
 
 def get_scheduler_jobs(db: Session, scheduler_status: SchedulerStatus) -> list[SchedulerJobView]:
     status_by_job_id = {j.job_id: j for j in scheduler_status.jobs}
+    # The fixed official set is always listed -- even when a job is absent
+    # from the live scheduler, so a MISSING official job is visible as
+    # enabled=False rather than silently dropped. Any further job the live
+    # scheduler has actually registered is appended after it, in
+    # registration order: an optional cohort's jobs appear only while that
+    # cohort is switched on and vanish when it is off. Nothing here names
+    # such a cohort -- this read model reports what is registered.
+    job_ids = list(ALL_JOB_IDS) + [
+        j.job_id for j in scheduler_status.jobs if j.job_id not in ALL_JOB_IDS
+    ]
     views: list[SchedulerJobView] = []
-    for job_id in ALL_JOB_IDS:
+    for job_id in job_ids:
         status = status_by_job_id.get(job_id)
         latest_run = _latest_scheduler_run(db, job_id)
         fallback_last_run_at = status.last_run_at if status else None

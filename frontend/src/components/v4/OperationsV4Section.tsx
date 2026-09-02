@@ -48,9 +48,19 @@ function V4EventRow({ id, ticker, status, when }: { id: number; ticker: string; 
   );
 }
 
+function etTime(iso: string | null | undefined): string {
+  if (!iso) return "—";
+  return `${new Date(iso).toLocaleString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })} ET`;
+}
+
 export function OperationsV4Section({ registeredJobCount }: { registeredJobCount: number | null }) {
   const decisions = useAsync(() => api.getV4ShadowDecisions(), []);
-  const enabled = (registeredJobCount ?? 0) > 5;
+  // The job monitor lists every job the live scheduler has registered; the
+  // two shadow jobs are present only while the cohort is switched on.
+  const jobs = useAsync(() => api.getOperationsJobs().catch(() => null), []);
+  const decisionJob = jobs.data?.jobs.find((j) => j.job_id === "v4_shadow_decision") ?? null;
+  const settlementJob = jobs.data?.jobs.find((j) => j.job_id === "v4_shadow_settlement") ?? null;
+  const enabled = decisionJob ? decisionJob.enabled : (registeredJobCount ?? 0) > 5;
   const rows = decisions.data?.decisions.slice(0, 20) ?? [];
   return (
     <div className="card" data-testid="operations-v4">
@@ -63,6 +73,14 @@ export function OperationsV4Section({ registeredJobCount }: { registeredJobCount
         </div>
         <div className="stat"><span className="stat-label">Shadow decisions</span><span className="stat-value mono">{decisions.data?.decisions.length ?? "—"}</span></div>
       </div>
+      {enabled && (
+        <div className="grid grid-4" style={{ gap: 10, marginTop: 10 }} data-testid="operations-v4-jobs">
+          <div className="stat"><span className="stat-label">Next V4 observation</span><span className="stat-value small mono">{etTime(decisionJob?.next_run_time)}</span><span className="text-faint text-sm mono">v4_shadow_decision</span></div>
+          <div className="stat"><span className="stat-label">Next V4 settlement</span><span className="stat-value small mono">{etTime(settlementJob?.next_run_time)}</span><span className="text-faint text-sm mono">v4_shadow_settlement</span></div>
+          <div className="stat"><span className="stat-label">Last decision run</span><span className="stat-value small mono">{decisionJob?.last_run_status ?? "not yet run"}</span><span className="text-faint text-sm">{decisionJob?.last_run_at ? etTime(decisionJob.last_run_at) : "first sample is generated naturally by the scheduler"}</span></div>
+          <div className="stat"><span className="stat-label">Last settlement run</span><span className="stat-value small mono">{settlementJob?.last_run_status ?? "not yet run"}</span><span className="text-faint text-sm">{settlementJob?.last_run_at ? etTime(settlementJob.last_run_at) : "nothing due until the first T+1 window"}</span></div>
+        </div>
+      )}
       {rows.length === 0 ? (
         <div className="empty-state" style={{ marginTop: 10 }}>No V4 shadow decisions have been frozen. Nothing is back-filled.</div>
       ) : (

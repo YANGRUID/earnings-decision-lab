@@ -34,6 +34,10 @@ const JOB_LABELS: Record<string, string> = {
   earnings_research_preparation: "Earnings Research Preparation",
   decision_and_entry_capture: "Decision + Entry Capture",
   exit_capture: "Exit Capture",
+  // V4 shadow cohort (experimental). Registered only while V4_SHADOW_ENABLED
+  // is on; listed here because the job monitor reports every registered job.
+  v4_shadow_decision: "V4 Shadow Decision (experimental, 15:30 ET)",
+  v4_shadow_settlement: "V4 Shadow Settlement (experimental, 15:55 ET)",
   // IBKR TWS Migration, Phase 3 readiness (Section 29) -- display label
   // only, provider-neutral now that this job runs against either
   // transport (see services/scheduler.py::run_ibkr_gateway_healthcheck_job).
