@@ -84,6 +84,7 @@ REQUIRED_STEPS = frozenset(
 )
 
 STEP_LABELS: dict[PreparationStep, str] = {
+    PreparationStep.AI_THESIS: "AI thesis",
     PreparationStep.COMPANY_IDENTIFIED: "Company identified",
     PreparationStep.HISTORICAL_EARNINGS: "Historical earnings",
     PreparationStep.PRICE_HISTORY: "Price history",

@@ -21,7 +21,6 @@ from agents.tools.filings_search import FilingsSearchArgs, FilingsSearchTool
 from agents.tools.guidance_comparison import GuidanceComparisonArgs, GuidanceComparisonTool
 from agents.tools.types import ToolOutcome
 from analytics.earnings.historical_moves import HistoricalMoveStats
-from analytics.options.strategy_ranking import RankedStrategy, rank_strategy_candidates
 from models.company import Company
 from models.earnings_estimate_snapshot import EarningsEstimateSnapshot
 from models.volatility_snapshot import VolatilitySnapshot
@@ -35,7 +34,6 @@ from services.llm.errors import LLMError
 from services.llm.types import ChatMessage
 from services.market_expectations import get_latest_earnings_estimate
 from services.options_analytics import get_latest_volatility_snapshot
-from services.strategy_generation import generate_strategy_candidates
 
 # Substring match, case-insensitive. Deliberately specific collocations
 # ("guaranteed profit") rather than bare words ("guaranteed", "risk-free",
@@ -124,7 +122,6 @@ def _market_setup_block(
     estimate: EarningsEstimateSnapshot | None,
     volatility: VolatilitySnapshot | None,
     move_stats: HistoricalMoveStats | None,
-    ranked: list[RankedStrategy],
 ) -> str:
     lines: list[str] = []
 
@@ -160,18 +157,6 @@ def _market_setup_block(
         )
     else:
         lines.append("No real historical earnings-day price-reaction data is on record yet.")
-
-    if ranked:
-        top = ranked[0]
-        lines.append(
-            f"Top-ranked deterministic strategy candidate out of {len(ranked)} ranked: "
-            f"{top.candidate.category.value} -- {top.explanation}"
-        )
-    else:
-        lines.append(
-            "No deterministic strategy candidates are available yet (real options-chain or "
-            "implied-move data is missing)."
-        )
 
     return "\n".join(lines)
 
@@ -260,14 +245,9 @@ def generate_earnings_thesis(
     volatility = get_latest_volatility_snapshot(db, company.id)
     move_stats = get_historical_move_stats(db, company.id)
 
-    ranked: list[RankedStrategy] = []
-    if volatility is not None and volatility.target_earnings_date is not None:
-        candidates = generate_strategy_candidates(db, company, volatility.target_earnings_date)
-        ranked = rank_strategy_candidates(candidates, ticker, volatility.implied_move_pct)
-
     evidence_text = (
         f"{evidence_text}\n\n### market_setup_facts\n"
-        f"{_market_setup_block(estimate, volatility, move_stats, ranked)}"
+        f"{_market_setup_block(estimate, volatility, move_stats)}"
     )
 
     messages = [

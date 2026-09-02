@@ -7,7 +7,7 @@ correction the forensic audit identified -- and a centralized,
 version-tracked methodology object for everything V4 will eventually
 implement.
 
-V4 IS EXPERIMENTAL AND CURRENTLY INERT. Nothing in this module, or any
+V4 IS THE ONLY DECISION ENGINE (V4-only reset, 2026-09-02). Nothing in this module, or any
 other analytics/decision/v4_*.py module, is imported by
 services/decision_engine.py, services/decision_pipeline.py,
 services/benchmark_entry_capture.py, or services/scheduler.py. No code

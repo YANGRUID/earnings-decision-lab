@@ -133,38 +133,3 @@ class TestTrackRecordByConfiguration:
         assert "drawdown" not in text.replace("no portfolio drawdown or sharpe", "")
 
 
-class TestSameEventComparison:
-    def test_event_with_no_decisions_returns_nulls_not_fabrication(self, client, event):
-        body = client.get(f"/api/v1/v4/shadow/events/{event.id}/comparison").json()
-        assert body["event"]["symbol"] == "CMPX"
-        assert body["v3_control"] is None
-        assert body["v4_shadow"] is None
-
-    def test_v4_side_carries_six_configs_and_its_own_timing_policy(
-        self, client, db_session, event
-    ):
-        _freeze(db_session, event)
-        body = client.get(f"/api/v1/v4/shadow/events/{event.id}/comparison").json()
-        v4 = body["v4_shadow"]
-        assert v4["timing_policy_version"] == "v4-1530-entry-1530-t1-settlement-v2"  # active v2
-        assert v4["observation_time_et"] == "15:30"
-        assert len(v4["configurations"]) == 6
-        assert body["v3_control"] is None  # no V3 row for this synthetic event
-
-    def test_timing_difference_is_stated_not_hidden(self, client, db_session, event):
-        """Section 34 -- never claim timestamp parity."""
-        _freeze(db_session, event)
-        body = client.get(f"/api/v1/v4/shadow/events/{event.id}/comparison").json()
-        assert "15:55" in body["timing_note"] and "15:30" in body["timing_note"]
-        assert "not a timestamp-identical comparison" in body["timing_note"]
-
-    def test_v3_and_v4_numbers_live_in_separate_objects(self, client, db_session, event):
-        """Section 35 -- raw evidence, never a merged 'V4 beats V3' figure."""
-        _freeze(db_session, event)
-        body = client.get(f"/api/v1/v4/shadow/events/{event.id}/comparison").json()
-        assert set(body) >= {"v3_control", "v4_shadow", "timing_note"}
-        assert "beats" not in str(body).lower()
-        assert "superior" not in str(body).lower()
-
-    def test_unknown_event_is_404(self, client):
-        assert client.get("/api/v1/v4/shadow/events/999999/comparison").status_code == 404

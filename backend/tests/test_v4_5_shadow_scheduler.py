@@ -13,9 +13,7 @@ import pytest
 
 from services.scheduler import (
     CALENDAR_SYNC_JOB_ID,
-    DECISION_AND_ENTRY_CAPTURE_JOB_ID,
     EARNINGS_RESEARCH_PREPARATION_JOB_ID,
-    EXIT_CAPTURE_JOB_ID,
     V4_SHADOW_DECISION_JOB_ID,
     V4_SHADOW_SETTLEMENT_JOB_ID,
     build_scheduler,
@@ -50,8 +48,8 @@ class TestShadowSchedulerRegistration:
         ids = _job_ids(enabled=False)
         assert CALENDAR_SYNC_JOB_ID in ids
         assert EARNINGS_RESEARCH_PREPARATION_JOB_ID in ids
-        assert DECISION_AND_ENTRY_CAPTURE_JOB_ID not in ids  # V3 retired 2026-09-02
-        assert EXIT_CAPTURE_JOB_ID not in ids
+        assert "decision_and_entry_capture" not in ids  # V3 retired 2026-09-02
+        assert "exit_capture" not in ids
 
     def test_flag_on_registers_both_shadow_jobs(self):
         """Section 99 -- proven in an ISOLATED test config only; the
@@ -64,13 +62,13 @@ class TestShadowSchedulerRegistration:
         ids = _job_ids(enabled=True)
         assert CALENDAR_SYNC_JOB_ID in ids
         assert EARNINGS_RESEARCH_PREPARATION_JOB_ID in ids
-        assert DECISION_AND_ENTRY_CAPTURE_JOB_ID not in ids  # V3 retired 2026-09-02
-        assert EXIT_CAPTURE_JOB_ID not in ids
+        assert "decision_and_entry_capture" not in ids  # V3 retired 2026-09-02
+        assert "exit_capture" not in ids
 
     def test_shadow_job_ids_are_distinct_from_official_ids(self):
         """Section 52 -- must never overload the official V3 job's own
         success/failure counters."""
-        official = {DECISION_AND_ENTRY_CAPTURE_JOB_ID, EXIT_CAPTURE_JOB_ID}
+        official = {CALENDAR_SYNC_JOB_ID, EARNINGS_RESEARCH_PREPARATION_JOB_ID}
         shadow = {V4_SHADOW_DECISION_JOB_ID, V4_SHADOW_SETTLEMENT_JOB_ID}
         assert not (official & shadow)
 
@@ -155,8 +153,8 @@ class TestShadowJobSafety:
         # V3 survives the V4 failure -- which is the whole point.
         assert CALENDAR_SYNC_JOB_ID in ids
         assert EARNINGS_RESEARCH_PREPARATION_JOB_ID in ids
-        assert DECISION_AND_ENTRY_CAPTURE_JOB_ID not in ids  # V3 retired 2026-09-02
-        assert EXIT_CAPTURE_JOB_ID not in ids
+        assert "decision_and_entry_capture" not in ids  # V3 retired 2026-09-02
+        assert "exit_capture" not in ids
         assert V4_SHADOW_DECISION_JOB_ID not in ids
 
     @pytest.mark.parametrize(

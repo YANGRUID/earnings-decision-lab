@@ -1,4 +1,4 @@
-"""V4.5 -- EXPERIMENTAL V4 shadow scheduler jobs.
+"""V4 forward-test scheduler jobs (internal module name kept as v4_shadow).
 
 Deliberately a SEPARATE module from services/scheduler.py. That module is
 the official V3 pipeline's own entry point, and this project's V4

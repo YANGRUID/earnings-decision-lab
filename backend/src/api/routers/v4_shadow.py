@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Query
 
+from analytics.decision_timing_policy import V4_ACTIVE_TIMING_POLICY
 from api.deps import DbSession
 from api.exceptions import NotFoundError
 from models.v4_shadow import (
@@ -33,8 +34,8 @@ router = APIRouter(prefix="/v4/shadow", tags=["v4-shadow"])
 #: Repeated on every payload so a consumer cannot mistake this for
 #: official V3 forward-test evidence (Section 66).
 EXPERIMENTAL_NOTICE = (
-    "EXPERIMENTAL SHADOW -- NOT OFFICIAL FORWARD TEST -- NO BROKERAGE ORDER. "
-    "V3 remains the official engine; these records are analytical observations only."
+    "V4 FORWARD TEST -- PROSPECTIVE EVIDENCE ONLY -- NO BROKERAGE ORDER. "
+    "Records are prospective and immutable; they are never used to place an order."
 )
 
 
@@ -533,8 +534,20 @@ def get_shadow_decision_configurations(decision_id: int, db: DbSession) -> dict:
             "return_on_standardized_capital": settlement.return_on_standardized_capital,
             "market_data_quality": settlement.market_data_quality,
         },
-        "settlement_policy": "T+1 at 15:55 ET on the first post-earnings trading day",
+        "settlement_policy": _settlement_policy_text(
+            settlement.timing_policy_version if settlement is not None else None
+        ),
     }
+
+
+def _settlement_policy_text(recorded_version: str | None) -> str:
+    """Human text for the settlement instant. A settled row names the policy
+    it was settled under; a pending settlement names the ACTIVE policy (the
+    entry may have been frozen under an earlier version -- the transition is
+    stated, never hidden)."""
+    version = recorded_version or V4_ACTIVE_TIMING_POLICY.version
+    exit_time = V4_ACTIVE_TIMING_POLICY.exit_time.strftime("%H:%M")
+    return f"T+1 at {exit_time} ET on the first post-earnings trading day ({version})"
 
 
 # ---------------------------------------------------------------------------
@@ -643,187 +656,3 @@ def get_shadow_track_record_by_configuration(db: DbSession) -> dict:
 # side, with their DIFFERENT timing policies stated explicitly. V3 numbers
 # and V4 numbers are returned in separate objects and are never combined.
 # ---------------------------------------------------------------------------
-@router.get("/events/{event_id}/comparison")
-def get_same_event_comparison(event_id: int, db: DbSession) -> dict:
-    from analytics.decision_timing_policy import (
-        V3_TIMING_POLICY,
-        V4_ACTIVE_TIMING_POLICY,
-    )
-    from models.decision_snapshot import DecisionSnapshot
-    from models.earnings_calendar_event import EarningsCalendarEvent
-    from models.entry_capture_attempt import EntryCaptureAttempt
-    from models.settlement_snapshot import SettlementSnapshot
-
-    event = db.get(EarningsCalendarEvent, event_id)
-    if event is None:
-        raise NotFoundError(f"no earnings calendar event with id {event_id}")
-
-    # --- V3 control -------------------------------------------------------
-    v3_decision = (
-        db.query(DecisionSnapshot)
-        .filter_by(earnings_calendar_event_id=event_id)
-        .order_by(DecisionSnapshot.id.desc())
-        .first()
-    )
-    v3: dict | None = None
-    if v3_decision is not None:
-        entry = (
-            db.query(EntryCaptureAttempt)
-            .filter_by(decision_snapshot_id=v3_decision.id)
-            .order_by(EntryCaptureAttempt.id.desc())
-            .first()
-        )
-        settlement = (
-            db.query(SettlementSnapshot)
-            .filter_by(decision_id=v3_decision.id)
-            .order_by(SettlementSnapshot.id.desc())
-            .first()
-        )
-        v3 = {
-            "engine": "V3 historical control",
-            "timing_policy_version": V3_TIMING_POLICY.version,
-            "observation_time_et": V3_TIMING_POLICY.entry_time.strftime("%H:%M"),
-            "decision_id": v3_decision.id,
-            "generated_at": v3_decision.generated_at,
-            "strategy": v3_decision.strategy_type,
-            "direction": v3_decision.strategy_direction,
-            "risk_profile": v3_decision.effective_risk_profile,
-            "underlying_price": v3_decision.underlying_price,
-            "entry": None
-            if entry is None
-            else {
-                "status": entry.status,
-                "capture_error": entry.capture_error,
-                "contracts": entry.contracts,
-                "net_entry_cash": entry.net_entry_cash,
-                "initial_max_risk": entry.initial_max_risk,
-                "source_provider": entry.source_provider,
-            },
-            "settlement": None
-            if settlement is None
-            else {
-                "status": settlement.status,
-                "realized_pnl": settlement.realized_pnl,
-            },
-        }
-
-    # --- V4 six configurations -------------------------------------------
-    v4_decision = (
-        db.query(V4ShadowDecision)
-        .filter_by(earnings_calendar_event_id=event_id)
-        .order_by(V4ShadowDecision.id.desc())
-        .first()
-    )
-    v4: dict | None = None
-    if v4_decision is not None:
-        config_rows = {
-            r.configuration_key: r
-            for r in db.query(V4ShadowConfigResult).filter_by(shadow_decision_id=v4_decision.id)
-        }
-        candidates = {
-            c.candidate_id: c
-            for c in db.query(V4ShadowCandidate).filter_by(shadow_decision_id=v4_decision.id)
-        }
-        v4_settlement = (
-            db.query(V4ShadowSettlement)
-            .filter_by(shadow_decision_id=v4_decision.id)
-            .order_by(V4ShadowSettlement.id.desc())
-            .first()
-        )
-        entry_obs = (
-            db.query(V4ShadowObservation)
-            .filter_by(shadow_decision_id=v4_decision.id, phase="ENTRY")
-            .first()
-        )
-        cfg_entries = {
-            e.shadow_config_result_id: e
-            for e in db.query(V4ShadowConfigEntry).filter_by(shadow_decision_id=v4_decision.id)
-        }
-        cfg_settlements = {
-            x.shadow_config_result_id: x
-            for x in db.query(V4ShadowConfigSettlement).filter_by(shadow_decision_id=v4_decision.id)
-        }
-        configs = []
-        for key in _CONFIG_DISPLAY_ORDER:
-            row = config_rows.get(key)
-            if row is None:
-                continue
-            top = candidates.get(row.rank_1_candidate_id) if row.rank_1_candidate_id else None
-            ce = cfg_entries.get(row.id)
-            cs = cfg_settlements.get(row.id)
-            configs.append(
-                {
-                    "entry": None
-                    if ce is None
-                    else {
-                        "status": ce.status,
-                        "quantity": ce.quantity,
-                        "capital_used": ce.capital_used,
-                        "entry_net_value": ce.entry_net_value,
-                        "observed_at": ce.observed_at,
-                        "market_data_quality": ce.market_data_quality,
-                    },
-                    "settlement": None
-                    if cs is None
-                    else {
-                        "status": cs.status,
-                        "realized_pnl": cs.realized_pnl,
-                        "return_on_standardized_capital": cs.return_on_standardized_capital,
-                        "settled_at": cs.settled_at,
-                    },
-                    "configuration_key": key,
-                    "label": f"${int(row.capital_base):,} {row.risk_profile.title()}",
-                    "status": row.status,
-                    "no_action_reason": row.no_action_reason,
-                    "capital_base": row.capital_base,
-                    "max_risk_dollars": row.max_risk_dollars,
-                    "strategy": top.strategy if top else None,
-                    "expiration": top.expiration if top else None,
-                    "entry_cash_required": top.entry_cash_required if top else None,
-                    "core_median_return": top.core_median_return if top else None,
-                    "core_worst_return": top.core_worst_return if top else None,
-                    "stress_worst_return": top.stress_worst_return if top else None,
-                }
-            )
-        v4 = {
-            "engine": "V4 experimental shadow",
-            "timing_policy_version": v4_decision.decision_timing_policy_version
-            or V4_ACTIVE_TIMING_POLICY.version,
-            "observation_time_et": V4_ACTIVE_TIMING_POLICY.entry_time.strftime("%H:%M"),
-            "decision_id": v4_decision.id,
-            "generated_at": v4_decision.generated_at,
-            "underlying_price": v4_decision.underlying_price,
-            "market_data_quality": v4_decision.market_data_quality,
-            "entry_observation": None
-            if entry_obs is None
-            else {
-                "status": entry_obs.status,
-                "candidate_id": entry_obs.candidate_id,
-            },
-            "settlement": None
-            if v4_settlement is None
-            else {
-                "status": v4_settlement.status,
-                "realized_pnl": v4_settlement.realized_pnl,
-                "return_on_standardized_capital": v4_settlement.return_on_standardized_capital,
-            },
-            "configurations": configs,
-        }
-
-    return {
-        "notice": EXPERIMENTAL_NOTICE,
-        "event": {
-            "id": event.id,
-            "symbol": event.symbol,
-            "company_name": event.company_name,
-            "earnings_date": event.earnings_date,
-            "earnings_time": event.earnings_time,
-        },
-        "timing_note": (
-            "V3 observes at 15:55 ET and V4 at 15:30 ET. Their entry prices are taken from "
-            "different moments of the session; settlement for both is 15:55 ET on the first "
-            "post-earnings trading day. This is not a timestamp-identical comparison."
-        ),
-        "v3_control": v3,
-        "v4_shadow": v4,
-    }

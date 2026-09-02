@@ -243,6 +243,67 @@ class TestGetProviderDashboard:
         ibkr = next(p for p in options.providers if p.provider == "ibkr")
         assert ibkr.last_success_at == retrieved_at
 
+    def test_an_error_superseded_by_a_later_real_success_is_not_the_current_state(
+        self, clean_provider_state
+    ):
+        # Found live on the Data Providers page (2026-09-02): a day-old
+        # client-id collision was still shown as "gateway_offline" while
+        # IBKR snapshots had been flowing for the last 42 minutes.
+        db_session = clean_provider_state
+        company = Company(ticker="ZZPSTAT3", name="ZZ Provider Status Co 3", cik="0009999803")
+        db_session.add(company)
+        db_session.flush()
+        record_health_event(
+            db_session,
+            "ibkr",
+            "options",
+            ProviderHealthStatus.GATEWAY_OFFLINE,
+            "IB Gateway/TWS client id is already in use (error 326)",
+            datetime(2026, 9, 1, 19, 0, tzinfo=UTC),
+        )
+        retrieved_at = datetime(2026, 9, 2, 23, 0, tzinfo=UTC)
+        db_session.add(
+            OptionsSnapshot(
+                company_id=company.id,
+                snapshot_timestamp=retrieved_at,
+                expiration_date=date(2026, 10, 16),
+                strike=Decimal("100"),
+                option_type=OptionType.CALL,
+                source_provider="ibkr_tws",
+                retrieved_at=retrieved_at,
+            )
+        )
+        db_session.flush()
+
+        domains = get_provider_dashboard(db_session, _settings(options_provider="ibkr"))
+        ibkr = next(
+            p
+            for p in next(d for d in domains if d.domain == "options").providers
+            if p.provider == "ibkr"
+        )
+        assert ibkr.last_success_at == retrieved_at
+        assert ibkr.last_error_status is None
+        assert ibkr.last_error_at is None
+        assert ibkr.last_error_detail is None
+
+        # An error AFTER the last success is the current state again.
+        record_health_event(
+            db_session,
+            "ibkr",
+            "options",
+            ProviderHealthStatus.GATEWAY_OFFLINE,
+            "socket closed",
+            datetime(2026, 9, 3, 1, 0, tzinfo=UTC),
+        )
+        domains = get_provider_dashboard(db_session, _settings(options_provider="ibkr"))
+        ibkr = next(
+            p
+            for p in next(d for d in domains if d.domain == "options").providers
+            if p.provider == "ibkr"
+        )
+        assert ibkr.last_error_status == "gateway_offline"
+        assert ibkr.last_error_detail == "socket closed"
+
     def test_earnings_calendar_primary_is_earningsapi_fallback_is_finnhub(self, db_session):
         domains = get_provider_dashboard(db_session, _settings())
         earnings_calendar = next(d for d in domains if d.domain == "earnings_calendar")

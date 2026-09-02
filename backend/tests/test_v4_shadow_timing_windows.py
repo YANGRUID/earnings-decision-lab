@@ -49,16 +49,12 @@ AMC_THU = _event(date(2026, 9, 10), EarningsTiming.AMC)
 
 class TestDecisionWindow:
     def test_amc_event_is_due_at_1530_under_v4_and_not_at_v3s_1555(self):
-        from services.scheduler import _due_for_decision_now
 
         assert due_for_v4_decision_now(AMC_THU, _et(2026, 9, 10, 15, 30))
         assert due_for_v4_decision_now(AMC_THU, _et(2026, 9, 10, 15, 35))  # + LATE_CUTOFF_GRACE
         assert not due_for_v4_decision_now(AMC_THU, _et(2026, 9, 10, 15, 29))
         assert not due_for_v4_decision_now(AMC_THU, _et(2026, 9, 10, 15, 36))
         assert not due_for_v4_decision_now(AMC_THU, _et(2026, 9, 10, 15, 55))
-        # The live-found defect, pinned: V3's predicate is keyed to 15:55.
-        assert not _due_for_decision_now(AMC_THU, _et(2026, 9, 10, 15, 30))
-        assert _due_for_decision_now(AMC_THU, _et(2026, 9, 10, 15, 55))
 
     @pytest.mark.parametrize("timing", [EarningsTiming.BMO, EarningsTiming.UNKNOWN])
     def test_bmo_and_unknown_use_previous_trading_day(self, timing):
@@ -72,7 +68,6 @@ class TestDecisionWindow:
         assert due_for_v4_decision_now(raw, _et(2026, 9, 10, 15, 30))
 
     def test_schedule_is_v3s_day_with_v4s_clock(self):
-        from services.scheduler import _due_for_decision_now  # noqa: F401 -- import parity
 
         s = v4_schedule_for_event(AMC_THU)
         assert s.decision_generation_date == date(2026, 9, 10)

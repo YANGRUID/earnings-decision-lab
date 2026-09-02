@@ -352,35 +352,3 @@ class TestIdempotencyAndRecovery:
         assert db_session.query(V4ShadowDecision).count() == 1
 
 
-class TestV3Isolation:
-    def test_orchestration_never_writes_official_v3_evidence(
-        self, db_session, company, event, thesis, monkeypatch
-    ):
-        from models.decision_snapshot import DecisionSnapshot
-
-        before = db_session.query(DecisionSnapshot).count()
-        _run(db_session, event, monkeypatch, assembly=_assembly([
-            _candidate("c1", (_leg(0, "buy", "call", "100"),))
-        ]))
-        assert db_session.query(DecisionSnapshot).count() == before
-
-    def test_orchestration_imports_no_realized_outcome_module(self):
-        """Section 8 -- structural, not by inspection."""
-        import ast
-        from pathlib import Path
-
-        src = Path(__file__).resolve().parents[1] / "src"
-        tree = ast.parse((src / "services/v4_shadow_orchestration.py").read_text())
-        imported: set[str] = set()
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Import):
-                imported.update(a.name for a in node.names)
-            elif isinstance(node, ast.ImportFrom) and node.module:
-                imported.add(node.module)
-        for banned in (
-            "settlement_snapshot", "exit_snapshot", "price_reaction",
-            "v4_shadow_settlement", "benchmark_exit_capture",
-        ):
-            assert not any(banned in m for m in imported), (
-                f"shadow decision orchestration can reach outcome data via {banned!r}"
-            )

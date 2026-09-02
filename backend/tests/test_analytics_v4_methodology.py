@@ -10,7 +10,9 @@ from analytics.decision.v4_methodology import (
     V4_ROADMAP,
 )
 from models.enums import ExitPolicy
-from services.decision_snapshot_freezing import ENGINE_VERSION as ENGINE_VERSION_V3
+
+# The retired V3 engine's version string, kept as a literal: the V3 code is gone.
+ENGINE_VERSION_V3 = "options-decision-engine-v3"
 
 
 def test_v4_engine_version_is_distinct_from_v3():

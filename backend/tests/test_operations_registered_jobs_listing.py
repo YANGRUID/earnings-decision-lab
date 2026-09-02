@@ -14,7 +14,7 @@ from services.operations import ALL_JOB_IDS, get_scheduler_jobs
 from services.scheduler import SchedulerJobStatus, SchedulerStatus
 
 NEXT = datetime(2026, 9, 2, 19, 30, tzinfo=UTC)
-EXTRA = ["v4_shadow_decision", "v4_shadow_settlement"]
+EXTRA = ["research_preparation_startup_catchup", "some_future_job"]
 
 
 def _status(ids):
@@ -43,4 +43,4 @@ class TestRegisteredJobsAreListed:
     def test_unregistered_optional_jobs_do_not_appear(self, db_session):
         ids = [v.job_id for v in get_scheduler_jobs(db_session, _status(list(ALL_JOB_IDS)))]
         assert ids == list(ALL_JOB_IDS)
-        assert not any(i.startswith("v4_") for i in ids)
+        assert "some_future_job" not in ids

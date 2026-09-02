@@ -34,21 +34,14 @@ from sqlalchemy import func
 from api.deps import DbSession
 from api.exceptions import NotFoundError
 from core.config import Settings, get_settings
-from models.decision_snapshot import DecisionSnapshot
 from models.earnings_calendar_event import EarningsCalendarEvent
-from models.entry_capture_attempt import EntryCaptureAttempt
-from models.settlement_capture_attempt import SettlementCaptureAttempt
 from schemas.api import (
-    AdminRunDecisionGenerationResponse,
     AdminRunEarningsSyncResponse,
     AdminRunResearchPreparationResponse,
-    AdminRunSettlementCaptureResponse,
 )
 from services.scheduler import (
-    run_decision_and_entry_capture_job,
     run_earnings_calendar_sync_job,
     run_earnings_research_preparation_job,
-    run_exit_capture_job,
 )
 
 log = logging.getLogger("api.admin")
@@ -126,47 +119,5 @@ def run_research_preparation(db: DbSession) -> AdminRunResearchPreparationRespon
     )
 
 
-@router.post("/run-decision-generation", response_model=AdminRunDecisionGenerationResponse)
-def run_decision_generation(db: DbSession) -> AdminRunDecisionGenerationResponse:
-    """Decision generation AND entry capture together -- the underlying
-    job (Phase 4.4) deliberately does both in one pass so a frozen
-    decision's entry price is never captured meaningfully later than its
-    own generation; this endpoint preserves that, rather than splitting
-    it into two calls that would reintroduce the risk that design
-    avoided. Requires real UPCOMING earnings_calendar_event rows to act
-    on -- run /admin/run-earnings-sync first if none exist."""
-    settings = get_settings()
-    _ensure_enabled(settings)
-
-    decisions_before = _count(db, DecisionSnapshot.id)
-    entries_before = _count(db, EntryCaptureAttempt.id)
-    log.info("admin: triggering real decision generation + entry capture")
-    run_decision_and_entry_capture_job()
-    decisions_after = _count(db, DecisionSnapshot.id)
-    entries_after = _count(db, EntryCaptureAttempt.id)
-
-    return AdminRunDecisionGenerationResponse(
-        decision_snapshots_before=decisions_before,
-        decision_snapshots_after=decisions_after,
-        entry_capture_attempts_before=entries_before,
-        entry_capture_attempts_after=entries_after,
-    )
 
 
-@router.post("/run-settlement-capture", response_model=AdminRunSettlementCaptureResponse)
-def run_settlement_capture(db: DbSession) -> AdminRunSettlementCaptureResponse:
-    """Only acts on decisions with a real CAPTURED entry, due for exit
-    today (see run_exit_capture_job's own docstring for the exact real-
-    time gating) -- a no-op, honestly, on any day nothing is actually
-    due."""
-    settings = get_settings()
-    _ensure_enabled(settings)
-
-    before = _count(db, SettlementCaptureAttempt.id)
-    log.info("admin: triggering real settlement (exit) capture")
-    run_exit_capture_job()
-    after = _count(db, SettlementCaptureAttempt.id)
-
-    return AdminRunSettlementCaptureResponse(
-        settlement_capture_attempts_before=before, settlement_capture_attempts_after=after
-    )

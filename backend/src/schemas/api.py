@@ -42,217 +42,14 @@ class PriceReactionResponse(BaseModel):
     five_day_move_pct: Decimal | None
 
 
-class DecisionSnapshotResponse(BaseModel):
-    """Phase 4.3 -- one immutable, frozen AI Benchmark Portfolio decision.
-    Read-only: no endpoint anywhere accepts an update to this shape (see
-    api/routers/decision_snapshots.py)."""
-
-    model_config = ConfigDict(from_attributes=True)
-
-    id: int
-    earnings_calendar_event_id: int
-    benchmark_portfolio_id: int
-    ticker: str
-    company_name: str
-    strategy_direction: str
-    strategy_type: str | None
-    ai_thesis_version_id: int | None
-    generated_at: datetime
-    status: str
-
-    underlying_price: Decimal | None
-    implied_volatility: Decimal | None
-    volatility_regime: str | None
-    option_snapshot_reference: int | None
-
-    strategy_score: int | None
-    score_breakdown: dict | None
-    selected_expiration: date | None
-    legs: list | None
-
-    estimated_probability: Decimal | None
-    confidence_interval: dict | None
-    historical_sample_size: int | None
-    historical_compatibility: dict | None
-
-    why_this_strategy: list | None
-    why_this_expiration: list | None
-    why_these_strikes: list | None
-    why_not_alternatives: list | None
-
-    # Phase 4 reproducibility hardening (2026-08-26), Sections 2-6 -- NULL
-    # on every historical (including every Aug 25) row; see decision_
-    # snapshot.py's own column docstrings for what each freezes and why.
-    volatility_view: str | None
-    effective_risk_profile: str | None
-    deterministic_confidence_score: int | None
-    deterministic_confidence_breakdown: dict | None
-    decision_llm_provider: str | None
-    decision_llm_model: str | None
-
-    engine_version: str
-    prompt_version: str
-    expiration_source: str
-    created_at: datetime
 
 
-class EntrySnapshotResponse(BaseModel):
-    """Phase 4.4 -- one captured (or failed) leg of an official
-    benchmark entry attempt. Read-only, insert-only at the DB level --
-    see api/routers/decision_snapshots.py."""
-
-    model_config = ConfigDict(from_attributes=True)
-
-    id: int
-    capture_attempt_id: int
-    leg_index: int
-    status: str
-    captured_at: datetime | None
-
-    external_contract_id: str | None
-    expiration: date | None
-    strike: Decimal | None
-    option_type: str | None
-    action: str | None
-    quantity: int | None
-    multiplier: Decimal | None
-
-    bid: Decimal | None
-    ask: Decimal | None
-    mid: Decimal | None
-    last_price: Decimal | None
-    implied_volatility: Decimal | None
-    delta: Decimal | None
-    gamma: Decimal | None
-    theta: Decimal | None
-    vega: Decimal | None
-    market_data_quality: str | None
-    pricing_source: str | None
-
-    benchmark_entry_price: Decimal | None
-    pricing_assumption: str | None
-
-    capture_error: str | None
-    source_provider: str | None
-    created_at: datetime
 
 
-class EntryCaptureAttemptResponse(BaseModel):
-    """Phase 4.4 -- one official benchmark entry capture attempt,
-    including every leg it covers. A decision_snapshot only becomes an
-    "entered" benchmark observation when a row here has status=CAPTURED
-    (see services/decision_lifecycle.py) -- a FAILED attempt is still a
-    real, permanent, honest record, never hidden."""
-
-    model_config = ConfigDict(from_attributes=True)
-
-    id: int
-    decision_snapshot_id: int
-    benchmark_portfolio_id: int
-    status: str
-    capture_error: str | None
-
-    underlying_price: Decimal | None
-    underlying_bid: Decimal | None
-    underlying_ask: Decimal | None
-    underlying_timestamp: datetime | None
-    option_market_timestamp: datetime | None
-
-    net_entry_price_per_share: Decimal | None
-    net_entry_cash: Decimal | None
-    contracts: int | None
-    initial_max_risk: Decimal | None
-    capital_utilization: Decimal | None
-
-    source_provider: str | None
-    captured_at: datetime | None
-    created_at: datetime
-    # Phase 4 market-data-quality hardening (2026-08-26), Section 17 --
-    # VERIFIED_LIVE / DELAYED_DATA / UNKNOWN_QUALITY, never invisibly
-    # combined with a differently-sourced capture.
-    market_data_quality_label: str
-
-    legs: list[EntrySnapshotResponse] = []
 
 
-class ExitSnapshotResponse(BaseModel):
-    """Phase 4.5 -- one captured (or failed) leg of an official
-    benchmark exit attempt. Read-only, insert-only at the DB level --
-    see api/routers/settlements.py."""
-
-    model_config = ConfigDict(from_attributes=True)
-
-    id: int
-    settlement_attempt_id: int
-    entry_snapshot_id: int
-    leg_index: int
-    status: str
-    captured_at: datetime | None
-
-    external_contract_id: str | None
-    expiration: date | None
-    strike: Decimal | None
-    option_type: str | None
-    action: str | None
-    quantity: int | None
-    multiplier: Decimal | None
-
-    bid: Decimal | None
-    ask: Decimal | None
-    mid: Decimal | None
-    last_price: Decimal | None
-    implied_volatility: Decimal | None
-    delta: Decimal | None
-    gamma: Decimal | None
-    theta: Decimal | None
-    vega: Decimal | None
-    market_data_quality: str | None
-    pricing_source: str | None
-
-    benchmark_exit_price: Decimal | None
-    pricing_assumption: str | None
-    realized_pnl_per_share: Decimal | None
-
-    capture_error: str | None
-    source_provider: str | None
-    created_at: datetime
 
 
-class SettlementCaptureAttemptResponse(BaseModel):
-    """Phase 4.5 -- one official benchmark settlement (exit) capture
-    attempt, including every leg it covers. A decision_snapshot only
-    becomes a "settled" benchmark observation when a row here has
-    status=CAPTURED (see services/decision_lifecycle.py) -- a FAILED
-    attempt is still a real, permanent, honest record, never hidden."""
-
-    model_config = ConfigDict(from_attributes=True)
-
-    id: int
-    decision_snapshot_id: int
-    benchmark_portfolio_id: int
-    entry_capture_attempt_id: int | None
-    status: str
-    capture_error: str | None
-
-    underlying_price: Decimal | None
-    underlying_bid: Decimal | None
-    underlying_ask: Decimal | None
-    underlying_timestamp: datetime | None
-    exit_market_timestamp: datetime | None
-
-    net_exit_price_per_share: Decimal | None
-    net_exit_cash: Decimal | None
-    realized_pnl: Decimal | None
-    return_pct: Decimal | None
-    r_multiple: Decimal | None
-    is_win: bool | None
-
-    source_provider: str | None
-    captured_at: datetime | None
-    created_at: datetime
-    market_data_quality_label: str
-
-    legs: list[ExitSnapshotResponse] = []
 
 
 class EarningsCalendarEventResponse(BaseModel):
@@ -368,24 +165,8 @@ class ImpliedVsRealizedMoveResponse(BaseModel):
     realized_next_day_move_pct: Decimal
 
 
-class CompanyReplaySummaryResponse(BaseModel):
-    company: CompanyResponse
-    historical_moves: HistoricalMoveStatsResponse | None
-    # Real implied-vs-realized comparisons accumulated so far -- see
-    # services/options_analytics.py.get_implied_vs_realized_moves. Empty
-    # for every company today; options_data_ingested on the parent response
-    # explains why.
-    implied_vs_realized: list[ImpliedVsRealizedMoveResponse]
 
 
-class ReplaySummaryResponse(BaseModel):
-    companies: list[CompanyReplaySummaryResponse]
-    # Whether any options-chain quote has ever been ingested for any
-    # company -- false today, since no provider on this project's Alpha
-    # Vantage plan returns real options data (see
-    # providers/alpha_vantage_options.py). The frontend uses this to
-    # explain, rather than hide, why implied_vs_realized is empty.
-    options_data_ingested: bool
 
 
 class EarningsEventDetail(EarningsEventSummary):
@@ -780,35 +561,8 @@ class SystemStatusResponse(BaseModel):
     providers: ProviderDashboardResponse
 
 
-class PortfolioPositionResponse(BaseModel):
-    """A real, READ-ONLY brokerage position -- never a market quote (see
-    models/portfolio_position_snapshot.py). ``account_id_masked`` is
-    already masked before this is ever constructed.
-    """
-
-    model_config = ConfigDict(from_attributes=True)
-
-    account_id_masked: str
-    conid: int
-    contract_description: str
-    asset_class: str
-    quantity: Decimal
-    currency: str | None
-    market_price: Decimal | None
-    market_value: Decimal | None
-    average_cost: Decimal | None
-    unrealized_pnl: Decimal | None
-    realized_pnl: Decimal | None
-    option_expiry: str | None
-    option_right: str | None
-    option_strike: Decimal | None
-    snapshot_timestamp: datetime
-    source_provider: str
 
 
-class PortfolioSnapshotResponse(BaseModel):
-    positions: list[PortfolioPositionResponse]
-    snapshot_timestamp: datetime | None
 
 
 class PreparationStepResponse(BaseModel):
@@ -905,6 +659,15 @@ class ResearchOverviewResponse(BaseModel):
     options_market: OptionsMarketStateResponse
 
 
+
+class ResearchOverviewListResponse(BaseModel):
+    """Every researched company's overview in ONE response (Company Search).
+    Built strictly from persisted state -- no provider call, no recompute --
+    so a list page can never fan out per-ticker requests (V4-only reset,
+    2026-09-02: that fan-out was the SPA navigation stall)."""
+
+    overviews: list[ResearchOverviewResponse]
+
 class OptionQuoteResponse(BaseModel):
     expiration_date: date
     strike: Decimal
@@ -964,77 +727,12 @@ class EstimatedProbabilityResponse(BaseModel):
     wilson_upper: Decimal | None
 
 
-class ExpirationScoreResponse(BaseModel):
-    event_fit: int
-    liquidity: int
-    quote_coverage: int
-    bid_ask_quality: int
-    dte_suitability: int
-    data_quality: int
-    total: int
 
 
-class ExpirationCandidateResponse(BaseModel):
-    """One real, live-fetched candidate expiration and its deterministic
-    score -- see analytics/options/expiration_selection.py. Never a
-    fabricated date; every candidate here came from a real provider
-    response."""
-
-    expiration: date
-    dte: int
-    days_after_earnings: int | None
-    contract_count: int
-    priceable_contract_count: int
-    quote_coverage: Decimal
-    bid_ask_coverage: Decimal
-    oi_coverage: Decimal
-    volume_coverage: Decimal
-    atm_iv: Decimal | None
-    atm_spread_pct: Decimal | None
-    quality: str
-    score: ExpirationScoreResponse
-    is_earnings_anchored: bool
-    excluded_pre_earnings: bool
 
 
-class ExpirationMethodologyComparisonResponse(BaseModel):
-    """Phase 4 methodology-experiments hardening (2026-08-26), Section 35
-    -- EXPERIMENTAL comparison only, never the official methodology."""
-
-    model_config = ConfigDict(from_attributes=True)
-
-    legacy_expiration: date | None
-    legacy_dte: int | None
-    scored_expiration: date | None
-    scored_dte: int | None
-    scored_total_score: int | None
-    scored_liquidity: int | None
-    scored_quote_coverage: int | None
-    scored_bid_ask_quality: int | None
-    scored_dte_suitability: int | None
-    scored_data_quality: int | None
-    legacy_candidate_evaluated_by_scored_engine: bool
-    methodologies_agree: bool | None
 
 
-class ExpirationSelectionResponse(BaseModel):
-    """Options Decision Engine V3 Part C -- the Expiration Selection
-    Engine's result: what was selected (Auto's own pick, or exactly the
-    Manual choice), the real alternatives it was compared against, and a
-    deterministic explanation. ``selected=None`` only when no real
-    expiration was usable at all -- never a fabricated fallback."""
-
-    mode: str  # "auto" | "manual"
-    selected: ExpirationCandidateResponse | None
-    alternatives: list[ExpirationCandidateResponse]
-    reasons: list[str]
-    warning: str | None
-    # Phase 4 methodology-experiments hardening (2026-08-26), Section 35 --
-    # EXPERIMENTAL: legacy (nearest-after-earnings) vs the scored engine's
-    # own pick, over the same already-discovered candidates. Never the
-    # official BenchmarkPortfolio methodology -- diagnostic only. Present
-    # only for mode="auto" with a real earnings date to compare against.
-    methodology_comparison: ExpirationMethodologyComparisonResponse | None = None
 
 
 class ScenarioPnlResponse(BaseModel):
@@ -1062,58 +760,6 @@ class RankedStrategyResponse(BaseModel):
     move_compatibility: MoveCompatibilityResponse | None
 
 
-class StrategyLabResponse(BaseModel):
-    """Real, ranked strategy candidates for a company's upcoming earnings,
-    built entirely from an already-ingested real options-chain snapshot --
-    empty (never fabricated) when no such snapshot exists yet. See
-    services/strategy_generation.py and analytics/options/strategy_ranking.py.
-    """
-
-    ticker: str
-    expiration: date | None
-    underlying_price: Decimal | None
-    implied_move_pct: Decimal | None
-    strategies: list[RankedStrategyResponse]
-    chain: list[OptionQuoteResponse]
-    anchor: str | None = None
-    """earnings_anchored or general_current, mirroring the VolatilitySnapshot
-    this was built from -- set whenever real strategies/chain are returned,
-    so the frontend never has to guess whether "next earnings date" applies
-    to what's shown. None only when there's no chain at all."""
-    reason: str | None = None
-    """Explanatory context, in two distinct situations that must never be
-    confused with each other: (1) ``strategies`` is empty -- *why* (no
-    known upcoming earnings date yet, vs. a date is known but no
-    options-chain snapshot has been collected for it); (2) ``strategies``
-    is real and non-empty but ``anchor="general_current"`` -- a disclaimer
-    that what's shown isn't tied to a specific earnings date. ``None`` only
-    when real, earnings-anchored strategies are returned with nothing to
-    disclaim."""
-
-    market_session: str
-    """Real US Eastern-time session right now -- pre_market/regular/
-    after_hours/closed (see analytics/market_session.py). Independent of
-    whether any chain exists; always set."""
-    data_state: str
-    """live/delayed/frozen/previous_session/market_closed/not_collected --
-    see models/enums.py::DataState and analytics/data_state.py. The single
-    honest answer to "how current is what's shown below"."""
-    snapshot_source: str | None = None
-    """Real source_provider of the chain shown (ibkr/alpha_vantage) --
-    None only when there's no chain at all."""
-    snapshot_timestamp: datetime | None = None
-    snapshot_age_minutes: int | None = None
-    snapshot_age_label: str | None = None
-    earnings_anchor_status: str
-    """confirmed (alpha_vantage-sourced date) / manual (owner override) /
-    estimated / unknown -- mirrors EarningsEstimateSnapshot.date_source
-    when a date is known, "unknown" when none is. Never presents a
-    manual/estimated date as provider-confirmed."""
-    options_market: OptionsMarketStateResponse
-    """The same canonical options-availability object shown on Company
-    Overview / Upcoming Earnings -- so the two surfaces can never disagree
-    about whether a real chain exists, how many contracts, or why an
-    implied move is or isn't available."""
 
 
 class EarningsThesisResponse(BaseModel):
@@ -1190,117 +836,12 @@ class DecisionGenerateRequest(BaseModel):
     expiration: date | None = None
 
 
-class AIDecisionVersionResponse(BaseModel):
-    """A real, persisted AI Options Decision -- see
-    models/ai_decision_version.py. Append-only: a new generation is
-    always a new row (Phase 14.9 Part F), never an edit to a prior one.
-    Settlement fields (actual_*, direction_correct, breakeven_met,
-    strategy_pnl*) stay null until services/decision_settlement.py has
-    real post-earnings data to settle against."""
-
-    model_config = ConfigDict(from_attributes=True)
-
-    id: int
-    company_id: int
-    direction: str
-    volatility_view: str
-    confidence_score: int
-    confidence_components: dict[str, int]
-    rationale: str
-    bull_case: str
-    bear_case: str
-    key_catalysts: str
-    key_risks: str
-    disclaimer: str
-    citations: list[dict]
-    decision_source: str
-    risk_preference: str
-    risk_profile: str | None = None
-    recommended_strategy_category: str | None
-    recommended_strategy_legs: list[dict] | None
-    recommended_strategy_analysis: dict | None
-    recommended_strategy_score: int | None
-    recommended_strategy_score_components: dict[str, int] | None
-    recommended_strategy_why: list[str] | None
-    recommended_strategy_risks: list[str] | None
-    # Options Decision Engine V3 Part E -- computed live at read time from
-    # the persisted recommended_strategy_analysis (breakevens/net_premium)
-    # against the CURRENT real historical-move sample, never persisted
-    # itself (the sample can only grow as more real earnings events are
-    # reported -- see analytics/options/move_compatibility.py). None when
-    # there's no recommended strategy, no real breakeven, or no historical
-    # moves on record yet -- never fabricated.
-    historical_compatibility: MoveCompatibilityResponse | None = None
-    estimated_probability: EstimatedProbabilityResponse | None = None
-    # Options Decision Engine V3 Part G -- see analytics/decision/reasoning.py.
-    recommended_strategy_why_expiration: list[str] | None = None
-    recommended_strategy_why_strikes: list[str] | None = None
-    recommended_strategy_why_risk_profile: list[str] | None = None
-    recommended_strategy_why_not_alternative: list[str] | None = None
-    alternative_strategies: list[dict] | None
-    expiration: date | None
-    underlying_price: Decimal | None
-    implied_move_pct: Decimal | None
-    provider: str
-    model: str
-    earnings_estimate_snapshot_id: int | None
-    volatility_snapshot_id: int | None
-    trade_budget: Decimal | None
-    risk_cap: Decimal | None
-    risk_cap_is_percent: bool | None
-    recommended_quantity: int | None
-    recommended_capital_at_risk: Decimal | None
-    budget_infeasible_minimum: Decimal | None
-    no_market_data_reason: str | None
-    status: str
-    is_final: bool
-    earnings_event_id: int | None
-    actual_next_day_move_pct: Decimal | None
-    actual_five_day_move_pct: Decimal | None
-    direction_correct: bool | None
-    actual_move_exceeded_implied: bool | None
-    breakeven_met: bool | None
-    strategy_pnl: Decimal | None
-    strategy_pnl_available: bool
-    settled_at: datetime | None
-    created_at: datetime
-    settlement_eligible: bool = False
-    settlement_state: str = "not_final"
-    settlement_reason: str = ""
-    settlement_earliest_date: date | None = None
 
 
-class SettlementAttemptResponse(BaseModel):
-    """Every outcome of an "Attempt Settlement" click is a distinct,
-    real, structured response -- never a silent no-op (Phase 14.10 Part
-    I3). ``settled=True`` only when a real settlement genuinely
-    happened (or had already happened); every other case carries the
-    real, specific reason in ``message``."""
-
-    decision: AIDecisionVersionResponse
-    settled: bool
-    message: str
 
 
-class PendingDecisionResponse(BaseModel):
-    """One Final Decision awaiting settlement, with its company ticker
-    attached since this list spans every company (Phase 14.10 Part I4) --
-    ``AIDecisionVersionResponse`` alone has no ticker."""
-
-    ticker: str
-    decision: AIDecisionVersionResponse
 
 
-class PendingDecisionsResponse(BaseModel):
-    """Real counts of every Final Decision this journal has ever marked,
-    split by whether it has genuinely settled yet -- lets Track Record
-    show "N pending / M settled" without the caller re-deriving it from
-    the full decision list."""
-
-    pending: list[PendingDecisionResponse]
-    final_count: int
-    pending_count: int
-    settled_count: int
 
 
 class RateResponse(BaseModel):
@@ -1316,24 +857,6 @@ class ConfidenceBucketResponse(BaseModel):
     rate: RateResponse
 
 
-class TrackRecordResponse(BaseModel):
-    """Honest reliability metrics for the AI Options Decision journal --
-    see services/track_record.py's module docstring for the precise
-    definition of each rate (Directional Accuracy != Breakeven Success !=
-    Strategy Win Rate) and why every rate carries its own real sample
-    size rather than a bare percentage."""
-
-    window: str
-    evaluated_count: int
-    directional_accuracy: RateResponse
-    bullish_accuracy: RateResponse
-    bearish_accuracy: RateResponse
-    average_confidence: Decimal | None
-    high_confidence_accuracy: RateResponse
-    volatility_view_accuracy: RateResponse
-    breakeven_success: RateResponse
-    strategy_win_rate_available: bool
-    confidence_calibration: list[ConfidenceBucketResponse]
 
 
 class StandardizedCohortSummaryResponse(BaseModel):
@@ -1347,72 +870,10 @@ class StandardizedCohortSummaryResponse(BaseModel):
     portfolio_drawdown_reason: str
 
 
-class BenchmarkTrackRecordResponse(BaseModel):
-    """Phase 4.6 -- Verified AI Forward-Test Performance Analytics over
-    the real, immutable Phase 4 tables (DecisionSnapshot + EntrySnapshot
-    + EntryCaptureAttempt + SettlementCaptureAttempt/ExitSnapshot) --
-    never the legacy AIDecisionVersion/TrackRecordResponse above, a
-    different system over a different table. Every rate is a
-    RateResponse whose ``pct`` is ``null`` when its ``total`` is 0; every
-    plain numeric metric is ``null`` under the same condition
-    (``settled_decisions == 0``) -- this API never fabricates a metric
-    from an empty sample. See services/benchmark_track_record.py.
-
-    Post-live correction (2026-08-25): ``actionable_decisions``/
-    ``no_action_decisions``/``entries_captured``/``entries_capture_
-    failed`` give an honest pre-settlement summary of what actually
-    happened to every decision, real counts even while
-    ``settled_decisions`` is still 0 -- a no-action decision (the
-    strategy engine recommended nothing) is never counted toward
-    entries_capture_failed, which only reflects a real, actionable
-    strategy whose market-price capture genuinely failed.
-    """
-
-    portfolio_id: int
-    total_decisions: int
-    actionable_decisions: int
-    no_action_decisions: int
-    entries_captured: int
-    entries_capture_failed: int
-    settled_decisions: int
-    win_rate: RateResponse
-    average_r: Decimal | None
-    median_r: Decimal | None
-    expectancy: Decimal | None
-    profit_factor: Decimal | None
-    max_drawdown: Decimal | None
-    max_drawdown_pct: Decimal | None
-    directional_accuracy: RateResponse
-    breakeven_accuracy: RateResponse
-    range_accuracy: RateResponse
-    # V4.1 methodology foundation (2026-08-31) -- see
-    # services/benchmark_track_record.py::LEGACY_CAPITAL_CAVEAT and
-    # analytics/decision/v4_capital.py. max_drawdown/max_drawdown_pct
-    # above are never altered; legacy_capital_caveat explains why they
-    # aren't a real portfolio statistic, and standardized is the same
-    # real settlements read correctly instead.
-    legacy_capital_caveat: str | None = None
-    standardized: StandardizedCohortSummaryResponse
 
 
-class BenchmarkCalibrationBucketResponse(BaseModel):
-    label: str
-    lower: int | None
-    upper: int | None
-    rate: RateResponse
 
 
-class BenchmarkCalibrationResponse(BaseModel):
-    """Phase 4.6 -- predicted DecisionSnapshot.estimated_probability vs.
-    real SettlementCaptureAttempt.is_win, bucketed into five ranges
-    (<60%, 60-70%, 70-80%, 80-90%, 90%+). ``settled_decisions`` is every
-    real settlement on record (matching BenchmarkTrackRecordResponse's
-    own definition); a bucket's own ``rate.total`` only reflects the
-    subset that also had a gradable probability estimate."""
-
-    portfolio_id: int
-    settled_decisions: int
-    buckets: list[BenchmarkCalibrationBucketResponse]
 
 
 class ProviderSettingsUpdateRequest(BaseModel):
@@ -1558,24 +1019,8 @@ class V4T1ScenarioValuationResponse(BaseModel):
     engine_version: str
 
 
-class AdminRunDecisionGenerationResponse(BaseModel):
-    """Phase 4.9 -- POST /admin/run-decision-generation. Real before/
-    after counts from a real, immediate run of run_decision_and_entry_
-    capture_job (decision generation + entry capture together, matching
-    that job's own Phase 4.4 design -- see its docstring)."""
-
-    decision_snapshots_before: int
-    decision_snapshots_after: int
-    entry_capture_attempts_before: int
-    entry_capture_attempts_after: int
 
 
-class AdminRunSettlementCaptureResponse(BaseModel):
-    """Phase 4.9 -- POST /admin/run-settlement-capture. Real before/
-    after counts from a real, immediate run of run_exit_capture_job."""
-
-    settlement_capture_attempts_before: int
-    settlement_capture_attempts_after: int
 
 
 class AdminRunResearchPreparationResponse(BaseModel):
@@ -1674,69 +1119,12 @@ class DatabaseHealthResponse(BaseModel):
     migration_head: str | None
 
 
-class V4ShadowHealthResponse(BaseModel):
-    """V4.4C (Sections 51/80/81) -- the EXPERIMENTAL shadow cohort's own
-    health domain. Reported alongside the official domains, never merged
-    into them: a shadow failure must never make the official V3 system
-    look unhealthy."""
-
-    model_config = ConfigDict(from_attributes=True)
-
-    state: str
-    enabled: bool
-    decisions_today: int
-    ranked_today: int
-    no_action_today: int
-    failed_today: int
-    entry_observations_failed_today: int
-    settlements_due: int
-    settlements_complete: int
-    last_shadow_run_at: datetime | None
-    engine_version: str | None
-    note: str
 
 
-class SystemHealthResponse(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-
-    ibkr: IbkrHealthResponse
-    earnings_calendar: EarningsCalendarHealthResponse
-    ai_provider: AiProviderHealthResponse
-    scheduler: SchedulerHealthResponse
-    database: DatabaseHealthResponse
-    #: Optional so every existing consumer and test is unaffected, and so
-    #: a deployment predating V4.4C simply reports nothing here.
-    v4_shadow: V4ShadowHealthResponse | None = None
 
 
-class TimelineStepResponse(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-
-    label: str
-    at: datetime | None
-    status: str
-    detail: str | None = None
 
 
-class PipelineEventResponse(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-
-    calendar_event_id: int
-    symbol: str
-    company_name: str
-    market_cap: str | None
-    earnings_date: str
-    earnings_timing: str
-    entry_timestamp: datetime
-    exit_timestamp: datetime
-    lifecycle_state: str
-    lifecycle_reason: str | None
-    next_action: str | None
-    next_action_at: datetime | None
-    decision_snapshot_id: int | None
-    entry_capture_attempt_id: int | None
-    settlement_capture_attempt_id: int | None
-    timeline: list[TimelineStepResponse]
 
 
 class SchedulerJobViewResponse(BaseModel):
@@ -1754,107 +1142,26 @@ class SchedulerJobViewResponse(BaseModel):
     last_error: str | None
 
 
-class ExecutionSummaryResponse(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-
-    todays_events: int
-    eligibility_passed: int
-    eligibility_failed: int
-    decisions_created: int
-    waiting_for_entry: int
-    entries_captured: int
-    entry_failures: int
-    settlements_due: int
-    settled: int
-    settlement_failures: int
 
 
-class TodaysOfficialRunResponse(BaseModel):
-    """Post-official-run cleanup (2026-08-27), Section 3 -- see services/
-    operations.py::TodaysOfficialRun's own docstring. ``found=False``
-    before today's scheduler run has actually fired -- an honest empty
-    state, never a fabricated all-zero one."""
-
-    model_config = ConfigDict(from_attributes=True)
-
-    found: bool
-    run_started_at: datetime | None
-    run_finished_at: datetime | None
-    run_status: str | None
-    evaluated: int
-    skipped_ineligible: int
-    contract_resolution_failed: int = 0
-    decisions_created: int
-    no_action: int
-    entries_captured: int
-    entries_failed: int
-    pipeline_failed: int
-    settlements_captured: int
-    settlements_failed: int
 
 
-class FailureEntryResponse(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-
-    occurred_at: datetime
-    symbol: str | None
-    stage: str
-    category: str
-    explanation: str
-    detail: str | None
-    retryability: str
 
 
-class PreflightCheckResponse(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-
-    label: str
-    passed: bool
-    detail: str | None = None
 
 
-class PreflightReadinessResponse(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-
-    checks: list[PreflightCheckResponse]
-    ready: bool
-    blockers: list[str]
 
 
-class MarketClockResponse(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-
-    utc_now: datetime
-    new_york_now: datetime
-    zurich_now: datetime
-    market_session: str
-    next_automatic_action_job_id: str | None
-    next_automatic_action_at: datetime | None
 
 
-class OperationsSummaryResponse(BaseModel):
-    """GET /operations/summary -- the whole top-of-page payload (system
-    health, execution summary, pre-flight readiness, market clock) in
-    one real, aggregated response, matching Section 17's own "avoid
-    N+1 frontend requests" requirement."""
-
-    health: SystemHealthResponse
-    execution_summary: ExecutionSummaryResponse
-    official_run: TodaysOfficialRunResponse
-    preflight: PreflightReadinessResponse
-    market_clock: MarketClockResponse
 
 
-class OperationsEventsResponse(BaseModel):
-    events: list[PipelineEventResponse]
 
 
 class OperationsJobsResponse(BaseModel):
     jobs: list[SchedulerJobViewResponse]
 
 
-class OperationsFailuresResponse(BaseModel):
-    failures: list[FailureEntryResponse]
 
 
 class PreparationProgressResponse(BaseModel):
@@ -1883,70 +1190,12 @@ class PreparationProgressResponse(BaseModel):
     elapsed_seconds: float | None
 
 
-class QuoteDiagnosticAttemptResponse(BaseModel):
-    """Phase 4 quote-observability hardening (2026-08-26), Section 13 --
-    one real per-poll observation. Never carries account id/username/
-    session id/cookie/auth token/password -- there is no such field on
-    QuoteAcquisitionAttempt to expose in the first place."""
-
-    model_config = ConfigDict(from_attributes=True)
-
-    snapshot_attempt_number: int
-    elapsed_ms: int
-    bid: Decimal | None
-    ask: Decimal | None
-    last_price: Decimal | None
-    bid_present: bool
-    ask_present: bool
-    last_present: bool
-    market_data_quality: str | None
 
 
-class QuoteDiagnosticLegResponse(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-
-    leg_index: int | None
-    option_type: str | None
-    strike: Decimal | None
-    required_side: str
-    contract_resolved: bool
-    external_contract_id: str | None
-    attempts: list[QuoteDiagnosticAttemptResponse]
-    result_label: str
 
 
-class QuoteDiagnosticsResponse(BaseModel):
-    """GET /operations/quote-diagnostics/entry/{id} and .../settlement/{id}
-    -- the real, structured per-leg polling history for one capture
-    attempt, for the expandable Operations diagnostic view. Diagnostic
-    only: never read by any pricing or capture-outcome logic."""
-
-    model_config = ConfigDict(from_attributes=True)
-
-    ticker: str
-    expiration: str | None
-    legs: list[QuoteDiagnosticLegResponse]
 
 
-class QuoteDiagnosticsSummaryResponse(BaseModel):
-    """GET /operations/quote-diagnostics/summary -- a bounded, real
-    aggregate over recent QuoteAcquisitionAttempt rows (Section 14).
-    Diagnostic statistics about the quote-ACQUISITION process, never a
-    trading-performance metric -- no win rate, no P&L, nothing settled-
-    outcome-related belongs here."""
-
-    model_config = ConfigDict(from_attributes=True)
-
-    window_hours: int
-    contracts_requested: int
-    contracts_resolved: int
-    total_snapshot_attempts: int
-    average_attempts_per_leg: float | None
-    median_attempts_per_leg: float | None
-    quote_unavailable_count: int
-    rate_limited_count: int
-    permission_error_count: int
-    contract_error_count: int
 
 
 class EntryLegRowResponse(BaseModel):
@@ -2021,3 +1270,184 @@ class ForwardTestDatasetRowResponse(BaseModel):
 
 class ForwardTestDatasetResponse(BaseModel):
     rows: list[ForwardTestDatasetRowResponse]
+
+
+# ---------------------------------------------------------------------------
+# Live Operations (V4-only reset, 2026-09-02)
+# ---------------------------------------------------------------------------
+
+
+class V4ForwardHealthResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    state: str
+    enabled: bool
+    decisions_today: int
+    ranked_today: int
+    no_action_today: int
+    failed_today: int
+    entry_observations_failed_today: int
+    settlements_due: int
+    settlements_complete: int
+    last_run_at: datetime | None
+    engine_version: str | None
+    decision_time_et: str
+    settlement_time_et: str
+    timing_policy_version: str
+    note: str
+
+
+class SystemHealthResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    ibkr: IbkrHealthResponse
+    earnings_calendar: EarningsCalendarHealthResponse
+    ai_provider: AiProviderHealthResponse
+    scheduler: SchedulerHealthResponse
+    database: DatabaseHealthResponse
+    v4_shadow: V4ForwardHealthResponse | None = None
+
+
+class TimelineStepResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    label: str
+    at: datetime | None
+    status: str
+    detail: str | None = None
+
+
+class V4PipelineEventResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    calendar_event_id: int
+    symbol: str
+    company_name: str
+    market_cap: str | None
+    earnings_date: str
+    earnings_timing: str
+    entry_timestamp: datetime
+    exit_timestamp: datetime
+    lifecycle_state: str
+    lifecycle_reason: str | None
+    next_action: str | None
+    next_action_at: datetime | None
+    research_ready: bool
+    shadow_decision_id: int | None
+    decision_status: str | None
+    entries_observed: int
+    entries_failed: int
+    settlements_settled: int
+    settlements_failed: int
+    timeline: list[TimelineStepResponse]
+
+
+class ResearchReadinessResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    window_days: int
+    upcoming_events: int
+    business_eligible: int
+    company_resolved: int
+    research_queued: int
+    research_running: int
+    research_ready: int
+    research_failed: int
+    ai_thesis_ready: int
+    v4_decision_ready: int
+    next_window_at: datetime | None
+    next_window_ready: int
+    next_window_total: int
+
+
+class V4TodaySummaryResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    decision_window_et: str
+    settlement_window_et: str
+    deadline_et: str
+    events_in_window: int
+    business_eligible: int
+    research_ready: int
+    waiting_decision: int
+    decisions_today: int
+    ranked_today: int
+    no_action_today: int
+    entries_observed_today: int
+    entries_failed_today: int
+    deadline_skipped_today: int
+    research_not_ready_today: int
+    settlements_due_today: int
+    settled_today: int
+    settlements_failed_today: int
+
+
+class FailureEntryResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    occurred_at: datetime
+    symbol: str | None
+    stage: str
+    category: str
+    explanation: str
+    detail: str | None
+    retryability: str
+
+
+class JobStalenessResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    job_id: str
+    state: str
+    last_expected_at: datetime | None
+    last_actual_at: datetime | None
+    next_run_at: datetime | None
+    detail: str
+
+
+class PreflightCheckResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    label: str
+    passed: bool
+    detail: str | None = None
+
+
+class PreflightReadinessResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    checks: list[PreflightCheckResponse]
+    ready: bool
+    blockers: list[str]
+
+
+class MarketClockResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    utc_now: datetime
+    new_york_now: datetime
+    zurich_now: datetime
+    market_session: str
+    next_automatic_action_job_id: str | None
+    next_automatic_action_at: datetime | None
+    settlement_window_tolerance_minutes: int = 5
+
+
+class OperationsSummaryResponse(BaseModel):
+    """GET /operations/summary -- health, today's V4 summary, research
+    readiness, pre-flight and the clock in one aggregated response."""
+
+    health: SystemHealthResponse
+    today: V4TodaySummaryResponse
+    readiness: ResearchReadinessResponse
+    preflight: PreflightReadinessResponse
+    market_clock: MarketClockResponse
+    staleness: list[JobStalenessResponse] = []
+
+
+class OperationsEventsResponse(BaseModel):
+    events: list[V4PipelineEventResponse]
+
+
+class OperationsFailuresResponse(BaseModel):
+    failures: list[FailureEntryResponse]

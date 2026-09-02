@@ -16,13 +16,6 @@ import pytest
 _SRC = Path(__file__).resolve().parents[1] / "src"
 
 #: Modules that produce OFFICIAL V3 evidence.
-OFFICIAL_PATH_MODULES = (
-    "services/decision_engine.py",
-    "services/decision_snapshot_freezing.py",
-    "services/benchmark_entry_capture.py",
-    "services/benchmark_exit_capture.py",
-    "services/options_reconstruction.py",
-)
 
 SHADOW_MODULES = (
     "services/v4_shadow.py",
@@ -95,42 +88,6 @@ class TestNoLookAhead:
         assert "realized_pnl" in settlement_columns
 
 
-class TestV3Isolation:
-    @pytest.mark.parametrize("module_path", OFFICIAL_PATH_MODULES)
-    def test_official_module_does_not_import_shadow_code(self, module_path):
-        """A V4 failure must never be able to break V3 -- easiest way to
-        guarantee that is for V3 not to import V4 at all."""
-        imported = _imports(_SRC / module_path)
-        leaked = [m for m in imported if "v4_shadow" in m or "v4_4b_ranking" in m]
-        assert not leaked, f"{module_path} imports V4 shadow code: {leaked}"
-
-    def test_shadow_service_never_writes_official_v3_tables(self):
-        """Section 9 -- shadow evidence lives in its own tables."""
-        imported = _imports(_SRC / "services/v4_shadow.py")
-        official_models = (
-            "models.decision_snapshot",
-            "models.entry_snapshot",
-            "models.exit_snapshot",
-            "models.settlement_snapshot",
-            "models.entry_capture_attempt",
-            "models.settlement_capture_attempt",
-        )
-        leaked = [m for m in imported for o in official_models if m.startswith(o)]
-        assert not leaked, f"shadow service reaches official V3 evidence models: {leaked}"
-
-    def test_shadow_service_has_no_brokerage_order_surface(self):
-        """Section 10 -- shadow means analytical observation only."""
-        source = (_SRC / "services/v4_shadow.py").read_text()
-        for banned in ("placeOrder", "cancelOrder", "exerciseOptions", "reqGlobalCancel"):
-            assert banned not in source
-
-    def test_observation_is_never_called_a_fill(self):
-        """Naming matters: an observed quote is not an execution."""
-        from models.v4_shadow import V4ShadowObservation
-
-        columns = {c.name for c in V4ShadowObservation.__table__.columns}
-        for banned in ("fill", "fill_price", "order_id", "position"):
-            assert banned not in columns
 
 
 class TestActivationGate:

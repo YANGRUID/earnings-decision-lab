@@ -296,8 +296,6 @@ class TestSchedulerRegistration:
 
     def test_v3_jobs_are_gone_and_v4_settlement_fires_at_1530(self):
         from services.scheduler import (
-            DECISION_AND_ENTRY_CAPTURE_JOB_ID,
-            EXIT_CAPTURE_JOB_ID,
             RESEARCH_PREPARATION_STARTUP_CATCHUP_JOB_ID,
             RESEARCH_READINESS_CATCHUP_JOB_ID,
             V4_SHADOW_DECISION_JOB_ID,
@@ -305,7 +303,7 @@ class TestSchedulerRegistration:
         )
 
         jobs = self._jobs(enabled=True)
-        assert DECISION_AND_ENTRY_CAPTURE_JOB_ID not in jobs and EXIT_CAPTURE_JOB_ID not in jobs
+        assert "decision_and_entry_capture" not in jobs and "exit_capture" not in jobs
 
         def hhmm(job_id):
             f = jobs[job_id].trigger.fields

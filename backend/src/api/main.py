@@ -14,22 +14,15 @@ from api.middleware import RequestContextMiddleware, SecurityHeadersMiddleware
 from api.rate_limit import SlidingWindowRateLimiter
 from api.routers import (
     admin,
-    benchmark_entries,
-    benchmark_track_record,
     companies,
-    decision_snapshots,
     earnings,
     earnings_calendar,
     evaluations,
     health,
     ibkr,
     operations,
-    options,
-    portfolio,
     provider_settings,
-    replay,
     research,
-    settlements,
     system_status,
     tws_diagnostics,
     usage,
@@ -196,17 +189,10 @@ def create_app() -> FastAPI:
     app.include_router(earnings.router, prefix="/api/v1")
     app.include_router(earnings_calendar.router, prefix="/api/v1")
     app.include_router(ibkr.router, prefix="/api/v1")
-    app.include_router(decision_snapshots.router, prefix="/api/v1")
-    app.include_router(benchmark_entries.router, prefix="/api/v1")
-    app.include_router(benchmark_track_record.router, prefix="/api/v1")
-    app.include_router(settlements.router, prefix="/api/v1")
-    app.include_router(options.router, prefix="/api/v1")
     app.include_router(research.router, prefix="/api/v1")
     app.include_router(evaluations.router, prefix="/api/v1")
-    app.include_router(replay.router, prefix="/api/v1")
     app.include_router(system_status.router, prefix="/api/v1")
     app.include_router(operations.router, prefix="/api/v1")
-    app.include_router(portfolio.router, prefix="/api/v1")
     app.include_router(provider_settings.router, prefix="/api/v1")
     app.include_router(usage.router, prefix="/api/v1")
     # IBKR TWS Migration -- one read-only, in-process diagnostic (see

@@ -36,11 +36,9 @@ from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from analytics.decision_timing_policy import (
-    V3_TIMING_POLICY,
     V4_ACTIVE_TIMING_POLICY,
 )
-from analytics.earnings_timing import compute_entry_exit_schedule
-from analytics.market_session import EASTERN
+from analytics.forward_windows import LATE_CUTOFF_GRACE
 from core.config import get_settings
 
 # scheduler_engine/SchedulerSessionLocal, not the API-facing engine/
@@ -51,39 +49,17 @@ from core.config import get_settings
 # separation exists to close.
 from db.session import SchedulerSessionLocal as SessionLocal
 from db.session import scheduler_engine as engine
-from models.benchmark_portfolio import BenchmarkPortfolio
-from models.decision_snapshot import DecisionSnapshot
-from models.earnings_calendar_event import EarningsCalendarEvent
-from models.entry_capture_attempt import EntryCaptureAttempt
-from models.enums import CaptureStatus, EarningsCalendarEventStatus
-from models.settlement_capture_attempt import SettlementCaptureAttempt
 from observability.redact import redact
 from providers.factory import build_earnings_calendar_provider, build_options_provider_chain
 from providers.ibkr_tws_health import TwsHealthProbe
 from rag.embeddings import EmbeddingProvider
-from services.benchmark_entry_capture import capture_benchmark_entry
-from services.benchmark_exit_capture import (
-    _map_timing,  # noqa: PLC2701 -- shared private helper, same BMO/AMC/DMH mapping as the exit service itself
-    capture_benchmark_exit,
-)
-from services.decision_pipeline import (
-    _TIMING_TO_ANNOUNCEMENT_TIME,  # noqa: PLC2701 -- shared private mapping, same BMO/AMC/DMH -> AnnouncementTime as the pipeline itself uses
-    LATE_CUTOFF_GRACE,
-    run_decision_pipeline_for_event,
-)
 from services.earnings_calendar_sync import sync_earnings_calendar
 from services.earnings_research_preparation import (
     EnqueueResult,
     enqueue_preparation_candidates,
     enqueue_readiness_catchup,
 )
-from services.llm.factory import get_llm_provider
 from services.scheduler_run_tracking import (
-    OUTCOME_DECISION_NO_ACTION,
-    OUTCOME_ENTRY_CAPTURED,
-    OUTCOME_ENTRY_FAILED,
-    OUTCOME_SETTLEMENT_CAPTURED,
-    OUTCOME_SETTLEMENT_FAILED,
     RUN_STATUS_ERROR,
     RUN_STATUS_SKIPPED,
     RUN_STATUS_SUCCESS,
@@ -113,9 +89,7 @@ log = logging.getLogger("services.scheduler")
 
 CALENDAR_SYNC_JOB_ID = "earnings_calendar_sync"
 EARNINGS_RESEARCH_PREPARATION_JOB_ID = "earnings_research_preparation"
-DECISION_AND_ENTRY_CAPTURE_JOB_ID = "decision_and_entry_capture"
 
-EXIT_CAPTURE_JOB_ID = "exit_capture"
 IBKR_GATEWAY_HEALTHCHECK_JOB_ID = "ibkr_gateway_healthcheck"
 
 # Pre-live hardening (2026-08-25): shortly after the daily calendar sync
@@ -147,8 +121,6 @@ IBKR_HEALTHCHECK_INTERVAL_MINUTES = 10
 # exact same wall-clock time, since ENTRY_EXIT_TIME is also
 # compute_entry_exit_schedule()'s exit_timestamp -- see EXIT_CAPTURE_
 # JOB_ID's own registration below for why it's still a separate job.
-_ENTRY_HOUR_ET = V3_TIMING_POLICY.entry_hour
-_ENTRY_MINUTE_ET = V3_TIMING_POLICY.entry_minute
 
 # V4 product consolidation (2026-09-02): the V4 DECISION/entry observation
 # moves to 15:30 ET to buy runway before the 16:00 close -- six
@@ -211,23 +183,8 @@ _STARTUP_CATCHUP_DELAY_SECONDS = 90
 # for each candidate is still made by the identical, unchanged
 # compute_entry_exit_schedule() + LATE_CUTOFF_GRACE window
 # run_decision_pipeline_for_event already enforces.
-_DECISION_CANDIDATE_LOOKAHEAD_DAYS = 10
 
 
-def _due_for_decision_now(event: EarningsCalendarEvent, now: datetime) -> bool:
-    """True only for an event whose *official* decision/entry window
-    (compute_entry_exit_schedule()'s own entry_timestamp, +LATE_CUTOFF_
-    GRACE -- both reused unchanged from services.decision_pipeline, never
-    redefined here) genuinely intersects ``now``. Orchestration-only: this
-    never decides eligibility, strategy, probability, or pricing -- it
-    only decides which events are even worth handing to the real
-    pipeline during this run, exactly mirroring that pipeline's own
-    (unchanged) skipped_not_due/skipped_too_late boundaries so this
-    pre-filter can never disagree with it and skip something the
-    pipeline itself would have processed."""
-    session = _TIMING_TO_ANNOUNCEMENT_TIME[event.earnings_time]
-    schedule = compute_entry_exit_schedule(event.earnings_date, session)
-    return schedule.entry_timestamp <= now <= schedule.entry_timestamp + LATE_CUTOFF_GRACE
 
 
 # NOT passed as a job argument on purpose: SQLAlchemyJobStore pickles a
@@ -432,341 +389,8 @@ def run_earnings_research_preparation_job(*, now: datetime | None = None) -> lis
         db.close()
 
 
-def run_decision_and_entry_capture_job(*, now: datetime | None = None) -> None:
-    """Phase 4.4 sec 14: for every UPCOMING calendar event, runs the
-    Phase 4.3 decision-freezing pipeline and, immediately after (same job
-    run, same real-time window -- deliberately not two separate jobs, so
-    a frozen decision's entry price is never captured meaningfully later
-    than its own generation), attempts the official entry capture. Both
-    steps are independently idempotent (a decision or entry already
-    captured is a cheap read, never a second generation/capture) -- a
-    restart mid-run just re-checks and continues, never duplicates.
-
-    Reads ``_shared_embedder`` (the app's single instance, loaded once at
-    startup -- see api/main.py::lifespan and build_scheduler() below)
-    fresh at call time rather than taking it as a job argument: this
-    job's spec gets pickled by SQLAlchemyJobStore to persist it, and
-    FastEmbedProvider (wrapping an onnxruntime InferenceSession) is not
-    picklable -- passing it as ``args`` broke scheduler.start() entirely.
-    A missing embedder (startup failed to load it) is logged and
-    skipped, not a crash.
-
-    ``now``: the real cron trigger never passes this (stays exactly
-    real wall-clock time, matching every other job here); it exists
-    purely so a test can fix "now" to a specific due window without
-    monkeypatching the datetime module, mirroring run_decision_
-    pipeline_for_event's own identical ``now`` parameter.
-    """
-    embedder = _shared_embedder
-    if embedder is None:
-        log.warning("decision/entry capture run skipped: no embedding model available")
-        return
-
-    db = SessionLocal()
-    run = start_scheduler_run(db, DECISION_AND_ENTRY_CAPTURE_JOB_ID)
-    items_evaluated = 0
-    items_failed = 0
-    try:
-        settings = get_settings()
-        llm = get_llm_provider(settings, db=db)
-        options_provider = build_options_provider_chain(settings, db=db)
-
-        portfolio = (
-            db.query(BenchmarkPortfolio)
-            .filter_by(is_active=True)
-            .order_by(BenchmarkPortfolio.id)
-            .first()
-        )
-        if portfolio is None:
-            log.warning("decision/entry capture run skipped: no active benchmark_portfolio")
-            finish_scheduler_run(
-                db, run, status=RUN_STATUS_SKIPPED, error_summary="no active benchmark_portfolio"
-            )
-            return
-
-        now = now or datetime.now(UTC)
-        today_et = now.astimezone(EASTERN).date()
-        candidate_events = (
-            db.query(EarningsCalendarEvent)
-            .filter(
-                EarningsCalendarEvent.status == EarningsCalendarEventStatus.UPCOMING,
-                EarningsCalendarEvent.earnings_date >= today_et,
-                EarningsCalendarEvent.earnings_date
-                <= today_et + timedelta(days=_DECISION_CANDIDATE_LOOKAHEAD_DAYS),
-            )
-            .all()
-        )
-        events = [event for event in candidate_events if _due_for_decision_now(event, now)]
-        for event in events:
-            items_evaluated += 1
-            try:
-                outcome = run_decision_pipeline_for_event(
-                    db, event, portfolio, options_provider, llm, embedder, now=now
-                )
-                db.commit()
-            except Exception as exc:
-                db.rollback()
-                log.error(
-                    "decision pipeline failed for calendar_event_id=%s", event.id, exc_info=True
-                )
-                items_failed += 1
-                record_scheduler_run_event(
-                    db,
-                    run,
-                    calendar_event_id=event.id,
-                    symbol=event.symbol,
-                    stage="decision",
-                    outcome="failed",
-                    reason=_error_summary(exc),
-                )
-                continue
-
-            record_scheduler_run_event(
-                db,
-                run,
-                calendar_event_id=event.id,
-                symbol=event.symbol,
-                stage="decision",
-                outcome=outcome.outcome,
-                reason=outcome.reason,
-            )
-            if outcome.outcome == "failed":
-                items_failed += 1
-
-            if outcome.decision_snapshot_id is None:
-                continue
-            try:
-                decision_snapshot = db.get(DecisionSnapshot, outcome.decision_snapshot_id)
-                if decision_snapshot is not None and options_provider is not None:
-                    attempt = capture_benchmark_entry(
-                        db,
-                        decision_snapshot=decision_snapshot,
-                        portfolio=portfolio,
-                        options_provider=options_provider,
-                        now=now,
-                    )
-                    db.commit()
-                    # Post-official-run cleanup (2026-08-27), Section 1 --
-                    # see scheduler_run_tracking.py's own docstring on
-                    # these constants for the full rationale: a no-legs
-                    # decision's FAILED EntryCaptureAttempt is a real,
-                    # successful pipeline evaluation, never a failure.
-                    if attempt.status == CaptureStatus.CAPTURED:
-                        entry_outcome = OUTCOME_ENTRY_CAPTURED
-                    elif not decision_snapshot.legs:
-                        entry_outcome = OUTCOME_DECISION_NO_ACTION
-                    else:
-                        entry_outcome = OUTCOME_ENTRY_FAILED
-                        items_failed += 1
-                    record_scheduler_run_event(
-                        db,
-                        run,
-                        calendar_event_id=event.id,
-                        symbol=event.symbol,
-                        stage="entry",
-                        outcome=entry_outcome,
-                        reason=attempt.capture_error,
-                    )
-            except Exception as exc:
-                db.rollback()
-                log.error(
-                    "entry capture failed for decision_snapshot_id=%s",
-                    outcome.decision_snapshot_id,
-                    exc_info=True,
-                )
-                items_failed += 1
-                record_scheduler_run_event(
-                    db,
-                    run,
-                    calendar_event_id=event.id,
-                    symbol=event.symbol,
-                    stage="entry",
-                    outcome=OUTCOME_ENTRY_FAILED,
-                    reason=_error_summary(exc),
-                )
-        finish_scheduler_run(
-            db,
-            run,
-            status=RUN_STATUS_SUCCESS,
-            items_evaluated=items_evaluated,
-            items_succeeded=items_evaluated - items_failed,
-            items_failed=items_failed,
-        )
-    except Exception as exc:
-        # Setup failure (LLM/options-provider construction, the initial
-        # portfolio/events queries) -- distinct from a single event's own
-        # try/except above, which already handles per-event failures
-        # without ever reaching here. Recorded, then re-raised: the
-        # original, pre-instrumentation behavior let such an exception
-        # propagate uncaught to APScheduler, whose own EVENT_JOB_ERROR
-        # listener (_record_job_execution) is what get_scheduler_status()
-        # already reports through -- swallowing it here instead would
-        # make that existing status silently start lying (a real setup
-        # failure would read back as a clean "success").
-        db.rollback()
-        log.error("decision/entry capture job failed", exc_info=True)
-        finish_scheduler_run(
-            db,
-            run,
-            status=RUN_STATUS_ERROR,
-            items_evaluated=items_evaluated,
-            items_failed=items_failed,
-            error_summary=_error_summary(exc),
-        )
-        raise
-    finally:
-        db.close()
 
 
-def run_exit_capture_job() -> None:
-    """Phase 4.5 approved decision 5: a job of its own, not folded into
-    run_decision_and_entry_capture_job -- the two scan disjoint decision
-    sets ("just entered, nothing to exit yet" vs. "already entered, due
-    for exit"), so a missed or slow entry run should never block or
-    delay the unrelated exit run for a different day's decisions.
-
-    Scans every decision with a real CAPTURED entry but no CAPTURED
-    settlement yet, computes each one's real exit_date via
-    compute_entry_exit_schedule() (never a naive "T+1 from entry"
-    assumption -- BMO and AMC resolve differently, see analytics/
-    earnings_timing.py), and only attempts capture_benchmark_exit for
-    the ones actually due today. This pre-filter (rather than calling
-    capture_benchmark_exit for every entered-but-unsettled decision
-    every day) matters: without it, every decision not yet due for exit
-    would grow a spurious FAILED settlement attempt row on every single
-    day it isn't due, since capture_benchmark_exit's own no-lookahead
-    check would reject it anyway -- honest, but noisy and wasteful.
-
-    Needs no embedder/LLM at all -- settlement never calls generate_
-    decision() or any AI path, only real market data via the options
-    provider.
-    """
-    db = SessionLocal()
-    run = start_scheduler_run(db, EXIT_CAPTURE_JOB_ID)
-    items_evaluated = 0
-    items_failed = 0
-    try:
-        settings = get_settings()
-        options_provider = build_options_provider_chain(settings, db=db)
-        if options_provider is None:
-            log.warning("exit capture run skipped: no options provider configured")
-            finish_scheduler_run(
-                db, run, status=RUN_STATUS_SKIPPED, error_summary="no options provider configured"
-            )
-            return
-
-        portfolio = (
-            db.query(BenchmarkPortfolio)
-            .filter_by(is_active=True)
-            .order_by(BenchmarkPortfolio.id)
-            .first()
-        )
-        if portfolio is None:
-            log.warning("exit capture run skipped: no active benchmark_portfolio")
-            finish_scheduler_run(
-                db, run, status=RUN_STATUS_SKIPPED, error_summary="no active benchmark_portfolio"
-            )
-            return
-
-        now = datetime.now(UTC)
-        today_et = now.astimezone(EASTERN).date()
-
-        entered_ids = db.query(EntryCaptureAttempt.decision_snapshot_id).filter(
-            EntryCaptureAttempt.benchmark_portfolio_id == portfolio.id,
-            EntryCaptureAttempt.status == CaptureStatus.CAPTURED,
-        )
-        settled_ids = db.query(SettlementCaptureAttempt.decision_snapshot_id).filter(
-            SettlementCaptureAttempt.benchmark_portfolio_id == portfolio.id,
-            SettlementCaptureAttempt.status == CaptureStatus.CAPTURED,
-        )
-        candidates = (
-            db.query(DecisionSnapshot)
-            .filter(DecisionSnapshot.id.in_(entered_ids))
-            .filter(DecisionSnapshot.id.notin_(settled_ids))
-            .all()
-        )
-
-        for decision_snapshot in candidates:
-            calendar_event = decision_snapshot.earnings_calendar_event
-            schedule = compute_entry_exit_schedule(
-                calendar_event.earnings_date, _map_timing(calendar_event.earnings_time)
-            )
-            if schedule.exit_date != today_et:
-                continue
-            items_evaluated += 1
-            try:
-                attempt = capture_benchmark_exit(
-                    db,
-                    decision_snapshot=decision_snapshot,
-                    portfolio=portfolio,
-                    options_provider=options_provider,
-                    now=now,
-                )
-                db.commit()
-                # Post-official-run cleanup (2026-08-27), Section 1 --
-                # same clean vocabulary as the entry stage, for the same
-                # cross-surface consistency; settlement has no NO_ACTION
-                # equivalent (a candidate here was already a captured
-                # entry, so it always has real legs to close).
-                settlement_outcome = (
-                    OUTCOME_SETTLEMENT_CAPTURED
-                    if attempt.status == CaptureStatus.CAPTURED
-                    else OUTCOME_SETTLEMENT_FAILED
-                )
-                record_scheduler_run_event(
-                    db,
-                    run,
-                    calendar_event_id=calendar_event.id,
-                    symbol=calendar_event.symbol,
-                    stage="settlement",
-                    outcome=settlement_outcome,
-                    reason=attempt.capture_error,
-                )
-                if attempt.status == CaptureStatus.FAILED:
-                    items_failed += 1
-            except Exception as exc:
-                db.rollback()
-                log.error(
-                    "exit capture failed for decision_snapshot_id=%s",
-                    decision_snapshot.id,
-                    exc_info=True,
-                )
-                items_failed += 1
-                record_scheduler_run_event(
-                    db,
-                    run,
-                    calendar_event_id=calendar_event.id,
-                    symbol=calendar_event.symbol,
-                    stage="settlement",
-                    outcome=OUTCOME_SETTLEMENT_FAILED,
-                    reason=_error_summary(exc),
-                )
-        finish_scheduler_run(
-            db,
-            run,
-            status=RUN_STATUS_SUCCESS,
-            items_evaluated=items_evaluated,
-            items_succeeded=items_evaluated - items_failed,
-            items_failed=items_failed,
-        )
-    except Exception as exc:
-        # Same rationale as run_decision_and_entry_capture_job's own
-        # outer handler: record, then re-raise, so a setup failure still
-        # reaches APScheduler's real EVENT_JOB_ERROR listener exactly as
-        # it did before this instrumentation existed.
-        db.rollback()
-        log.error("exit capture job failed", exc_info=True)
-        finish_scheduler_run(
-            db,
-            run,
-            status=RUN_STATUS_ERROR,
-            items_evaluated=items_evaluated,
-            items_failed=items_failed,
-            error_summary=_error_summary(exc),
-        )
-        raise
-    finally:
-        db.close()
 
 
 def run_research_readiness_catchup_job(*, now: datetime | None = None) -> list[EnqueueResult]:

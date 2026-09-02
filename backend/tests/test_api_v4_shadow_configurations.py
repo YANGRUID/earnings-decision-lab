@@ -26,36 +26,62 @@ def client(db_session):
 
 def _em():
     return ExpectedMoveContext(
-        spot=Decimal("100"), observed_at=NOW, implied_move_available=True,
-        implied_move_dollars=Decimal("5"), implied_move_pct=Decimal("0.05"),
-        upper_implied_boundary=Decimal("105"), lower_implied_boundary=Decimal("95"),
-        implied_move_source="atm_straddle", implied_move_result=None,
-        historical_sample_n=8, historical_evidence_quality="adequate",
+        spot=Decimal("100"),
+        observed_at=NOW,
+        implied_move_available=True,
+        implied_move_dollars=Decimal("5"),
+        implied_move_pct=Decimal("0.05"),
+        upper_implied_boundary=Decimal("105"),
+        lower_implied_boundary=Decimal("95"),
+        implied_move_source="atm_straddle",
+        implied_move_result=None,
+        historical_sample_n=8,
+        historical_evidence_quality="adequate",
         historical_median_abs_move_pct=Decimal("0.04"),
         historical_median_upper_boundary=Decimal("104"),
         historical_median_lower_boundary=Decimal("96"),
-        historical_quantiles=None, historical_move_stats=None, context_version="test",
+        historical_quantiles=None,
+        historical_move_stats=None,
+        context_version="test",
     )
 
 
 def _leg(i, action, right, strike, bid, ask):
     return V4T1LegInput(
-        leg_index=i, action=action, right=right, strike=Decimal(strike), quantity=1,
-        multiplier=Decimal("100"), entry_bid=Decimal(bid), entry_ask=Decimal(ask),
-        entry_last=None, entry_iv=Decimal("0.40"), entry_delta=None, entry_gamma=None,
-        entry_theta=None, entry_vega=None, market_data_quality="delayed",
+        leg_index=i,
+        action=action,
+        right=right,
+        strike=Decimal(strike),
+        quantity=1,
+        multiplier=Decimal("100"),
+        entry_bid=Decimal(bid),
+        entry_ask=Decimal(ask),
+        entry_last=None,
+        entry_iv=Decimal("0.40"),
+        entry_delta=None,
+        entry_gamma=None,
+        entry_theta=None,
+        entry_vega=None,
+        market_data_quality="delayed",
         external_contract_id=f"conid-{i}",
     )
 
 
 def _candidate(cid, strategy, legs):
     ctx = V4T1ValuationContext(
-        ticker="RMX", underlying_price=Decimal("100"), observed_at=NOW, entry_timestamp=NOW,
-        expected_exit_timestamp=NOW + timedelta(days=1), strategy=strategy,
-        expiration=date(2026, 9, 18), legs=tuple(legs), expected_move_context=_em(),
+        ticker="RMX",
+        underlying_price=Decimal("100"),
+        observed_at=NOW,
+        entry_timestamp=NOW,
+        expected_exit_timestamp=NOW + timedelta(days=1),
+        strategy=strategy,
+        expiration=date(2026, 9, 18),
+        legs=tuple(legs),
+        expected_move_context=_em(),
     )
     return ShadowCandidateInput(
-        candidate_id=cid, context=ctx,
+        candidate_id=cid,
+        context=ctx,
         leg_retrieved_at={leg.leg_index: NOW for leg in legs},
         external_contract_ids={leg.leg_index: f"conid-{leg.leg_index}" for leg in legs},
     )
@@ -66,27 +92,49 @@ def frozen_decision(db_session):
     from models.earnings_calendar_event import EarningsCalendarEvent
 
     event = EarningsCalendarEvent(
-        symbol="RMX", company_name="Read Model Co", earnings_date=date(2026, 9, 10),
-        earnings_time="AMC", source="EARNINGSAPI", status="UPCOMING",
+        symbol="RMX",
+        company_name="Read Model Co",
+        earnings_date=date(2026, 9, 10),
+        earnings_time="AMC",
+        source="EARNINGSAPI",
+        status="UPCOMING",
     )
     db_session.add(event)
     db_session.flush()
     result = generate_shadow_decision(
-        db_session, earnings_calendar_event_id=event.id, ticker="RMX",
-        company_name="Read Model Co", legal_decision_window_at=NOW, as_of=NOW,
+        db_session,
+        earnings_calendar_event_id=event.id,
+        ticker="RMX",
+        company_name="Read Model Co",
+        legal_decision_window_at=NOW,
+        as_of=NOW,
         view=ShadowDecisionView(
-            direction="bullish", volatility_view="long_vol", expected_move_intent="large_move",
-            confidence="medium", reasoning="r", evidence_refs={}, llm_provider="deepseek",
-            llm_model="deepseek-v4-flash", prompt_version="decision-view-v1",
+            direction="bullish",
+            volatility_view="long_vol",
+            expected_move_intent="large_move",
+            confidence="medium",
+            reasoning="r",
+            evidence_refs={},
+            llm_provider="deepseek",
+            llm_model="deepseek-v4-flash",
+            prompt_version="decision-view-v1",
         ),
         candidates=[
-            _candidate("spread", "bull_call_spread",
-                       [_leg(0, "buy", "call", "100", "3.00", "3.20"),
-                        _leg(1, "sell", "call", "105", "1.20", "1.40")]),
+            _candidate(
+                "spread",
+                "bull_call_spread",
+                [
+                    _leg(0, "buy", "call", "100", "3.00", "3.20"),
+                    _leg(1, "sell", "call", "105", "1.20", "1.40"),
+                ],
+            ),
             _candidate("long_put", "long_put", [_leg(0, "buy", "put", "347.50", "10.90", "11.55")]),
         ],
-        underlying_price=Decimal("100"), underlying_quote_at=NOW,
-        market_data_quality="delayed", tws_request_count=4, unique_contracts_quoted=3,
+        underlying_price=Decimal("100"),
+        underlying_quote_at=NOW,
+        market_data_quality="delayed",
+        tws_request_count=4,
+        unique_contracts_quoted=3,
     )
     assert result.status == "RANKED"
     return result
@@ -102,8 +150,12 @@ class TestSixConfigReadModel:
         assert body["decision"]["id"] == frozen_decision.decision_id
         assert len(body["configurations"]) == 6
         assert [c["configuration_key"] for c in body["configurations"]] == [
-            "v4_2k_conservative", "v4_2k_moderate", "v4_2k_aggressive",
-            "v4_10k_conservative", "v4_10k_moderate", "v4_10k_aggressive",
+            "v4_2k_conservative",
+            "v4_2k_moderate",
+            "v4_2k_aggressive",
+            "v4_10k_conservative",
+            "v4_10k_moderate",
+            "v4_10k_aggressive",
         ]
         assert len(body["candidates"]) == 2
         assert body["default_configuration_key"] == "v4_2k_moderate"
@@ -133,8 +185,10 @@ class TestSixConfigReadModel:
     def test_unknown_decision_is_404(self, client):
         assert client.get("/api/v1/v4/shadow/decisions/999999/configurations").status_code == 404
 
-    def test_response_is_labelled_experimental(self, client, frozen_decision):
+    def test_response_is_labelled_as_a_forward_test_with_no_order(self, client, frozen_decision):
         body = client.get(
             f"/api/v1/v4/shadow/decisions/{frozen_decision.decision_id}/configurations"
         ).json()
-        assert "EXPERIMENTAL" in body["notice"].upper()
+        assert "V4 FORWARD TEST" in body["notice"]
+        assert "NO BROKERAGE ORDER" in body["notice"]
+        assert "V3" not in body["notice"]

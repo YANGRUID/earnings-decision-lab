@@ -45,7 +45,6 @@ UNDERLYING_PRICE = Decimal("100")
 _DEPENDENT_TABLES_BY_COMPANY_ID = (
     "document_chunk",
     "ai_extraction",
-    "ai_decision_version",
     "ai_thesis_version",
     "volatility_snapshot",
     "research_preparation_job",

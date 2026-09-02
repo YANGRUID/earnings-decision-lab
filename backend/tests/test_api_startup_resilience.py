@@ -50,14 +50,6 @@ def test_app_starts_and_serves_data_endpoints_without_any_llm_configured(monkeyp
         companies = client.get("/api/v1/companies")
         assert companies.status_code == 200
 
-        payoff = client.post(
-            "/api/v1/options/strategies/payoff",
-            json={
-                "strategy_label": "long call",
-                "legs": [{"option_type": "call", "action": "buy", "strike": "100", "premium": "5"}],
-            },
-        )
-        assert payoff.status_code == 200
 
         research = client.post("/api/v1/research/query", json={"question": "anything"})
         assert research.status_code == 503

@@ -12,7 +12,7 @@ integration presented as available.
 """
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 
 from sqlalchemy import func
 from sqlalchemy.orm import Session
@@ -194,15 +194,34 @@ def _last_success_at(db: Session, provider: str, domain: str) -> datetime | None
     return None
 
 
+def _error_is_current(error_at: datetime | None, success_at: datetime | None) -> bool:
+    """An error describes the provider's CURRENT state only while no real
+    successful use has happened after it. A day-old client-id collision
+    followed by 42 minutes-ago snapshots is history, not status (found live
+    on the Data Providers page, 2026-09-02)."""
+    if error_at is None:
+        return False
+    if success_at is None:
+        return True
+    if error_at.tzinfo is None:
+        error_at = error_at.replace(tzinfo=UTC)
+    if success_at.tzinfo is None:
+        success_at = success_at.replace(tzinfo=UTC)
+    return error_at > success_at
+
+
 def _provider_status(db: Session, settings: Settings, provider: str, domain: str) -> ProviderStatus:
+    last_success_at = _last_success_at(db, provider, domain)
     error_event = _last_health_event(db, provider, domain, exclude_connected=True)
+    if error_event is not None and not _error_is_current(error_event.occurred_at, last_success_at):
+        error_event = None
     configured, masked_key = _configured_and_masked(provider, settings, db)
     return ProviderStatus(
         provider=provider,
         domain=domain,
         configured=configured,
         masked_key=masked_key,
-        last_success_at=_last_success_at(db, provider, domain),
+        last_success_at=last_success_at,
         last_error_at=error_event.occurred_at if error_event else None,
         last_error_status=error_event.status.value if error_event else None,
         last_error_detail=error_event.detail if error_event else None,

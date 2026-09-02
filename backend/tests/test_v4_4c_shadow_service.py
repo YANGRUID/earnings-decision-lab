@@ -414,17 +414,6 @@ class TestIdempotencyAndIsolation:
             == 1
         )
 
-    def test_shadow_generation_never_writes_official_v3_evidence(
-        self, db_session, calendar_event
-    ):
-        """The whole point: V3 evidence counts must be untouched."""
-        from models.decision_snapshot import DecisionSnapshot
-
-        before = db_session.query(DecisionSnapshot).count()
-        _generate(db_session, calendar_event, [
-            _candidate("c1", "long_straddle", (_leg(0, "buy", "call", "100"),)),
-        ])
-        assert db_session.query(DecisionSnapshot).count() == before
 
     def test_a_shadow_failure_returns_a_result_and_never_raises(
         self, db_session, calendar_event
