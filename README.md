@@ -1,17 +1,34 @@
 # Earnings Decision Lab
 
-**v3.0.0 — AI Earnings Decision Platform.** Search a stock, and the system prepares its earnings
-history, filings, expectations, price data, and option-chain data; synthesizes a grounded AI
-Earnings Thesis; classifies a direction/volatility view; and deterministically ranks real option
-strategies against that view using a full options-decision engine — real expiration selection
-across multiple scored candidates, a per-decision risk profile, honest probability/reliability
-metrics, and a numeric explanation for every recommendation — with every decision persisted as a
-point-in-time record and, once real outcomes exist, honestly evaluated.
+An auditable earnings-options research and forward-testing terminal. Before an earnings
+release it assembles real evidence — filings, earnings history, expectations, price data and a
+live option chain — synthesizes a grounded AI view, and deterministically constructs, values and
+ranks real option structures against that view. Every decision is a point-in-time record that is
+never rewritten, and every outcome is observed prospectively.
 
-> **Not investment advice.** A personal research tool, not a trading system. See
-> [Disclaimer](#disclaimer).
+> **Not investment advice.** A personal research tool, not a trading system. No brokerage order
+> capability exists anywhere in the codebase. See [Disclaimer](#disclaimer).
 
-## Product Overview
+## Current state (September 2026)
+
+| Component | Role | Status |
+|---|---|---|
+| **V3** | Official historical / control engine. Decision and entry observed at **15:55 ET**; T+1 settlement at 15:55 ET. | Frozen methodology; still runs daily as the control cohort. Its evidence is immutable. |
+| **V4** | Experimental forward-test ("shadow") engine. One DecisionView, one market-evidence freeze, **six standardized capital/risk configurations** evaluated on the same evidence. Decision observed at **15:30 ET**; settlement unchanged at 15:55 ET. | **Experimental / shadow.** Not activated in production until a live market-hours dry-run passes. No proven performance advantage is claimed. |
+| **TWS API** | Production market-data transport (Interactive Brokers TWS / IB Gateway). Delayed data is labelled delayed. | Live since 2026-09-01. The Web/Client-Portal gateway is retained only as a rollback path. |
+| **DeepSeek** | Produces the unstructured *DecisionView* (direction, volatility, move intent, confidence). | It never prices, sizes, ranks or explains a ranking. |
+| **Deterministic engine** | Expected move, strike geometry, T+1 scenario valuation, V4.4B ranking v1, capital/risk policy, six-configuration evaluation. | All numeric decisions are reproducible from frozen evidence. |
+
+The six V4 configurations are $2,000 and $10,000 crossed with Conservative / Moderate /
+Aggressive. All six are evaluated in memory against one frozen market observation — never six
+pipelines — and each independently records RANKED or NO_ACTION.
+
+Start with [`docs/v4_architecture.md`](docs/v4_architecture.md),
+[`docs/v4_methodology.md`](docs/v4_methodology.md) and
+[`docs/v4_forward_testing.md`](docs/v4_forward_testing.md). The V3 engine described below
+remains fully operational as the control cohort.
+
+## V3 Product Overview (historical control engine)
 
 Earnings Decision Lab is an AI earnings analyst you can actually audit. Before an earnings
 release, it answers: what happened last time, how did the stock react, what is the market

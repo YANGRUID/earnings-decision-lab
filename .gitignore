@@ -73,3 +73,6 @@ secrets/
 # --- Logs ---
 *.log
 logs/
+
+# --- Local Claude Code tooling (browser launch config etc.) ---
+.claude/
