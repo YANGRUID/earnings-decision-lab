@@ -15,7 +15,7 @@ import pytest
 from analytics.decision.v4_configurations import V4_CONFIGURATIONS
 from analytics.decision.v4_expected_move import ExpectedMoveContext
 from analytics.decision.v4_t1_valuation_context import V4T1LegInput, V4T1ValuationContext
-from analytics.decision_timing_policy import V4_TIMING_POLICY
+from analytics.decision_timing_policy import V4_ACTIVE_TIMING_POLICY
 from models.v4_shadow import V4ShadowCandidate, V4ShadowConfigResult, V4ShadowDecision
 from services.v4_shadow import (
     ShadowCandidateInput,
@@ -139,7 +139,7 @@ class TestSixResultsPerFreeze:
     def test_decision_freezes_the_v4_timing_policy(self, db_session, event):
         result = _freeze(db_session, event)
         decision = db_session.get(V4ShadowDecision, result.decision_id)
-        assert decision.decision_timing_policy_version == V4_TIMING_POLICY.version
+        assert decision.decision_timing_policy_version == V4_ACTIVE_TIMING_POLICY.version
         assert "1530" in decision.decision_timing_policy_version
 
     def test_each_result_persists_its_full_configuration_identity(self, db_session, event):

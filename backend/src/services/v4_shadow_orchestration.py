@@ -95,6 +95,9 @@ class ShadowRunSummary:
     already_generated: int = 0
     research_not_ready: int = 0
     failed: int = 0
+    #: Due, research-ready events whose full evaluation was NOT started
+    #: because the run reached its deadline (Section 16, deadline guard).
+    deadline_skipped: int = 0
     outcomes: tuple[ShadowEventOutcome, ...] = ()
 
 
@@ -155,10 +158,21 @@ def run_shadow_decisions_for_due_events(
     view_generator: ViewGenerator,
     due_predicate,
     candidate_events: list[EarningsCalendarEvent],
+    deadline: datetime | None = None,
+    clock=None,
 ) -> ShadowRunSummary:
-    """Processes every genuinely due event. Never raises."""
+    """Processes every genuinely due event. Never raises.
+
+    ``deadline`` (deadline guard, 2026-09-02): once the wall clock reaches it,
+    no further FULL evaluation (DecisionView + assembly + quote sweep) is
+    started; each remaining due, research-ready event is recorded as
+    DEADLINE_SKIPPED evidence instead. Cheap gates (idempotency, research
+    readiness) still run so the run's account of the window stays complete.
+    An evaluation already in progress is never interrupted.
+    """
     outcomes: list[ShadowEventOutcome] = []
-    ranked = no_action = already = not_ready = failed = 0
+    ranked = no_action = already = not_ready = failed = deadline_skipped = 0
+    clock = clock or (lambda: datetime.now(UTC))
 
     for event in candidate_events:
         ticker = event.symbol
@@ -200,6 +214,19 @@ def run_shadow_decisions_for_due_events(
                 continue
 
             assert company is not None  # guaranteed by _research_is_ready
+            if deadline is not None and clock() >= deadline:
+                deadline_skipped += 1
+                why = (
+                    f"run reached its deadline ({deadline.isoformat()}) before this event's "
+                    "evaluation could start; no late evaluation is attempted"
+                )
+                _record_event(
+                    db, event_id=event.id, ticker=ticker, stage="deadline_guard",
+                    category="DEADLINE_SKIPPED", message=why, retryable=False,
+                )
+                outcomes.append(ShadowEventOutcome(event.id, ticker, "DEADLINE_SKIPPED", why))
+                continue
+
             view = view_generator(db, company, event, now)
             if view is None:
                 failed += 1
@@ -297,6 +324,7 @@ def run_shadow_decisions_for_due_events(
         already_generated=already,
         research_not_ready=not_ready,
         failed=failed,
+        deadline_skipped=deadline_skipped,
         outcomes=tuple(outcomes),
     )
 

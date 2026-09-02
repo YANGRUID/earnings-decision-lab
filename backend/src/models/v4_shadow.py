@@ -421,6 +421,11 @@ class V4ShadowSettlement(Base):
     status: Mapped[str] = mapped_column(String(24), nullable=False, index=True)
     failure_category: Mapped[str | None] = mapped_column(String(48))
     failure_detail: Mapped[str | None] = mapped_column(Text)
+    #: Timing policy the EXIT was observed under (migration e3a5c7d9b1f2). May
+    #: differ from the decision's own version: an entry frozen under v1 (15:55
+    #: settlement) settled prospectively under v2 (15:30) records v2 here and keeps
+    #: v1 on the immutable decision/entry rows.
+    timing_policy_version: Mapped[str | None] = mapped_column(String(64))
 
     entry_net_value: Mapped[Decimal | None] = mapped_column(Numeric(18, 6))
     exit_net_value: Mapped[Decimal | None] = mapped_column(Numeric(18, 6))
@@ -670,6 +675,11 @@ class V4ShadowConfigSettlement(Base):
     market_data_quality: Mapped[str | None] = mapped_column(String(24))
     failure_category: Mapped[str | None] = mapped_column(String(48))
     failure_detail: Mapped[str | None] = mapped_column(Text)
+    #: Timing policy the EXIT was observed under (migration e3a5c7d9b1f2). May
+    #: differ from the decision's own version: an entry frozen under v1 (15:55
+    #: settlement) settled prospectively under v2 (15:30) records v2 here and keeps
+    #: v1 on the immutable decision/entry rows.
+    timing_policy_version: Mapped[str | None] = mapped_column(String(64))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

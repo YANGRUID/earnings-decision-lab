@@ -36,7 +36,7 @@ from analytics.decision.v4_configurations import (
     get_configuration,
     size_configuration_position,
 )
-from analytics.decision_timing_policy import V4_TIMING_POLICY
+from analytics.decision_timing_policy import V4_ACTIVE_TIMING_POLICY
 from models.v4_shadow import (
     V4ShadowCandidate,
     V4ShadowCandidateLeg,
@@ -209,7 +209,7 @@ def freeze_config_entries(
                 market_data_quality=market_data_quality,
                 failure_category=None if observed else cand_obs.failure_category,
                 failure_detail=None if observed else cand_obs.failure_detail,
-                timing_policy_version=V4_TIMING_POLICY.version,
+                timing_policy_version=V4_ACTIVE_TIMING_POLICY.version,
                 engine_version=decision.engine_version,
                 configuration_version=V4_CONFIGURATION_VERSION,
             )
@@ -247,8 +247,13 @@ def settle_shadow_decision_cohorts(
     provider: OptionsDataProvider,
     decision: V4ShadowDecision,
     observed_at: datetime,
+    timing_policy_version: str = V4_ACTIVE_TIMING_POLICY.version,
 ) -> CohortSettlementSummary:
-    """Sections 11-16. Settles the exact frozen positions. Never raises."""
+    """Sections 11-16. Settles the exact frozen positions. Never raises.
+
+    ``timing_policy_version`` is the policy the EXIT is observed under and is
+    written on every settlement row; the decision/entry rows keep their own
+    frozen version (prospective transition, no rewritten history)."""
     summary = CohortSettlementSummary()
     entries = (
         db.query(V4ShadowConfigEntry)
@@ -422,6 +427,7 @@ def settle_shadow_decision_cohorts(
                 or cand_exit.net_executable_value is None
             ):
                 row = V4ShadowConfigSettlement(
+                    timing_policy_version=timing_policy_version,
                     shadow_config_result_id=entry.shadow_config_result_id,
                     shadow_decision_id=decision.id,
                     candidate_observation_id=cand_exit.id if cand_exit else None,
@@ -450,6 +456,7 @@ def settle_shadow_decision_cohorts(
                 entry_value = entry.entry_net_value or Decimal(0)
                 realized = exit_value - entry_value
                 row = V4ShadowConfigSettlement(
+                    timing_policy_version=timing_policy_version,
                     shadow_config_result_id=entry.shadow_config_result_id,
                     shadow_decision_id=decision.id,
                     candidate_observation_id=cand_exit.id,
@@ -497,6 +504,7 @@ def settle_shadow_decision_cohorts(
             realized = top_obs.net_executable_value - per_unit_entry
             db.add(
                 V4ShadowSettlement(
+                    timing_policy_version=timing_policy_version,
                     shadow_decision_id=decision.id,
                     settled_at=observed_at,
                     status="SETTLED",
@@ -537,6 +545,7 @@ def fail_missed_settlement_window(
     decision: V4ShadowDecision,
     observed_at: datetime,
     detail: str,
+    timing_policy_version: str = V4_ACTIVE_TIMING_POLICY.version,
 ) -> int:
     """Closes every still-pending configuration of ``decision`` as a
     terminal OBSERVATION_FAILED settlement with SETTLEMENT_WINDOW_MISSED.
@@ -562,6 +571,7 @@ def fail_missed_settlement_window(
     for entry in pending:
         db.add(
             V4ShadowConfigSettlement(
+                timing_policy_version=timing_policy_version,
                 shadow_config_result_id=entry.shadow_config_result_id,
                 shadow_decision_id=decision.id,
                 candidate_observation_id=None,

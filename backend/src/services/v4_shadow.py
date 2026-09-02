@@ -77,7 +77,7 @@ from analytics.decision.v4_t1_stress_grid import (
     summarize_tail_stress,
 )
 from analytics.decision.v4_t1_valuation_context import V4T1LegInput, V4T1ValuationContext
-from analytics.decision_timing_policy import V4_TIMING_POLICY
+from analytics.decision_timing_policy import V4_ACTIVE_TIMING_POLICY
 from models.v4_shadow import (
     SHADOW_SCHEMA_VERSION,
     V4ShadowCandidate,
@@ -515,7 +515,7 @@ def generate_shadow_decision(
             ),
             engine_version=V4_METHODOLOGY.engine_version,
             # Section 23 -- which clock this observation ran under.
-            decision_timing_policy_version=V4_TIMING_POLICY.version,
+            decision_timing_policy_version=V4_ACTIVE_TIMING_POLICY.version,
             shadow_schema_version=SHADOW_SCHEMA_VERSION,
             strategy_semantics_version=V4_METHODOLOGY.strategy_semantics_version,
             compatibility_version=COMPATIBILITY_VERSION,

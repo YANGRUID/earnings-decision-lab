@@ -645,7 +645,10 @@ def get_shadow_track_record_by_configuration(db: DbSession) -> dict:
 # ---------------------------------------------------------------------------
 @router.get("/events/{event_id}/comparison")
 def get_same_event_comparison(event_id: int, db: DbSession) -> dict:
-    from analytics.decision_timing_policy import V3_TIMING_POLICY, V4_TIMING_POLICY
+    from analytics.decision_timing_policy import (
+        V3_TIMING_POLICY,
+        V4_ACTIVE_TIMING_POLICY,
+    )
     from models.decision_snapshot import DecisionSnapshot
     from models.earnings_calendar_event import EarningsCalendarEvent
     from models.entry_capture_attempt import EntryCaptureAttempt
@@ -785,8 +788,8 @@ def get_same_event_comparison(event_id: int, db: DbSession) -> dict:
         v4 = {
             "engine": "V4 experimental shadow",
             "timing_policy_version": v4_decision.decision_timing_policy_version
-            or V4_TIMING_POLICY.version,
-            "observation_time_et": V4_TIMING_POLICY.entry_time.strftime("%H:%M"),
+            or V4_ACTIVE_TIMING_POLICY.version,
+            "observation_time_et": V4_ACTIVE_TIMING_POLICY.entry_time.strftime("%H:%M"),
             "decision_id": v4_decision.id,
             "generated_at": v4_decision.generated_at,
             "underlying_price": v4_decision.underlying_price,

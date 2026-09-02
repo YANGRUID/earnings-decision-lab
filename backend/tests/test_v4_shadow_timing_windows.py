@@ -77,27 +77,28 @@ class TestDecisionWindow:
         s = v4_schedule_for_event(AMC_THU)
         assert s.decision_generation_date == date(2026, 9, 10)
         assert s.entry_timestamp == _et(2026, 9, 10, 15, 30)
-        assert s.exit_timestamp == _et(2026, 9, 11, 15, 55)  # settlement clock unchanged
+        assert s.exit_timestamp == _et(2026, 9, 11, 15, 30)  # v2: T+1 15:30 ET
 
 
 class TestSettlementWindow:
     def test_same_afternoon_is_not_due(self):
         assert v4_settlement_window_state(AMC_THU, _et(2026, 9, 10, 15, 55)) == SETTLEMENT_NOT_DUE
-        assert v4_settlement_window_state(AMC_THU, _et(2026, 9, 11, 15, 49)) == SETTLEMENT_NOT_DUE
+        assert v4_settlement_window_state(AMC_THU, _et(2026, 9, 11, 15, 24)) == SETTLEMENT_NOT_DUE
 
-    def test_v3_exit_window_bounds_are_reused(self):
-        # EXIT_EARLY_CAPTURE_TOLERANCE (5 min) before, LATE_CUTOFF_GRACE (5 min) after.
-        assert v4_settlement_window_state(AMC_THU, _et(2026, 9, 11, 15, 50)) == SETTLEMENT_DUE
-        assert v4_settlement_window_state(AMC_THU, _et(2026, 9, 11, 15, 55)) == SETTLEMENT_DUE
-        assert v4_settlement_window_state(AMC_THU, _et(2026, 9, 11, 16, 0)) == SETTLEMENT_DUE
+    def test_exit_window_bounds(self):
+        # EARLY_CAPTURE_TOLERANCE (5 min) before, LATE_CUTOFF_GRACE (5 min) after 15:30 ET T+1.
+        assert v4_settlement_window_state(AMC_THU, _et(2026, 9, 11, 15, 25)) == SETTLEMENT_DUE
+        assert v4_settlement_window_state(AMC_THU, _et(2026, 9, 11, 15, 30)) == SETTLEMENT_DUE
+        assert v4_settlement_window_state(AMC_THU, _et(2026, 9, 11, 15, 35)) == SETTLEMENT_DUE
         assert (
-            v4_settlement_window_state(AMC_THU, _et(2026, 9, 11, 16, 1)) == SETTLEMENT_WINDOW_MISSED
+            v4_settlement_window_state(AMC_THU, _et(2026, 9, 11, 15, 36))
+            == SETTLEMENT_WINDOW_MISSED
         )
 
     def test_bmo_event_settles_on_its_own_day(self):
         ev = _event(date(2026, 9, 11), EarningsTiming.BMO)
         assert v4_settlement_window_state(ev, _et(2026, 9, 10, 15, 55)) == SETTLEMENT_NOT_DUE
-        assert v4_settlement_window_state(ev, _et(2026, 9, 11, 15, 55)) == SETTLEMENT_DUE
+        assert v4_settlement_window_state(ev, _et(2026, 9, 11, 15, 30)) == SETTLEMENT_DUE
 
 
 # --------------------------------------------------------------------------
@@ -173,9 +174,7 @@ def _settlements(db, decision_id):
 
 
 class TestSettleDueCohorts:
-    def test_same_afternoon_run_leaves_positions_pending_and_never_quotes(
-        self, db_session, frozen
-    ):
+    def test_same_afternoon_run_leaves_positions_pending_and_never_quotes(self, db_session, frozen):
         # The 15:55 ET settlement cron on the entry day itself.
         s = settle_due_cohorts(
             db_session, provider=_RaisingProvider(), now=_et(2026, 9, 10, 15, 55)
@@ -187,7 +186,7 @@ class TestSettleDueCohorts:
         self, db_session, frozen
     ):
         provider = _QuotingProvider()
-        s = settle_due_cohorts(db_session, provider=provider, now=_et(2026, 9, 11, 15, 55))
+        s = settle_due_cohorts(db_session, provider=provider, now=_et(2026, 9, 11, 15, 30))
         assert (s.not_due, s.evaluated, s.failed) == (0, 1, 0)
         assert s.settled == frozen.observed
         rows = _settlements(db_session, frozen.decision_id)
@@ -197,16 +196,14 @@ class TestSettleDueCohorts:
     def test_missed_window_closes_positions_as_terminal_failures_without_quoting(
         self, db_session, frozen
     ):
-        s = settle_due_cohorts(
-            db_session, provider=_RaisingProvider(), now=_et(2026, 9, 11, 16, 1)
-        )
+        s = settle_due_cohorts(db_session, provider=_RaisingProvider(), now=_et(2026, 9, 11, 16, 1))
         assert (s.not_due, s.evaluated, s.settled) == (0, 1, 0)
         assert s.failed == frozen.observed
         rows = _settlements(db_session, frozen.decision_id)
         assert len(rows) == frozen.observed
         assert {r.status for r in rows} == {"OBSERVATION_FAILED"}
         assert {r.failure_category for r in rows} == {"SETTLEMENT_WINDOW_MISSED"}
-        assert all("2026-09-11T15:55:00-04:00" in (r.failure_detail or "") for r in rows)
+        assert all("2026-09-11T15:30:00-04:00" in (r.failure_detail or "") for r in rows)
         events = (
             db_session.query(V4ShadowRunEvent)
             .filter_by(shadow_decision_id=frozen.decision_id, category="SETTLEMENT_WINDOW_MISSED")

@@ -98,9 +98,35 @@ V4_TIMING_POLICY = DecisionTimingPolicy(
     ),
 )
 
+#: V4-only reset (2026-09-02, effective from the first settlement on
+#: 2026-09-03): the T+1 settlement observation moves to 15:30 ET as well, so
+#: entry and exit are taken at the same time of day -- never a same-day
+#: settlement for an AMC report (D0 15:30 entry -> D+1 15:30 exit; BMO:
+#: D-1 15:30 entry -> D0 15:30 exit). The v1 policy above stays in the
+#: registry unchanged: rows frozen under it keep their version string, and
+#: a settlement taken under v2 records v2 on the settlement row itself --
+#: an honest, prospective transition with no rewritten entry evidence.
+V4_TIMING_POLICY_V2_VERSION = "v4-1530-entry-1530-t1-settlement-v2"
+
+V4_TIMING_POLICY_V2 = DecisionTimingPolicy(
+    version=V4_TIMING_POLICY_V2_VERSION,
+    entry_time=time(15, 30),
+    exit_time=time(15, 30),
+    description=(
+        "V4 forward-test cohort, v2: decision and entry observed at 15:30 ET on the legal "
+        "pre-earnings trading day; settlement observed at 15:30 ET on the first "
+        "post-earnings trading day. Replaces the 15:55 ET settlement of v1 prospectively."
+    ),
+)
+
+#: The policy every NEW V4 observation runs under. Historical rows resolve
+#: their own stored version through get_timing_policy().
+V4_ACTIVE_TIMING_POLICY = V4_TIMING_POLICY_V2
+
 _BY_VERSION: dict[str, DecisionTimingPolicy] = {
     V3_TIMING_POLICY.version: V3_TIMING_POLICY,
     V4_TIMING_POLICY.version: V4_TIMING_POLICY,
+    V4_TIMING_POLICY_V2.version: V4_TIMING_POLICY_V2,
 }
 
 

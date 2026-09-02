@@ -146,7 +146,7 @@ class TestSameEventComparison:
         _freeze(db_session, event)
         body = client.get(f"/api/v1/v4/shadow/events/{event.id}/comparison").json()
         v4 = body["v4_shadow"]
-        assert v4["timing_policy_version"] == "v4-pre-earnings-1530et-v1"
+        assert v4["timing_policy_version"] == "v4-1530-entry-1530-t1-settlement-v2"  # active v2
         assert v4["observation_time_et"] == "15:30"
         assert len(v4["configurations"]) == 6
         assert body["v3_control"] is None  # no V3 row for this synthetic event

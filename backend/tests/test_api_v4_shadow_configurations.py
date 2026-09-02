@@ -107,7 +107,7 @@ class TestSixConfigReadModel:
         ]
         assert len(body["candidates"]) == 2
         assert body["default_configuration_key"] == "v4_2k_moderate"
-        assert body["timing_policy_version"] == "v4-pre-earnings-1530et-v1"
+        assert body["timing_policy_version"] == "v4-1530-entry-1530-t1-settlement-v2"  # active v2
 
     def test_each_configuration_carries_its_own_identity_and_rank_1(self, client, frozen_decision):
         body = client.get(

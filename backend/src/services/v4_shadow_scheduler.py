@@ -8,12 +8,22 @@ contains only registration -- no V4 semantics, no V4 valuation, no V4
 ranking -- so the official pipeline stays structurally free of V4 while
 the process-wide job registry can still schedule an experimental cohort.
 
-TIMING (activation phase, 2026-09-02). The V4 cohort observes under its
-OWN versioned clock, ``V4_TIMING_POLICY`` (decision/entry 15:30 ET,
-settlement 15:55 ET on the first post-earnings trading day). Both windows
-are derived from the very same ``compute_entry_exit_schedule`` V3 uses --
-only the policy object differs -- so V4 can never drift onto a different
-legal decision DAY than V3, and its settlement instant is V3's exactly.
+TIMING (V4-only reset, 2026-09-02). The V4 cohort observes under its OWN
+versioned clock, ``V4_ACTIVE_TIMING_POLICY`` (v2: decision/entry 15:30 ET,
+settlement 15:30 ET on the first post-earnings trading day). Both windows
+are derived from ``compute_entry_exit_schedule`` with that policy; the
+grace/tolerance constants live in analytics/forward_windows.py -- this
+module imports nothing from the retired V3 pipeline.
+
+CONCURRENCY. The decision and settlement jobs both fire at 15:30 ET. They
+never share a DB transaction, but they do share the one TWS provider, so a
+process-wide lock serialises their market-data sections: the settlement
+job (short, a handful of quotes for held positions) takes it first, then
+the decision job. Nothing is quoted twice.
+
+DEADLINE GUARD. A decision run stops STARTING new full evaluations at
+DECISION_DEADLINE_ET (15:50) and records DEADLINE_SKIPPED evidence for the
+due, research-ready events it could not start.
 
     Found live before activation: this module had reused V3's own due
     predicate, which is keyed to V3's 15:55 entry timestamp. Evaluated at
@@ -30,6 +40,7 @@ held up for it.
 from __future__ import annotations
 
 import logging
+import threading
 from dataclasses import dataclass
 from datetime import datetime
 
@@ -68,56 +79,47 @@ SETTLEMENT_NOT_DUE = "NOT_DUE"
 SETTLEMENT_DUE = "DUE"
 SETTLEMENT_WINDOW_MISSED = "WINDOW_MISSED"
 
-
-def _announcement_session(event):
-    """The pipeline's own BMO/AMC/DMH/UNKNOWN -> AnnouncementTime mapping,
-    tolerant of an ORM row whose enum attribute is still the raw name
-    string (freshly flushed, not yet expired)."""
-    from models.enums import EarningsTiming  # noqa: PLC0415
-    from services.decision_pipeline import _TIMING_TO_ANNOUNCEMENT_TIME  # noqa: PLC0415
-
-    timing = event.earnings_time
-    if not isinstance(timing, EarningsTiming):
-        try:
-            timing = EarningsTiming(timing)
-        except ValueError:
-            timing = EarningsTiming[str(timing).upper()]
-    return _TIMING_TO_ANNOUNCEMENT_TIME[timing]
+#: Serialises the market-data sections of the two 15:30 ET jobs (see the
+#: module docstring). In-process only: both jobs run in this scheduler.
+V4_MARKET_DATA_LOCK = threading.Lock()
 
 
 def v4_schedule_for_event(event):
-    """The V4 cohort's legal schedule for one calendar event: V3's schedule
-    function, V4's policy. Same decision day and same exit instant as V3;
-    only the entry time of day differs (15:30 vs 15:55 ET)."""
-    from analytics.decision_timing_policy import V4_TIMING_POLICY  # noqa: PLC0415
+    """The V4 cohort's legal schedule for one calendar event under the
+    ACTIVE policy (v2: entry 15:30 ET, exit 15:30 ET on the first
+    post-earnings trading day). Historical rows keep their own stored
+    policy version; the window a settlement is OBSERVED in is always the
+    active one (prospective transition)."""
+    from analytics.decision_timing_policy import V4_ACTIVE_TIMING_POLICY  # noqa: PLC0415
     from analytics.earnings_timing import compute_entry_exit_schedule  # noqa: PLC0415
+    from analytics.forward_windows import announcement_session  # noqa: PLC0415
 
     return compute_entry_exit_schedule(
-        event.earnings_date, _announcement_session(event), policy=V4_TIMING_POLICY
+        event.earnings_date, announcement_session(event), policy=V4_ACTIVE_TIMING_POLICY
     )
 
 
 def due_for_v4_decision_now(event, now: datetime) -> bool:
-    """True only inside the V4 decision window: [15:30 ET, 15:30 + the
-    pipeline's own LATE_CUTOFF_GRACE] on the legal pre-earnings trading
-    day. Mirrors services.scheduler._due_for_decision_now shape for shape;
-    it is NOT that function because that one is keyed to V3's 15:55."""
-    from services.decision_pipeline import LATE_CUTOFF_GRACE  # noqa: PLC0415
+    """True only inside the V4 decision window: [15:30 ET, 15:30 +
+    LATE_CUTOFF_GRACE] on the legal pre-earnings trading day."""
+    from analytics.forward_windows import LATE_CUTOFF_GRACE  # noqa: PLC0415
 
     schedule = v4_schedule_for_event(event)
     return schedule.entry_timestamp <= now <= schedule.entry_timestamp + LATE_CUTOFF_GRACE
 
 
 def v4_settlement_window_state(event, now: datetime) -> str:
-    """Where ``now`` sits relative to the legal exit window -- the SAME
-    window V3's exit capture enforces (benchmark_exit_capture: exit
-    timestamp minus EXIT_EARLY_CAPTURE_TOLERANCE, plus LATE_CUTOFF_GRACE).
-    V4 gets no easier exit and no later one."""
-    from services.benchmark_exit_capture import EXIT_EARLY_CAPTURE_TOLERANCE  # noqa: PLC0415
-    from services.decision_pipeline import LATE_CUTOFF_GRACE  # noqa: PLC0415
+    """Where ``now`` sits relative to the legal exit window: exit time
+    (15:30 ET, first post-earnings trading day) minus EARLY_CAPTURE_
+    TOLERANCE, plus LATE_CUTOFF_GRACE. A same-day AMC settlement is
+    impossible by construction (the exit date is the next trading day)."""
+    from analytics.forward_windows import (  # noqa: PLC0415
+        EARLY_CAPTURE_TOLERANCE,
+        LATE_CUTOFF_GRACE,
+    )
 
     schedule = v4_schedule_for_event(event)
-    if now < schedule.exit_timestamp - EXIT_EARLY_CAPTURE_TOLERANCE:
+    if now < schedule.exit_timestamp - EARLY_CAPTURE_TOLERANCE:
         return SETTLEMENT_NOT_DUE
     if now > schedule.exit_timestamp + LATE_CUTOFF_GRACE:
         return SETTLEMENT_WINDOW_MISSED
@@ -125,17 +127,14 @@ def v4_settlement_window_state(event, now: datetime) -> str:
 
 
 def _due_candidate_events(db, now: datetime) -> list:
-    """The same candidate pre-filter V3 uses (imported, not reimplemented)
-    -- the DAY-level horizon. The time-of-day window is then V4's own
-    ``due_for_v4_decision_now``."""
+    """Day-level pre-filter of calendar events; the time-of-day window is
+    then ``due_for_v4_decision_now``."""
     from datetime import timedelta  # noqa: PLC0415
 
+    from analytics.forward_windows import DECISION_CANDIDATE_LOOKAHEAD_DAYS  # noqa: PLC0415
     from models.earnings_calendar_event import EarningsCalendarEvent  # noqa: PLC0415
-    from services.scheduler import (  # noqa: PLC0415
-        _DECISION_CANDIDATE_LOOKAHEAD_DAYS,
-    )
 
-    horizon = now.date() + timedelta(days=_DECISION_CANDIDATE_LOOKAHEAD_DAYS)
+    horizon = now.date() + timedelta(days=DECISION_CANDIDATE_LOOKAHEAD_DAYS)
     return (
         db.query(EarningsCalendarEvent)
         .filter(EarningsCalendarEvent.earnings_date <= horizon)
@@ -164,6 +163,7 @@ def run_v4_shadow_decision_job(*, now: datetime | None = None) -> None:
 
         from datetime import UTC  # noqa: PLC0415
 
+        from analytics.forward_windows import decision_deadline_for  # noqa: PLC0415
         from providers.factory import get_options_provider  # noqa: PLC0415
         from services.v4_shadow_orchestration import (  # noqa: PLC0415
             default_view_generator,
@@ -176,26 +176,32 @@ def run_v4_shadow_decision_job(*, now: datetime | None = None) -> None:
         # constructs a provider or opens a connection.
         provider = get_options_provider(settings, override="ibkr", db=db)
 
-        summary = run_shadow_decisions_for_due_events(
-            db,
-            settings,
-            now=resolved_now,
-            provider=provider,
-            view_generator=default_view_generator,
-            due_predicate=due_for_v4_decision_now,
-            candidate_events=_due_candidate_events(db, resolved_now),
-        )
+        # Deadline guard: measured from the real wall clock, not the
+        # legal window timestamp, so a late-starting run still stops in time.
+        deadline = decision_deadline_for(datetime.now(UTC))
+        with V4_MARKET_DATA_LOCK:
+            summary = run_shadow_decisions_for_due_events(
+                db,
+                settings,
+                now=resolved_now,
+                provider=provider,
+                view_generator=default_view_generator,
+                due_predicate=due_for_v4_decision_now,
+                candidate_events=_due_candidate_events(db, resolved_now),
+                deadline=deadline,
+            )
         db.commit()
 
         log.info(
             "v4 shadow decision run: evaluated=%d ranked=%d no_action=%d "
-            "already=%d research_not_ready=%d failed=%d",
+            "already=%d research_not_ready=%d failed=%d deadline_skipped=%d",
             summary.evaluated,
             summary.ranked,
             summary.no_action,
             summary.already_generated,
             summary.research_not_ready,
             summary.failed,
+            summary.deadline_skipped,
         )
         finish_scheduler_run(
             db,
@@ -251,17 +257,20 @@ def settle_due_cohorts(db, *, provider, now: datetime) -> SettlementRunSummary:
     Pure orchestration over ``db``; the scheduler job wraps it in its own
     session/run bookkeeping so this can be tested directly.
     """
+    from analytics.decision_timing_policy import V4_ACTIVE_TIMING_POLICY  # noqa: PLC0415
+    from analytics.forward_windows import LATE_CUTOFF_GRACE  # noqa: PLC0415
     from models.earnings_calendar_event import EarningsCalendarEvent  # noqa: PLC0415
     from models.v4_shadow import (  # noqa: PLC0415
         V4ShadowConfigEntry,
         V4ShadowConfigSettlement,
         V4ShadowDecision,
     )
-    from services.decision_pipeline import LATE_CUTOFF_GRACE  # noqa: PLC0415
     from services.v4_shadow_cohort import (  # noqa: PLC0415
         fail_missed_settlement_window,
         settle_shadow_decision_cohorts,
     )
+
+    policy_version = V4_ACTIVE_TIMING_POLICY.version
 
     summary = SettlementRunSummary()
     settled_config_ids = db.query(V4ShadowConfigSettlement.shadow_config_result_id)
@@ -310,14 +319,23 @@ def settle_due_cohorts(db, *, provider, now: datetime) -> SettlementRunSummary:
 
             summary.evaluated += 1
             if state == SETTLEMENT_DUE:
-                result = settle_shadow_decision_cohorts(
-                    db, provider=provider, decision=decision, observed_at=now
-                )
+                with V4_MARKET_DATA_LOCK:
+                    result = settle_shadow_decision_cohorts(
+                        db,
+                        provider=provider,
+                        decision=decision,
+                        observed_at=now,
+                        timing_policy_version=policy_version,
+                    )
                 summary.settled += result.settled
                 summary.failed += result.failed
             else:
                 summary.failed += fail_missed_settlement_window(
-                    db, decision=decision, observed_at=now, detail=detail
+                    db,
+                    decision=decision,
+                    observed_at=now,
+                    detail=detail,
+                    timing_policy_version=policy_version,
                 )
         except Exception:  # noqa: BLE001 -- one decision must not stop the run
             summary.failed += 1
@@ -329,9 +347,9 @@ def run_v4_shadow_settlement_job(*, now: datetime | None = None) -> None:
     """Observes the legal exit window for every frozen shadow decision
     that is due and not already settled.
 
-    Uses the SAME settlement window as V3 (first post-earnings trading
-    day, 15:55 ET, with V3's own early tolerance and late grace) -- V4
-    gets no easier exit (Section 15)."""
+    Settles inside the ACTIVE policy's exit window (15:30 ET on the first
+    post-earnings trading day, with the shared early tolerance and late
+    grace) and records that policy version on every settlement row."""
     db = SessionLocal()
     run = start_scheduler_run(db, V4_SHADOW_SETTLEMENT_JOB_ID)
     try:
