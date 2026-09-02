@@ -43,7 +43,17 @@ export function MarketViewTab({ ticker }: { ticker: string }) {
           <summary className="text-muted text-sm">Evidence provenance (advanced)</summary>
           <table style={{ marginTop: 6, fontSize: ".8rem" }}>
             <tbody>
+              <tr><td className="text-muted">Provider</td><td className="mono">{d.provenance?.llm_provider ?? "—"}</td></tr>
+              <tr><td className="text-muted">Model (configured)</td><td className="mono" data-testid="prov-model">{d.provenance?.llm_model ?? "—"}</td></tr>
+              <tr><td className="text-muted">Model (returned by API)</td><td className="mono">{d.provenance?.llm_returned_model ?? "not reported"}</td></tr>
+              <tr><td className="text-muted">Thinking</td><td className="mono" data-testid="prov-thinking">{d.provenance?.llm_thinking ?? "not recorded"}</td></tr>
+              <tr><td className="text-muted">Reasoning effort</td><td className="mono" data-testid="prov-effort">{d.provenance?.llm_reasoning_effort ?? (d.provenance?.llm_thinking === "disabled" ? "n/a" : "not recorded")}</td></tr>
+              <tr><td className="text-muted">Tokens (in / out / reasoning)</td><td className="mono">{d.provenance?.llm_input_tokens != null ? `${d.provenance.llm_input_tokens} / ${d.provenance.llm_output_tokens ?? "—"} / ${d.provenance.llm_reasoning_tokens ?? "—"}` : "—"}</td></tr>
+              <tr><td className="text-muted">Latency</td><td className="mono">{d.provenance?.llm_latency_ms != null ? `${(d.provenance.llm_latency_ms / 1000).toFixed(1)} s` : "—"}</td></tr>
+              <tr><td className="text-muted">Finish reason</td><td className="mono">{d.provenance?.llm_finish_reason ?? "—"}</td></tr>
               <tr><td className="text-muted">Prompt version</td><td className="mono">{d.provenance?.prompt_version ?? "—"}</td></tr>
+              <tr><td className="text-muted">Model config version</td><td className="mono">{d.provenance?.llm_config_version ?? "—"}</td></tr>
+              <tr><td className="text-muted">Generated at</td><td className="mono">{d.provenance?.generated_at ?? "—"}</td></tr>
               <tr><td className="text-muted">View schema</td><td className="mono">{d.provenance?.decision_view_schema_version ?? "—"}</td></tr>
               <tr><td className="text-muted">Timing policy</td><td className="mono">{d.timing_policy_version ?? "—"}</td></tr>
             </tbody>

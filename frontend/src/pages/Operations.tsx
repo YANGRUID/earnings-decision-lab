@@ -364,7 +364,14 @@ function SystemHealthSection({ health }: { health: SystemHealth }) {
         <HealthPill
           label="AI Provider"
           state={health.ai_provider.state}
-          detail={providerLabel(health.ai_provider.provider)}
+          detail={
+            health.ai_provider.decision_view_model
+              ? `${providerLabel(health.ai_provider.provider)} · V4 view: ${health.ai_provider.decision_view_model}` +
+                `${health.ai_provider.decision_view_thinking === "enabled" ? ` · thinking ${health.ai_provider.decision_view_reasoning_effort ?? ""}`.trimEnd() : " · no thinking"}`
+              : health.ai_provider.decision_view_config_error
+                ? `${providerLabel(health.ai_provider.provider)} · V4 view model NOT configured`
+                : providerLabel(health.ai_provider.provider)
+          }
         />
         <HealthPill
           label="Scheduler"
@@ -952,7 +959,10 @@ export function Operations() {
       {quoteDiagnostics.data && <QuoteDiagnosticsSummaryCard summary={quoteDiagnostics.data} />}
       <h2 className="sidebar-nav-heading" style={{ marginTop: 16 }}>Experimental Forward — V4</h2>
       <div id="ops-v4">
-        <OperationsV4Section registeredJobCount={summary.data?.health.scheduler.registered_job_count ?? null} />
+        <OperationsV4Section
+          registeredJobCount={summary.data?.health.scheduler.registered_job_count ?? null}
+          aiProvider={summary.data?.health.ai_provider ?? null}
+        />
       </div>
     </div>
   );

@@ -404,6 +404,15 @@ export interface DomainStatus {
 }
 
 export interface ProviderDashboard {
+  v4_decision_view?: {
+    provider: string | null;
+    model: string | null;
+    thinking: string | null;
+    reasoning_effort: string | null;
+    max_tokens: number | null;
+    config_version: string | null;
+    config_error: string | null;
+  } | null;
   domains: DomainStatus[];
   strategy_risk_preference: string;
 }
@@ -1198,6 +1207,12 @@ export interface AiProviderHealth {
   configured: boolean;
   last_successful_generation_at: string | null;
   last_error: string | null;
+  // The explicit V4 DecisionView model configuration (2026-09-02).
+  decision_view_model?: string | null;
+  decision_view_thinking?: string | null;
+  decision_view_reasoning_effort?: string | null;
+  decision_view_max_tokens?: number | null;
+  decision_view_config_error?: string | null;
 }
 
 export interface SchedulerHealth {
@@ -1421,9 +1436,24 @@ export interface V4ShadowView {
 
 export interface V4ShadowProvenance {
   llm_provider: string | null;
+  /** The configured model alias the view was requested from. */
   llm_model: string | null;
   prompt_version: string | null;
   decision_view_schema_version: string | null;
+  // Model/reasoning provenance (2026-09-02); absent on views frozen earlier.
+  /** What the API itself reported -- may equal the alias, never invented. */
+  llm_returned_model?: string | null;
+  llm_thinking?: string | null;
+  llm_reasoning_effort?: string | null;
+  llm_max_tokens?: number | null;
+  llm_finish_reason?: string | null;
+  llm_input_tokens?: number | null;
+  llm_output_tokens?: number | null;
+  llm_reasoning_tokens?: number | null;
+  llm_cache_hit_tokens?: number | null;
+  llm_latency_ms?: number | null;
+  llm_config_version?: string | null;
+  generated_at?: string | null;
 }
 
 export interface V4ShadowMarketData {

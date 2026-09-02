@@ -16,7 +16,7 @@ const decision = (over: Record<string, unknown> = {}) => ({
   no_action_reason: null, failure_category: null, rank_1_candidate_id: "spread",
   candidate_count: 2, rankable_candidate_count: 2,
   view: { direction: "bullish", volatility: "long_vol", expected_move_intent: "large_move", confidence: "medium", reasoning: "Synthetic reasoning for E2E." },
-  provenance: { llm_provider: "deepseek", llm_model: "deepseek-v4-flash", prompt_version: "decision-view-v1", decision_view_schema_version: "v1" },
+  provenance: { llm_provider: "deepseek", llm_model: "deepseek-v4-pro", llm_returned_model: "deepseek-v4-pro", llm_thinking: "enabled", llm_reasoning_effort: "high", llm_input_tokens: 1061, llm_output_tokens: 2227, llm_reasoning_tokens: 1861, llm_latency_ms: 39290, llm_finish_reason: "stop", llm_config_version: "v4-decision-view-model-config-v1", prompt_version: "decision-view-v1", decision_view_schema_version: "v1" },
   market_data: { underlying_price: "100.00", underlying_quote_at: NOW, market_data_quality: "delayed", source_provider: "ibkr_tws", max_input_skew_seconds: "0" },
   versions: { engine: "options-decision-engine-v4", ranking: "v4-4b-t1-executable-ranking-v1" },
   timing_policy_version: "v4-pre-earnings-1530et-v1",
@@ -126,6 +126,11 @@ test.describe("Company workspace (V4-first)", () => {
     await expect(page.getByTestId("ai-judgment-notice")).toContainText("AI judgment, not a ranking");
     await expect(page.getByTestId("market-view")).toContainText("NOT A PROBABILITY");
     await expect(page.getByTestId("market-view")).toContainText("BULLISH");
+    // Model provenance (2026-09-02): configured vs returned model, thinking, effort.
+    await expect(page.getByTestId("prov-model")).toHaveText("deepseek-v4-pro");
+    await expect(page.getByTestId("prov-thinking")).toHaveText("enabled");
+    await expect(page.getByTestId("prov-effort")).toHaveText("high");
+    await expect(page.getByTestId("market-view")).toContainText("1061 / 2227 / 1861");
   });
 
   test("V4 decision tab embeds the six-config lab and candidates tab the explorer", async ({ page }) => {

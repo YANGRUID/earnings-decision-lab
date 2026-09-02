@@ -160,7 +160,17 @@ function Hero({ d, cfg, timing }: {
           <strong>No action for {cfg.label}.</strong> {cfg.no_action_reason}
         </div>
       )}
-      <MethodologyDetails versions={{ ...(d.versions ?? {}), timing_policy: timing, configuration: cfg?.configuration_version ?? null }} />
+      <MethodologyDetails versions={{
+        ...(d.versions ?? {}),
+        timing_policy: timing,
+        configuration: cfg?.configuration_version ?? null,
+        decision_model: d.provenance?.llm_model ? `${d.provenance.llm_provider ?? ""} ${d.provenance.llm_model}`.trim() : null,
+        decision_reasoning: d.provenance?.llm_thinking
+          ? `thinking ${d.provenance.llm_thinking}${d.provenance.llm_reasoning_effort ? ` · effort ${d.provenance.llm_reasoning_effort}` : ""}`
+          : null,
+        model_returned: d.provenance?.llm_returned_model ?? null,
+        prompt: d.provenance?.prompt_version ?? null,
+      }} />
     </div>
   );
 }

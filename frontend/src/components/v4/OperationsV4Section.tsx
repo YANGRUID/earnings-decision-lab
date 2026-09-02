@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
 import { api } from "../../api/client";
+import type { AiProviderHealth } from "../../types/api";
 import { useAsync } from "../../hooks/useAsync";
 import { CONFIG_ORDER, configLabel, statusPill } from "./shared";
 
@@ -53,7 +54,7 @@ function etTime(iso: string | null | undefined): string {
   return `${new Date(iso).toLocaleString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })} ET`;
 }
 
-export function OperationsV4Section({ registeredJobCount }: { registeredJobCount: number | null }) {
+export function OperationsV4Section({ registeredJobCount, aiProvider = null }: { registeredJobCount: number | null; aiProvider?: AiProviderHealth | null }) {
   const decisions = useAsync(() => api.getV4ShadowDecisions(), []);
   // The job monitor lists every job the live scheduler has registered; the
   // two shadow jobs are present only while the cohort is switched on.
@@ -73,6 +74,20 @@ export function OperationsV4Section({ registeredJobCount }: { registeredJobCount
         </div>
         <div className="stat"><span className="stat-label">Shadow decisions</span><span className="stat-value mono">{decisions.data?.decisions.length ?? "—"}</span></div>
       </div>
+      <div className="grid grid-4" style={{ gap: 10, marginTop: 10 }} data-testid="operations-v4-model">
+        <div className="stat"><span className="stat-label">Decision model</span>
+          <span className="stat-value small mono">{aiProvider?.decision_view_model ?? (aiProvider?.decision_view_config_error ? "NOT CONFIGURED" : "—")}</span>
+          <span className="text-faint text-sm">{aiProvider ? `${aiProvider.provider} · next V4 DecisionView` : ""}</span>
+        </div>
+        <div className="stat"><span className="stat-label">Thinking</span><span className="stat-value small mono">{aiProvider?.decision_view_thinking ?? "—"}</span></div>
+        <div className="stat"><span className="stat-label">Reasoning effort</span><span className="stat-value small mono">{aiProvider?.decision_view_thinking === "enabled" ? (aiProvider?.decision_view_reasoning_effort ?? "—") : "n/a"}</span></div>
+        <div className="stat"><span className="stat-label">Token budget</span><span className="stat-value small mono">{aiProvider?.decision_view_max_tokens ?? "—"}</span><span className="text-faint text-sm">max_tokens incl. hidden reasoning</span></div>
+      </div>
+      {aiProvider?.decision_view_config_error && (
+        <div className="notice notice-critical" style={{ marginTop: 8 }} data-testid="operations-v4-model-error">
+          V4 DecisionView configuration error: {aiProvider.decision_view_config_error}. No model fallback: V4 views will fail until this is fixed. V3 is unaffected.
+        </div>
+      )}
       {enabled && (
         <div className="grid grid-4" style={{ gap: 10, marginTop: 10 }} data-testid="operations-v4-jobs">
           <div className="stat"><span className="stat-label">Next V4 observation</span><span className="stat-value small mono">{etTime(decisionJob?.next_run_time)}</span><span className="text-faint text-sm mono">v4_shadow_decision</span></div>
