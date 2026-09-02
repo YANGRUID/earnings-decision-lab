@@ -55,6 +55,7 @@ from analytics.decision.v4_strike_geometry_variants import (
 )
 from analytics.decision.v4_t1_valuation_context import V4T1LegInput, V4T1ValuationContext
 from analytics.options.strategy_candidates import StrategyCategory
+from models.enums import DecisionDirection, DecisionVolatilityView
 from providers.base import OptionsDataProvider
 from providers.types import OptionQuote, SelectedLeg
 from services.v4_shadow import ShadowCandidateInput
@@ -139,6 +140,20 @@ def _right_word(right: str) -> str:
     if r in ("p", "put"):
         return "put"
     return r
+
+
+def _coerce_enum(enum_cls, value):
+    """String -> enum member (by value or name), enum/None passthrough."""
+    if value is None or isinstance(value, enum_cls):
+        return value
+    text = str(value).strip()
+    try:
+        return enum_cls(text.lower())
+    except ValueError:
+        try:
+            return enum_cls[text.upper()]
+        except KeyError:
+            return value
 
 
 def assemble_shadow_candidates(
@@ -259,7 +274,17 @@ def assemble_shadow_candidates(
     result.latency.geometry_ms = Decimal(str((time.monotonic() - geometry_started) * 1000))
 
     # --- 5. Flatten to concrete candidates, dedupe contracts ---------
-    market_view = derive_v4_market_view(direction, volatility_view)  # type: ignore[arg-type]
+    # Live-found defect (activation dry-run, 2026-09-02): the DecisionView
+    # carries plain strings ("bullish", "long_vol"), while
+    # derive_v4_market_view reads enum members. The orchestration path
+    # passed strings through here behind a type: ignore, which every test
+    # had mocked away -- the first real in-process run raised
+    # AttributeError: 'str' object has no attribute 'value'. Coerce at the
+    # boundary; enum members and None pass through unchanged.
+    market_view = derive_v4_market_view(
+        _coerce_enum(DecisionDirection, direction),
+        _coerce_enum(DecisionVolatilityView, volatility_view),
+    )
 
     # (candidate_id, strategy, variant_id, legs). ``strategy`` is the real
     # StrategyCategory enum, carried through to the valuation context
