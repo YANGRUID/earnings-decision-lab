@@ -1709,3 +1709,50 @@ class TestGetPreparationProgress:
         assert progress.queue_depth == 0
         assert progress.completed == 0
         assert progress.failed == 0
+
+
+class TestUnprocessedDueEventIgnoresIneligibleEvents:
+    """V4 consolidation, Section 32 -- the real SAIC/SY/LX false positive:
+    COMPLETED events below the $10B market-cap floor were flagged as 'due
+    with no decision/entry activity' although the pipeline would have
+    rejected them on its first filter."""
+
+    def _event(self, symbol, market_cap):
+        from datetime import UTC, datetime
+
+        from services.operations import STATE_CALENDAR_DISCOVERED, PipelineEvent
+
+        due = datetime(2026, 8, 28, 19, 55, tzinfo=UTC)
+        return PipelineEvent(
+            calendar_event_id=1, symbol=symbol, company_name=symbol, market_cap=market_cap,
+            earnings_date="2026-08-31", earnings_timing="BMO", entry_timestamp=due,
+            exit_timestamp=due, lifecycle_state=STATE_CALENDAR_DISCOVERED, lifecycle_reason=None,
+            next_action="Generate decision", next_action_at=due, decision_snapshot_id=None,
+            entry_capture_attempt_id=None, settlement_capture_attempt_id=None,
+        )
+
+    def _alerts(self, events):
+        from datetime import UTC, datetime
+
+        from services.operations import detect_missed_job_alerts
+
+        now = datetime(2026, 9, 1, 12, 0, tzinfo=UTC)
+        class _Ibkr:
+            state = "green"
+            last_error = None
+
+        class _Health:
+            ibkr = _Ibkr()
+
+        return [
+            a for a in detect_missed_job_alerts([], events, _Health(), now=now)  # type: ignore[arg-type]
+            if a.category == "unprocessed_due_event"
+        ]
+
+    def test_below_cap_events_are_not_missed_decisions(self):
+        events = [self._event("SAIC", "5362814479.49"), self._event("LX", "223790463.00")]
+        assert self._alerts(events) == []
+
+    def test_eligible_or_unknown_cap_events_still_alert(self):
+        alerts = self._alerts([self._event("BIG", "25000000000.00"), self._event("UNK", None)])
+        assert sorted(a.symbol for a in alerts) == ["BIG", "UNK"]

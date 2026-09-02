@@ -19,6 +19,7 @@ run has touched it yet, never guessed live.
 
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
+from decimal import Decimal, InvalidOperation
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import func, text
@@ -50,6 +51,7 @@ from providers.ibkr_client import IBKRClient
 from providers.ibkr_tws_health import TwsHealthProbe
 from providers.ibkr_tws_options import IBKRTWSProvider
 from services.decision_pipeline import LATE_CUTOFF_GRACE
+from services.earnings_eligibility import MIN_MARKET_CAP
 from services.provider_status import get_provider_dashboard
 from services.research_preparation_queue import count_queue_depth
 from services.scheduler import (
@@ -1646,6 +1648,18 @@ _UNPROCESSED_LIFECYCLE_STATES = (
 )
 
 
+def _passes_hard_market_cap_filter(market_cap: str | None) -> bool:
+    """Mirrors services/earnings_eligibility.py's first, hardest rule so
+    the Operations read model never calls an event "missed" that the
+    pipeline would have skipped as ineligible before doing any work."""
+    if market_cap is None:
+        return True
+    try:
+        return Decimal(str(market_cap)) >= MIN_MARKET_CAP
+    except (InvalidOperation, ValueError):
+        return True
+
+
 def detect_missed_job_alerts(
     scheduler_jobs: list[SchedulerJobView],
     pipeline_events: list[PipelineEvent],
@@ -1724,6 +1738,18 @@ def detect_missed_job_alerts(
                 forward_test_activation_at is None
                 or event.next_action_at >= forward_test_activation_at
             )
+            # V4 consolidation (2026-09-02), Section 32 -- read-model
+            # correction found via a real false positive (SAIC, SY, LX):
+            # three COMPLETED calendar events that the decision pipeline
+            # would have rejected on its FIRST hard filter (market cap
+            # below the $10B floor; two were also non-US) were flagged as
+            # "due with no decision/entry activity". An event that could
+            # never have produced a decision is not a missed decision.
+            # The same MIN_MARKET_CAP the pipeline uses is applied here;
+            # an unknown market cap is NOT excluded (the pipeline itself
+            # treats "market cap unknown" as an evaluable, reportable
+            # skip, so a missing evaluation there is still worth an alert).
+            and _passes_hard_market_cap_filter(event.market_cap)
         ):
             alerts.append(
                 FailureEntry(
