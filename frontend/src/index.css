@@ -30,6 +30,10 @@ body,
 #root {
   height: 100%;
 }
+html {
+  /* Jump links and scrollIntoView land below the sticky page outline. */
+  scroll-padding-top: 48px;
+}
 
 body {
   margin: 0;
@@ -977,4 +981,134 @@ label {
 .history-item-delete:hover {
   color: var(--color-negative);
   background: var(--color-negative-bg);
+}
+
+/* ---------------------------------------------------------------------------
+   Long-list controls (2026-09-02): search / facet chips / sort / paging and
+   the sticky page outline. Shared by every list that grows over time.
+   --------------------------------------------------------------------------- */
+.list-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  margin: 0 0 10px;
+}
+.list-search {
+  flex: 1 1 200px;
+  min-width: 160px;
+  max-width: 320px;
+  padding: 7px 10px;
+  font-size: 13px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  background: var(--color-surface);
+  color: var(--color-text);
+}
+.list-search:focus {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 1px;
+}
+.chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  font-size: 12px;
+  line-height: 1.3;
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  background: var(--color-surface);
+  color: var(--color-text-muted);
+  cursor: pointer;
+}
+.chip:hover {
+  border-color: var(--color-accent);
+  color: var(--color-text);
+}
+.chip.active {
+  background: var(--color-accent);
+  border-color: var(--color-accent);
+  color: #fff;
+}
+.chip-count {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  opacity: 0.8;
+}
+.list-select {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.list-select select {
+  padding: 5px 8px;
+  font-size: 12px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  background: var(--color-surface);
+  color: var(--color-text);
+}
+.list-toolbar-right {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+.list-range {
+  font-size: 12px;
+  color: var(--color-text-muted);
+  white-space: nowrap;
+}
+.pager {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 16px;
+  padding-top: 10px;
+  margin-top: 4px;
+  border-top: 1px solid var(--color-border);
+}
+.pager-nav {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+.btn-small {
+  padding: 5px 10px;
+  font-size: 12px;
+}
+.page-outline {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  /* The bar overlays content while scrolling; only its links take clicks. */
+  pointer-events: none;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 14px;
+  margin: -8px 0 14px;
+  padding: 8px 12px;
+  background: color-mix(in srgb, var(--color-bg) 88%, transparent);
+  backdrop-filter: blur(6px);
+  border-bottom: 1px solid var(--color-border);
+  font-size: 12.5px;
+}
+.page-outline a {
+  pointer-events: auto;
+  color: var(--color-accent);
+  text-decoration: none;
+  white-space: nowrap;
+}
+.page-outline a:hover {
+  text-decoration: underline;
+}
+:root[data-theme="dark"] .chip.active {
+  color: var(--color-bg);
 }

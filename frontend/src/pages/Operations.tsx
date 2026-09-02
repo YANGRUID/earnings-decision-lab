@@ -4,6 +4,8 @@ import { api } from "../api/client";
 import { useAsync } from "../hooks/useAsync";
 import { OperationsV4Section } from "../components/v4/OperationsV4Section";
 import { ErrorState, LoadingState } from "../components/StatusStates";
+import { ListToolbar, PageOutline, Pager } from "../components/ListControls";
+import { useListControls } from "../hooks/useListControls";
 import { providerLabel } from "../lib/format";
 import type {
   ExecutionSummary,
@@ -28,6 +30,20 @@ import type {
 // several fire cycles with nothing logged anywhere. See db/session.py's
 // own pool_size/max_overflow comment for the other half of this fix.
 const POLL_INTERVAL_MS = 30_000;
+
+// Jump links for a page that is a long column of cards. Only sections that
+// are actually rendered appear (PageOutline checks the DOM).
+const OPS_SECTIONS = [
+  { id: "ops-system", label: "System" },
+  { id: "ops-official-run", label: "Official run" },
+  { id: "ops-pipeline-summary", label: "Summary" },
+  { id: "ops-pipeline", label: "Earnings pipeline" },
+  { id: "ops-research-prep", label: "Research prep" },
+  { id: "ops-jobs", label: "Scheduler jobs" },
+  { id: "ops-attention", label: "Attention" },
+  { id: "ops-quotes", label: "Quote diagnostics" },
+  { id: "ops-v4", label: "V4 shadow" },
+];
 
 const JOB_LABELS: Record<string, string> = {
   earnings_calendar_sync: "Earnings Calendar Sync",
@@ -332,7 +348,7 @@ function ibkrHealthDetail(ibkr: SystemHealth["ibkr"]): string | undefined {
 
 function SystemHealthSection({ health }: { health: SystemHealth }) {
   return (
-    <div className="card">
+    <div className="card" id="ops-system">
       <h2>System</h2>
       <div className="grid grid-4">
         <HealthPill label="IBKR" state={health.ibkr.state} detail={ibkrHealthDetail(health.ibkr)} />
@@ -382,7 +398,7 @@ function SystemHealthSection({ health }: { health: SystemHealth }) {
 function TodaysOfficialRunCard({ run }: { run: TodaysOfficialRun }) {
   if (!run.found) {
     return (
-      <div className="card">
+      <div className="card" id="ops-official-run">
         <h2>Today's Official Run</h2>
         <p className="text-sm text-muted" style={{ margin: 0 }}>
           The scheduler hasn't fired today's decision/entry run yet — an honest, empty state,
@@ -403,7 +419,7 @@ function TodaysOfficialRunCard({ run }: { run: TodaysOfficialRun }) {
     ["Settlements Failed", run.settlements_failed],
   ];
   return (
-    <div className="card">
+    <div className="card" id="ops-official-run">
       <h2>Today's Official Run</h2>
       <p className="text-sm text-faint" style={{ marginTop: -4 }}>
         Run started {formatDateTime(run.run_started_at)}
@@ -447,7 +463,7 @@ function ExecutionSummaryCard({ summary }: { summary: ExecutionSummary }) {
     ["Settlement Failures", summary.settlement_failures],
   ];
   return (
-    <div className="card">
+    <div className="card" id="ops-pipeline-summary">
       <h2>Current Pipeline Summary</h2>
       <p className="text-sm text-faint" style={{ marginTop: -4 }}>
         Every real event whose own entry or exit lands on today's date, across the wider tracked
@@ -577,9 +593,25 @@ function PipelineRow({ event, now }: { event: PipelineEvent; now: string }) {
 }
 
 function TodaysPipeline({ events, now }: { events: PipelineEvent[]; now: string }) {
+  // Long-list controls (2026-09-02): this table already renders 100+ rows and
+  // grows with the calendar. Search, lifecycle facet, sort and paging live in
+  // the URL (?pipe_*), and "All" is always one click away.
+  const controls = useListControls<PipelineEvent>({
+    rows: events,
+    urlKey: "pipe",
+    searchKeys: [(e) => e.symbol, (e) => e.company_name, (e) => e.lifecycle_reason, (e) => e.next_action],
+    facet: { label: "Lifecycle", getValue: (e) => e.lifecycle_state, format: (v) => v.replace(/_/g, " ") },
+    sorts: [
+      { key: "earnings", label: "Earnings date", compare: (a, b) => a.earnings_date.localeCompare(b.earnings_date) || a.symbol.localeCompare(b.symbol) },
+      { key: "cap", label: "Market cap (largest first)", compare: (a, b) => Number(b.market_cap ?? -Infinity) - Number(a.market_cap ?? -Infinity) },
+      { key: "ticker", label: "Ticker (A–Z)", compare: (a, b) => a.symbol.localeCompare(b.symbol) },
+      { key: "next", label: "Next action (soonest first)", compare: (a, b) => (a.next_action_at ?? "9").localeCompare(b.next_action_at ?? "9") },
+    ],
+    defaultPageSize: 25,
+  });
   if (events.length === 0) {
     return (
-      <div className="card">
+      <div className="card" id="ops-pipeline">
         <h2>Today's Earnings Pipeline</h2>
         <p className="text-sm text-muted" style={{ margin: 0 }}>
           No real earnings events fall inside the current pipeline window.
@@ -588,8 +620,9 @@ function TodaysPipeline({ events, now }: { events: PipelineEvent[]; now: string 
     );
   }
   return (
-    <div className="card">
+    <div className="card" id="ops-pipeline">
       <h2>Today's Earnings Pipeline</h2>
+      <ListToolbar controls={controls} placeholder="Search ticker, company, reason or next action" testId="pipeline-controls" />
       <table>
         <thead>
           <tr>
@@ -604,11 +637,12 @@ function TodaysPipeline({ events, now }: { events: PipelineEvent[]; now: string 
           </tr>
         </thead>
         <tbody>
-          {events.map((event) => (
+          {controls.visible.map((event) => (
             <PipelineRow key={event.calendar_event_id} event={event} now={now} />
           ))}
         </tbody>
       </table>
+      <Pager controls={controls} testId="pipeline-pager" />
     </div>
   );
 }
@@ -631,7 +665,7 @@ function secondsLabel(totalSeconds: number): string {
 
 function PreparationProgressCard({ progress }: { progress: PreparationProgress }) {
   return (
-    <div className="card">
+    <div className="card" id="ops-research-prep">
       <h2>Research Preparation</h2>
       <div className="grid grid-4">
         <div className="stat">
@@ -694,7 +728,7 @@ function PreparationProgressCard({ progress }: { progress: PreparationProgress }
 
 function SchedulerJobsSection({ jobs, now }: { jobs: SchedulerJobView[]; now: string }) {
   return (
-    <div className="card">
+    <div className="card" id="ops-jobs">
       <h2>Scheduler Jobs</h2>
       <table>
         <thead>
@@ -749,9 +783,16 @@ function SchedulerJobsSection({ jobs, now }: { jobs: SchedulerJobView[]; now: st
 // --------------------------------------------------------------------------
 
 function FailureCenter({ failures }: { failures: FailureEntry[] }) {
+  const controls = useListControls<FailureEntry>({
+    rows: failures,
+    urlKey: "fail",
+    searchKeys: [(f) => f.symbol, (f) => f.stage, (f) => f.explanation, (f) => f.detail],
+    facet: { label: "Retryability", getValue: (f) => f.retryability, format: (v) => v.replace(/_/g, " ") },
+    defaultPageSize: 25,
+  });
   if (failures.length === 0) {
     return (
-      <div className="card">
+      <div className="card" id="ops-attention">
         <h2>Attention Required</h2>
         <p className="text-sm text-muted" style={{ margin: 0 }}>
           No real failures in the last 3 days.
@@ -760,8 +801,9 @@ function FailureCenter({ failures }: { failures: FailureEntry[] }) {
     );
   }
   return (
-    <div className="card">
+    <div className="card" id="ops-attention">
       <h2>Attention Required</h2>
+      <ListToolbar controls={controls} placeholder="Search ticker, stage or explanation" testId="failures-controls" />
       <table>
         <thead>
           <tr>
@@ -773,7 +815,7 @@ function FailureCenter({ failures }: { failures: FailureEntry[] }) {
           </tr>
         </thead>
         <tbody>
-          {failures.map((f, i) => (
+          {controls.visible.map((f, i) => (
             <tr key={i}>
               <td className="text-sm mono">{formatDateTime(f.occurred_at)}</td>
               <td className="mono">{f.symbol ?? "—"}</td>
@@ -799,6 +841,7 @@ function FailureCenter({ failures }: { failures: FailureEntry[] }) {
           ))}
         </tbody>
       </table>
+      <Pager controls={controls} testId="failures-pager" />
     </div>
   );
 }
@@ -825,7 +868,7 @@ function QuoteDiagnosticsSummaryCard({ summary }: { summary: QuoteDiagnosticsSum
     ["Contract Error", summary.contract_error_count],
   ];
   return (
-    <div className="card">
+    <div className="card" id="ops-quotes">
       <h2>Quote-Acquisition Diagnostics</h2>
       <p className="text-sm text-muted" style={{ marginTop: 0 }}>
         Real, bounded telemetry from the last {summary.window_hours}h of entry/settlement quote
@@ -880,6 +923,7 @@ export function Operations() {
           already-persisted state, refreshed automatically every 30 seconds.
         </p>
       </div>
+      <PageOutline sections={OPS_SECTIONS} />
       <h2 className="sidebar-nav-heading" style={{ marginTop: 16 }}>Control / Official — V3</h2>
 
 
@@ -907,7 +951,9 @@ export function Operations() {
       {failures.data && <FailureCenter failures={failures.data.failures} />}
       {quoteDiagnostics.data && <QuoteDiagnosticsSummaryCard summary={quoteDiagnostics.data} />}
       <h2 className="sidebar-nav-heading" style={{ marginTop: 16 }}>Experimental Forward — V4</h2>
-      <OperationsV4Section registeredJobCount={summary.data?.health.scheduler.registered_job_count ?? null} />
+      <div id="ops-v4">
+        <OperationsV4Section registeredJobCount={summary.data?.health.scheduler.registered_job_count ?? null} />
+      </div>
     </div>
   );
 }

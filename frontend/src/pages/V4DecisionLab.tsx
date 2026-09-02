@@ -2,6 +2,8 @@ import { useMemo, useState } from "react";
 import { useParams, Link, useNavigate } from "react-router-dom";
 import { api } from "../api/client";
 import { useAsync } from "../hooks/useAsync";
+import { useListControls } from "../hooks/useListControls";
+import { ListToolbar, Pager } from "../components/ListControls";
 import { EmptyState, ErrorState, LoadingState } from "../components/StatusStates";
 import { CONFIG_ORDER, fmtIv, fmtStrike, humanReasonCode, humanStatus, humanStrategy, money, pct, statusPill } from "../components/v4/shared";
 import { ExperimentalNotice, MethodologyDetails } from "../components/v4/sharedComponents";
@@ -21,9 +23,18 @@ import type {
 
 function DecisionPicker({ onPick, mode }: { onPick: (id: number) => void; mode: "lab" | "explorer" }) {
   const list = useAsync(() => api.getV4ShadowDecisions(), []);
+  const rows = list.data?.decisions ?? [];
+  // Every forward-test day adds events here; the list stays searchable,
+  // filterable by status and paged (?v4_*), with "All" always available.
+  const controls = useListControls({
+    rows,
+    urlKey: "v4",
+    searchKeys: [(d) => d.ticker, (d) => d.company_name],
+    facet: { label: "Status", getValue: (d) => d.status, format: (v) => v.replace(/_/g, " ") },
+    defaultPageSize: 25,
+  });
   if (list.loading && !list.data) return <LoadingState label="Loading V4 decisions…" />;
   if (list.error && !list.data) return <ErrorState message={list.error} />;
-  const rows = list.data?.decisions ?? [];
   if (rows.length === 0) {
     return (
       <EmptyState>
@@ -36,6 +47,7 @@ function DecisionPicker({ onPick, mode }: { onPick: (id: number) => void; mode: 
   return (
     <div className="card">
       <h2>{mode === "explorer" ? "Choose a decision to explore its candidates" : "V4 decisions"}</h2>
+      <ListToolbar controls={controls} placeholder="Search ticker or company" testId="v4-decisions-controls" />
       <table>
         <thead>
           <tr>
@@ -44,7 +56,7 @@ function DecisionPicker({ onPick, mode }: { onPick: (id: number) => void; mode: 
           </tr>
         </thead>
         <tbody>
-          {rows.map((d) => {
+          {controls.visible.map((d) => {
             const pill = statusPill(d.status);
             return (
               <tr key={d.id}>
@@ -66,6 +78,7 @@ function DecisionPicker({ onPick, mode }: { onPick: (id: number) => void; mode: 
           })}
         </tbody>
       </table>
+      <Pager controls={controls} testId="v4-decisions-pager" />
     </div>
   );
 }

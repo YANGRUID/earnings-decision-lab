@@ -3,6 +3,9 @@ import { Link } from "react-router-dom";
 import { api, ApiError } from "../api/client";
 import { useAsync } from "../hooks/useAsync";
 import { ErrorState, LoadingState } from "../components/StatusStates";
+import { ListToolbar, Pager } from "../components/ListControls";
+import { useListControls } from "../hooks/useListControls";
+import { fetchAllPages } from "../api/paging";
 import { HistoricalCompatibilityValue } from "../components/HistoricalCompatibility";
 import {
   deriveLifecycleStage,
@@ -146,20 +149,37 @@ function RateRow({ label, rate }: { label: string; rate: Rate }) {
 // --------------------------------------------------------------------------
 
 async function fetchOfficialArchive() {
+  // Every page of each endpoint (2026-09-02): a single page of 200 hid
+  // everything older once the archive grew past it. fetchAllPages walks the
+  // offsets so the whole archive is searchable and pageable locally.
   const [decisions, entries, settlements, events] = await Promise.all([
-    api.listDecisionSnapshots({ limit: 200 }),
-    api.listBenchmarkEntries({ limit: 200 }),
-    api.listAllSettlements({ status: "captured", limit: 200 }),
+    fetchAllPages((offset, limit) => api.listDecisionSnapshots({ limit, offset })),
+    fetchAllPages((offset, limit) => api.listBenchmarkEntries({ limit, offset })),
+    fetchAllPages((offset, limit) => api.listAllSettlements({ status: "captured", limit, offset })),
     // Best-effort: only covers events still status=UPCOMING (no bulk
     // "by id, any status" endpoint exists) -- a genuinely archived event
     // falls back to "—" below rather than failing the whole page.
-    api.listUpcomingEarnings({ limit: 200 }),
+    fetchAllPages((offset, limit) => api.listUpcomingEarnings({ limit, offset })),
   ]);
   return { decisions, entries, settlements, events };
 }
 
 function OfficialDecisionArchive() {
   const archive = useAsync(fetchOfficialArchive, []);
+  const allDecisions = archive.data?.decisions ?? [];
+  const controls = useListControls<DecisionSnapshot>({
+    rows: allDecisions,
+    urlKey: "arch",
+    searchKeys: [(d) => d.ticker, (d) => d.strategy_type, (d) => d.strategy_direction],
+    facet: { label: "Direction", getValue: (d) => d.strategy_direction },
+    sorts: [
+      { key: "generated", label: "Generated (newest first)", compare: (a, b) => b.generated_at.localeCompare(a.generated_at) },
+      { key: "oldest", label: "Generated (oldest first)", compare: (a, b) => a.generated_at.localeCompare(b.generated_at) },
+      { key: "ticker", label: "Ticker (A–Z)", compare: (a, b) => a.ticker.localeCompare(b.ticker) },
+    ],
+    defaultSort: "generated",
+    defaultPageSize: 25,
+  });
 
   if (archive.loading && !archive.data) return <LoadingState label="Loading official archive…" />;
   if (archive.error && !archive.data) return <ErrorState message={archive.error} />;
@@ -181,7 +201,6 @@ function OfficialDecisionArchive() {
     settlementsByDecisionId.set(s.decision_snapshot_id, list);
   }
 
-  const sorted = [...decisions].sort((a, b) => b.generated_at.localeCompare(a.generated_at));
 
   return (
     <div className="card">
@@ -191,11 +210,13 @@ function OfficialDecisionArchive() {
         distinct from the on-demand journal below. No settlement, no outcome metric: real
         performance requires a real, captured post-earnings exit (see Benchmark Track Record).
       </p>
-      {sorted.length === 0 ? (
+      {decisions.length === 0 ? (
         <p className="text-sm text-faint" style={{ marginBottom: 0 }}>
           No official decisions have been generated yet.
         </p>
       ) : (
+        <>
+        <ListToolbar controls={controls} placeholder="Search ticker, strategy or direction" testId="archive-controls" />
         <table>
           <thead>
             <tr>
@@ -213,7 +234,7 @@ function OfficialDecisionArchive() {
             </tr>
           </thead>
           <tbody>
-            {sorted.map((d) => (
+            {controls.visible.map((d) => (
               <ArchiveRow
                 key={d.id}
                 decision={d}
@@ -224,6 +245,8 @@ function OfficialDecisionArchive() {
             ))}
           </tbody>
         </table>
+        <Pager controls={controls} testId="archive-pager" />
+        </>
       )}
     </div>
   );

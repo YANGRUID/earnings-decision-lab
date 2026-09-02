@@ -544,9 +544,9 @@ test.describe("Live Operations Monitor", () => {
     const pipelineHeading = page.getByRole("heading", { name: "Today's Earnings Pipeline" });
     await expect(pipelineHeading).toBeVisible();
     const pipelineCard = page.locator(".card", { has: pipelineHeading });
-    await expect(pipelineCard.getByText("CALENDAR DISCOVERED")).toBeVisible();
-    await expect(pipelineCard.getByText("NOT ELIGIBLE")).toBeVisible();
-    await expect(pipelineCard.getByText("market cap below $10,000,000,000")).toBeVisible();
+    await expect(pipelineCard.locator("tbody").getByText("CALENDAR DISCOVERED")).toBeVisible();
+    await expect(pipelineCard.locator("tbody").getByText("NOT ELIGIBLE")).toBeVisible();
+    await expect(pipelineCard.locator("tbody").getByText("market cap below $10,000,000,000")).toBeVisible();
   });
 
   test("pipeline rows show real automatic research preparation states", async ({ page }) => {
@@ -588,10 +588,10 @@ test.describe("Live Operations Monitor", () => {
 
     const pipelineHeading = page.getByRole("heading", { name: "Today's Earnings Pipeline" });
     const pipelineCard = page.locator(".card", { has: pipelineHeading });
-    await expect(pipelineCard.getByText("READY FOR DECISION")).toBeVisible();
-    await expect(pipelineCard.getByText("FILTERED OUT")).toBeVisible();
-    await expect(pipelineCard.getByText("PREPARATION FAILED")).toBeVisible();
-    await expect(pipelineCard.getByText("SEC EDGAR outage")).toBeVisible();
+    await expect(pipelineCard.locator("tbody").getByText("READY FOR DECISION")).toBeVisible();
+    await expect(pipelineCard.locator("tbody").getByText("FILTERED OUT")).toBeVisible();
+    await expect(pipelineCard.locator("tbody").getByText("PREPARATION FAILED")).toBeVisible();
+    await expect(pipelineCard.locator("tbody").getByText("SEC EDGAR outage")).toBeVisible();
   });
 
   test("a no-action decision shows NO ACTION, never ENTRY FAILED", async ({ page }) => {
@@ -618,8 +618,8 @@ test.describe("Live Operations Monitor", () => {
     const pipelineCard = page.locator(".card", {
       has: page.getByRole("heading", { name: "Today's Earnings Pipeline" }),
     });
-    await expect(pipelineCard.getByText("NO ACTION", { exact: true })).toBeVisible();
-    await expect(pipelineCard.getByText("ENTRY FAILED")).toHaveCount(0);
+    await expect(pipelineCard.locator("tbody").getByText("NO ACTION", { exact: true })).toBeVisible();
+    await expect(pipelineCard.locator("tbody").getByText("ENTRY FAILED")).toHaveCount(0);
   });
 
   test("retry entry capture is hidden once the legal capture window has closed", async ({
@@ -708,11 +708,11 @@ test.describe("Live Operations Monitor", () => {
       has: page.getByRole("heading", { name: "Today's Earnings Pipeline" }),
     });
     await page.getByRole("row", { name: /WSM/ }).click();
-    await expect(pipelineCard.getByText("rate-limited the request")).toBeVisible();
+    await expect(pipelineCard.locator("tbody").getByText("rate-limited the request")).toBeVisible();
     // The overall row must never read FILTERED_OUT/PREPARATION_FAILED --
     // the warning is real but non-blocking.
-    await expect(pipelineCard.getByText("FILTERED OUT")).toHaveCount(0);
-    await expect(pipelineCard.getByText("PREPARATION FAILED")).toHaveCount(0);
+    await expect(pipelineCard.locator("tbody").getByText("FILTERED OUT")).toHaveCount(0);
+    await expect(pipelineCard.locator("tbody").getByText("PREPARATION FAILED")).toHaveCount(0);
   });
 
   test("has no force-decision/force-entry/force-settlement/override controls anywhere", async ({

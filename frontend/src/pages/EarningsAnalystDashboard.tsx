@@ -2,6 +2,8 @@ import { Link } from "react-router-dom";
 import { api } from "../api/client";
 import { useAsync } from "../hooks/useAsync";
 import { ErrorState, LoadingState } from "../components/StatusStates";
+import { ListToolbar, Pager } from "../components/ListControls";
+import { useListControls } from "../hooks/useListControls";
 import { MovePill } from "../components/MovePill";
 import { EarningsCalendarGrid } from "../components/EarningsCalendarGrid";
 import { DashboardV4Header } from "../components/v4/DashboardV4Header";
@@ -163,7 +165,36 @@ function UpcomingEarningsCard({
 }
 
 function UpcomingEarningsSection({ core }: { core: DashboardCore }) {
-  const tickers = core.events.map((e) => e.symbol);
+  // Long-list controls (2026-09-02): the card grid grows with the calendar
+  // window; 12 cards per page, largest market cap first, everything
+  // searchable and "All" one click away (?up_*). Market context is fetched
+  // only for the cards on screen.
+  const cards = useListControls({
+    rows: core.events,
+    urlKey: "up",
+    searchKeys: [(e) => e.symbol, (e) => e.company_name],
+    sorts: [
+      {
+        key: "cap",
+        label: "Market cap (largest first)",
+        compare: (a, b) => {
+          const capA = a.market_cap !== null ? Number(a.market_cap) : -Infinity;
+          const capB = b.market_cap !== null ? Number(b.market_cap) : -Infinity;
+          return capB - capA;
+        },
+      },
+      {
+        key: "date",
+        label: "Earnings date (soonest first)",
+        compare: (a, b) => a.earnings_date.localeCompare(b.earnings_date) || a.symbol.localeCompare(b.symbol),
+      },
+      { key: "ticker", label: "Ticker (A–Z)", compare: (a, b) => a.symbol.localeCompare(b.symbol) },
+    ],
+    defaultSort: "cap",
+    defaultPageSize: 12,
+    pageSizes: [12, 24, 48],
+  });
+  const tickers = cards.visible.map((e) => e.symbol);
   const context = useMarketContext(tickers);
 
   const decisionByEventId = new Map<number, DecisionSnapshot>();
@@ -206,15 +237,11 @@ function UpcomingEarningsSection({ core }: { core: DashboardCore }) {
     );
   }
 
-  const sortedEvents = [...core.events].sort((a, b) => {
-    const capA = a.market_cap !== null ? Number(a.market_cap) : -Infinity;
-    const capB = b.market_cap !== null ? Number(b.market_cap) : -Infinity;
-    return capB - capA;
-  });
-
   return (
+    <>
+    <ListToolbar controls={cards} placeholder="Search ticker or company" testId="upcoming-controls" />
     <div className="grid grid-3">
-      {sortedEvents.map((event) => {
+      {cards.visible.map((event) => {
         const decision = decisionByEventId.get(event.id);
         return (
           <UpcomingEarningsCard
@@ -228,6 +255,8 @@ function UpcomingEarningsSection({ core }: { core: DashboardCore }) {
         );
       })}
     </div>
+    <Pager controls={cards} testId="upcoming-pager" />
+    </>
   );
 }
 
@@ -265,6 +294,13 @@ function AiDecisionsSection({ core }: { core: DashboardCore }) {
   // freezing.py) is a real, honest outcome that used to be silently
   // dropped from this table entirely.
   const researched = core.decisions;
+  const controls = useListControls({
+    rows: researched,
+    urlKey: "dec",
+    searchKeys: [(d) => d.ticker, (d) => d.strategy_type, (d) => d.strategy_direction],
+    facet: { label: "Direction", getValue: (d) => d.strategy_direction },
+    defaultPageSize: 25,
+  });
   const entriesByDecisionId = new Map<number, EntryCaptureAttempt[]>();
   for (const e of core.entries) {
     const list = entriesByDecisionId.get(e.decision_snapshot_id) ?? [];
@@ -290,6 +326,7 @@ function AiDecisionsSection({ core }: { core: DashboardCore }) {
 
   return (
     <div className="card">
+      <ListToolbar controls={controls} placeholder="Search ticker, strategy or direction" testId="decisions-controls" />
       <table>
         <thead>
           <tr>
@@ -302,7 +339,7 @@ function AiDecisionsSection({ core }: { core: DashboardCore }) {
           </tr>
         </thead>
         <tbody>
-          {researched.map((d) => {
+          {controls.visible.map((d) => {
             const entries = entriesByDecisionId.get(d.id) ?? [];
             const settlements = settlementsByDecisionId.get(d.id) ?? [];
             const stage = deriveLifecycleStage(entries, settlements, d);
@@ -330,6 +367,7 @@ function AiDecisionsSection({ core }: { core: DashboardCore }) {
           })}
         </tbody>
       </table>
+      <Pager controls={controls} testId="decisions-pager" />
     </div>
   );
 }
