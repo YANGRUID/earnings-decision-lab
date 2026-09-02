@@ -1,67 +1,39 @@
-# Options Decision Engine V4 — Methodology (V4.1 foundation)
+# Options Decision Engine V4 — Methodology
 
-**Status: V4.1 complete. V4 is experimental and produces zero official decisions.**
+**Status: V4 is the only decision engine.** The V3 engine (`options-decision-engine-v3`) was
+retired on 2026-09-02 (V4-only reset); its code, jobs, evidence tables and UI were removed from
+the active branch and are preserved on `archive/pre-v4-only-reset`. This document keeps the
+findings that motivated V4, then describes the methodology V4 runs today.
 
-V3 (`options-decision-engine-v3`, `backend/src/services/decision_snapshot_freezing.py`) is now a
-**frozen control cohort**. It remains the sole official engine — every real, scheduled
-`decision_and_entry_capture` run still generates V3 decisions exactly as before. This document
-describes what V4 will eventually be, and precisely how much of it exists today.
+See `options_methodology.md` for the shared payoff, Black–Scholes and implied-move analytics
+V4 builds on.
 
-See `options_methodology.md` for V3's own real, current methodology (candidate generation, the
-9-component ranking engine, budget/sizing) — this document does not restate it, only what V4
-changes about it.
+## Why V4 exists (findings against the retired V3 engine)
 
-## Why V4 exists
+The forensic audit of V3's first 7 real settled forward-test trades (0 wins) found several
+confirmed, code-grounded structural problems. They are recorded here because V4's design is a
+direct answer to each:
 
-The forensic audit (`OPTIONS_STRATEGY_FORENSIC_AUDIT` — see the companion
-`OPTIONS_DECISION_ALGORITHM` technical reference) found, across V3's first 7 real settled
-forward-test trades (0 wins), several confirmed, code-grounded structural problems:
-
-1. `_volatility_fit` (`analytics/decision/strategy_scoring.py`) scores LONG_VOL purely on the
-   *sign* of a candidate's net premium — any net-debit structure gets full credit, with no
-   distinction between a structure that wants a large realized move (a straddle) and one that
-   wants almost none (a 1-2-1 butterfly, which is also a net debit). Three of the seven real
-   losses (CRM, VEEV, NVDA) trace directly to this: a LONG_VOL call that was arguably *right
-   about the market* (all three moved dramatically), expressed through a structure that loses
-   precisely when the market moves a lot.
-2. V3's ranking (67 of 100 points) and its entire risk-sizing/R-multiple denominator are built
-   on pure expiration-payoff intrinsic value, while the real benchmark exits via a real bid/ask
+1. Volatility fit scored LONG_VOL purely on the *sign* of a candidate's net premium — any
+   net-debit structure got full credit, with no distinction between a structure that wants a
+   large realized move (a straddle) and one that wants almost none (a 1-2-1 butterfly). Three of
+   the seven real losses (CRM, VEEV, NVDA) traced directly to this.
+2. Ranking (67 of 100 points) and the entire risk-sizing / R-multiple denominator were built on
+   pure expiration-payoff intrinsic value, while the benchmark exited via a real bid/ask
    liquidation one trading session later — never at expiration.
-3. Strike selection is pure ATM-index offset over whatever strikes the real chain happens to
-   list — no expected move, IV, delta, or historical distribution ever enters the choice.
-4. `BenchmarkPortfolio.cash_balance` is seeded at $2,000 and never debited by any code path —
-   every real entry is sized as though it alone has the full budget, while the reported
-   drawdown runs a real sequential equity curve against that same static, never-refilled base,
-   producing a 460.8%-of-peak-equity figure that mixes two incompatible capital models.
-5. `estimated_probability` is a raw historical base rate (`historical_compatibility.
-   compatible_pct`), displayed under the label "Probability Calibration" / "Predicted
-   probability" — not a calibrated probability of profit.
-6. 22 of V3's 23 real decisions carry `strategy_direction = NEUTRAL`, for two independent,
-   confirmed reasons: an explicit prompt nudge toward NEUTRAL on mixed evidence, and a ranking
-   engine where 74 of 100 points never look at the stated direction/volatility view at all.
+3. Strike selection was a pure ATM-index offset over whatever strikes the chain listed — no
+   expected move, IV, delta, or historical distribution entered the choice.
+4. The pseudo-portfolio's cash balance was seeded at $2,000 and never debited, while the
+   reported drawdown ran a sequential equity curve against that static base — two incompatible
+   capital models mixed into one 460.8%-of-peak-equity figure.
+5. "Estimated probability" was a raw historical base rate displayed as a calibrated probability
+   of profit.
+6. 22 of 23 real decisions carried `strategy_direction = NEUTRAL`: an explicit prompt nudge and
+   a ranking engine where 74 of 100 points never looked at the stated view.
 
-**V4.1 does not fix all of this.** It builds the architectural foundation — objective
-definition, strategy semantics, a feature contract, capital terminology, and one real, narrow
-infrastructure fix — that every later V4 stage will build on.
-
-## V3 is frozen and isolated
-
-- `ENGINE_VERSION = "options-decision-engine-v3"` (`decision_snapshot_freezing.py`) is
-  **unchanged** and remains the only value any real, official code path writes.
-- `ENGINE_VERSION_V4 = "options-decision-engine-v4"` (`analytics/decision/v4_methodology.py`)
-  exists as a constant only — nothing in `services/decision_engine.py`,
-  `services/decision_pipeline.py`, `services/benchmark_entry_capture.py`, or
-  `services/scheduler.py` references it, imports from any `analytics/decision/v4_*.py` module,
-  or can produce a real V4 `DecisionSnapshot`/`EntryCaptureAttempt`/`EntrySnapshot` today
-  (confirmed by an exhaustive grep across every real pipeline file).
-- `core.config.Settings.official_engine_version` (default `"options-decision-engine-v3"`) and
-  `Settings.experimental_engine_v4_enabled` (default `False`) exist as explicit, auditable
-  switches for a **future** task to flip once V4 is actually ready — no code reads them to
-  decide anything yet.
-- `services/benchmark_track_record.py::TrackRecordFilters.engine_version` lets the real
-  `/benchmark/track-record` endpoint (and the AI Earnings Analyst Track Record page) filter to
-  **All Engines / V3 / V4** without ever silently mixing cohorts. V4 correctly shows zero
-  decisions today — an honest empty state, never a fabricated row.
+V4 answers these with an explicit T+1 liquidation objective, strategy semantics that separate
+structure from view, expected-move strike geometry, executable bid/ask valuation, standardized
+per-decision capital, and six independent configurations that may each say NO_ACTION.
 
 ## V4 benchmark objective: T+1 post-earnings liquidation
 

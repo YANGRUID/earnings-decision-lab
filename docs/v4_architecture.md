@@ -1,8 +1,8 @@
 # V4 Architecture
 
-**Status: experimental / shadow.** V4 runs prospectively alongside the official V3 control
-cohort. It has produced no proven performance advantage; see [`v4_forward_testing.md`](v4_forward_testing.md)
-for what "proven" would require.
+**Status: the only decision engine (V4-only reset, 2026-09-02).** V4 runs prospectively as a
+forward test — no orders, no backfill. It has produced no proven performance advantage; see
+[`v4_forward_testing.md`](v4_forward_testing.md) for what "proven" would require.
 
 ## One event, one evidence freeze, six results
 
@@ -38,11 +38,11 @@ six different timestamps — and six results that were no longer comparable to e
 | T+1 valuation | `analytics/decision/v4_t1_pricing.py`, `v4_t1_scenario_grid.py`, `v4_t1_stress_grid.py` | core and stress kept separate |
 | Ranking v1 | `analytics/decision/v4_4b_ranking.py` | `v4-4b-t1-executable-ranking-v1`, frozen |
 | Six configurations | `analytics/decision/v4_configurations.py`, `services/v4_config_evaluation.py` | pure layer above the ranker |
-| Timing policy | `analytics/decision_timing_policy.py` | V3 15:55 / V4 15:30 entry; 15:55 settlement for both |
+| Timing policy | `analytics/decision_timing_policy.py`, `analytics/forward_windows.py` | 15:30 ET entry, 15:30 ET T+1 settlement (`v4-1530-entry-1530-t1-settlement-v2`); window tolerances and the 15:50 ET deadline |
 | Shadow evidence | `models/v4_shadow.py`, `services/v4_shadow.py` | append-only, DB trigger enforced |
-| Settlement | `services/v4_shadow_settlement.py` | re-quotes frozen conIds; never a reconstruction |
+| Settlement | `services/v4_shadow_cohort.py` | re-quotes frozen conIds per configuration; never a reconstruction |
 | Scheduler | `services/v4_shadow_scheduler.py` | dedicated scheduler DB pool; registered only when enabled |
-| Read models | `api/routers/v4_shadow.py` | six-config, track record by configuration, same-event comparison |
+| Read models | `api/routers/v4_shadow.py`, `api/routers/operations.py` | six-config, track record by configuration, V4 pipeline states and readiness |
 
 ## Evidence tables
 
@@ -58,12 +58,11 @@ six different timestamps — and six results that were no longer comparable to e
 
 All seven are append-only: a `BEFORE UPDATE` trigger rejects edits.
 
-## Isolation from V3
+## Isolation and safety
 
-- No official V3 module imports the V4 ranker (asserted by `tests/test_v4_4b_ranking_isolation.py`).
 - V4 jobs are registered last, in their own `try/except`; a V4 registration failure cannot take
-  the V3 jobs down.
+  the platform jobs (calendar sync, research preparation, IBKR health) down.
 - V4 writes happen inside a SAVEPOINT; a V4 failure cannot unwind a caller's transaction.
-- V4 scheduler work uses the dedicated scheduler DB pool, like V3; API requests use the API pool.
+- V4 scheduler work uses the dedicated scheduler DB pool; API requests use the API pool.
 - The test suite rebinds both session factories to the disposable test database, so no test can
   reach production.

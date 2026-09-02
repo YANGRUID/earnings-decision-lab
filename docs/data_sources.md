@@ -97,8 +97,7 @@ SEC-EDGAR-only pieces (actuals, 8-K-sourced earnings dates) were never affected 
     raises `PremiumEndpointRequiredError` rather than ever parsing it as real data.
   - `HISTORICAL_OPTIONS` returns an even more explicit
     `{"Information": "... This is a premium endpoint ..."}` body with no data at all — checked
-    live again in Phase 12 while building the Historical Replay honest-fallback screen (see
-    below); the exact captured response is in `backend/tests/test_providers_alpha_vantage_options.py`.
+    live again in Phase 12 (see below); the exact captured response is in `backend/tests/test_providers_alpha_vantage_options.py`.
 - **Practical consequence:** as an Alpha Vantage data source, `OptionsSnapshot` stays empty via
   this provider, and every downstream calculation that depends on it (implied move, ATM IV, IV
   term structure, put/call ratios) correctly returns null rather than a fabricated value. The
@@ -134,26 +133,20 @@ SEC-EDGAR-only pieces (actuals, 8-K-sourced earnings dates) were never affected 
   assumed to run anywhere but the user's own machine (see `docs/ibkr_integration.md`'s
   "local-first" section) — a future Azure deployment is an explicitly separate, deferred decision.
 
-### Historical Replay — real fallback instead of a fabricated options-chain reconstruction (Phase 12)
+### Historical move statistics and implied-vs-realized moves
 
-With `HISTORICAL_OPTIONS` confirmed premium-gated, the Historical Replay screen cannot show a
-real historical options-chain reconstruction today — earlier versions of this project's plan
-assumed one might exist by now. Rather than leave the screen an empty placeholder or fabricate
-data, it now shows two things that **are** real:
+With `HISTORICAL_OPTIONS` confirmed premium-gated, no historical options-chain reconstruction
+exists. Two things that **are** real remain in the product:
 
 1. **Historical price-move statistics** per company (average/median/largest absolute
    next-day move, with the largest move's real direction) computed from already-ingested,
-   real `PriceReaction` rows — see `backend/src/analytics/earnings/historical_moves.py`.
-2. **Implied-vs-realized move comparisons**, accumulated forward from now: each real
-   `VolatilitySnapshot` computed ahead of a real earnings date (via forward snapshot
-   collection — see below) is matched, once that date is actually reported, against the real
-   realized next-day move. Still empty today (as of 2026-08-17) -- not because the matching logic
-   is untested, but because the one real forward snapshot collected so far (NVDA, via IBKR, Phase
-   13) targets an earnings date (2026-08-26) that hasn't been reported yet. It will resolve into a
-   real comparison automatically once that date is reported, no code change needed.
+   real `PriceReaction` rows — `backend/src/analytics/earnings/historical_moves.py`, shown in
+   the company workspace's Earnings Setup tab.
+2. **Forward `VolatilitySnapshot` rows** computed ahead of real earnings dates from persisted
+   options snapshots; the V4 forward test uses the same expected-move evidence at decision time.
 
-`GET /api/v1/replay` exposes both, plus an explicit `options_data_ingested` flag so the
-frontend states the reason implied-vs-realized is empty rather than hiding it.
+The Cross-Company Replay screen and `GET /api/v1/replay` were removed in the V4-only reset
+(2026-09-02).
 
 ### Rejected/deferred alternatives for options-chain data
 
@@ -170,8 +163,7 @@ the API.
 ### EarningsAPI.com (primary) / Finnhub (fallback) — the forward-looking earnings calendar
 
 Originally Finnhub alone (Phase 4): rejected as redundant with Alpha Vantage through Phase 12, then
-reversed for one specific use case the AI Benchmark Portfolio needs (see `ARCHITECTURE_REVIEW_
-PHASE4.md`) — a real cross-symbol "who reports in this date range" calendar scan, which nothing in
+reversed for one specific use case the forward test needs — a real cross-symbol "who reports in this date range" calendar scan, which nothing in
 this codebase's existing per-ticker providers can answer. Finnhub's free tier was later confirmed
 live, against this project's own real data, to return far-future placeholder dates (clustering
 around May–June 2027, even for mega-caps with well-known real quarterly cadences) once its own

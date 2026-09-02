@@ -79,7 +79,7 @@ documents as a limitation of the evaluation:
 - **No automated frontend test suite.** TypeScript compilation and ESLint both pass cleanly,
   and every screen was manually exercised end-to-end in a real browser against the real backend
   and real DeepSeek before this phase was considered done (Dashboard, Company, Earnings Event,
-  Options Lab's calculator, AI Research's full agent flow, Historical Replay, Data/Eval
+  AI Research's full agent flow, Data/Eval
   Status) — but there's no Vitest/React Testing Library suite to catch a future regression
   automatically. A deliberate scope decision given the size of this project already, not an
   oversight; a reasonable follow-up.
@@ -129,9 +129,9 @@ documents as a limitation of the evaluation:
   with different queries). Each call's citations keep their own `[1]`, `[2]`... numbering in a
   clearly separated evidence block rather than being renumbered globally — a documented
   simplification, not a silent collision.
-- **`get_options_snapshot` and `run_strategy_replay` always report no data today** — real
-  behavior from real (empty) tables, not a hardcoded stub; see the Phase 1/4 entries above for
-  why no options-chain data exists yet.
+- **`get_options_snapshot` reports only persisted snapshots** — real behavior from real tables,
+  not a hardcoded stub. (`run_strategy_replay` was removed with the replay engine in the V4-only
+  reset of 2026-09-02.)
 
 ## Data coverage (Phase 6)
 
@@ -176,10 +176,10 @@ documents as a limitation of the evaluation:
 
 ## Data coverage (Phase 4)
 
-- **IV crush and event-replay engines are built and unit-tested, but have never run against
-  real data.** No historical options-chain provider is wired up (see
-  [data_sources.md](data_sources.md)) — the `strategy_replay` table exists (Phase 4 migration)
-  and has zero rows. `analytics/earnings/iv_crush.py` and `analytics/options/replay.py` are
+- **The IV-crush engine is built and unit-tested, but has never run against real historical
+  chains.** No historical options-chain provider is wired up (see
+  [data_sources.md](data_sources.md)); the event-replay engine and `strategy_replay` table were
+  removed in the V4-only reset (2026-09-02). `analytics/earnings/iv_crush.py` is
   tested exclusively against clearly-labeled synthetic strike/IV data. See
   [earnings_methodology.md](earnings_methodology.md) for what this means for research use
   today: the "how large is typical IV crush," "how often did the straddle underprice the

@@ -197,9 +197,9 @@ layer adds orchestration, it doesn't reimplement anything:
 | `calculate_strategy_payoff` | Phase 3 payoff engine | pure calc, always works |
 | `calculate_implied_move` | Phase 3 implied-move methodology | pure calc from supplied quotes |
 | `get_options_snapshot` | real `options_snapshot` table | honestly empty (no provider) |
-| `run_strategy_replay` | real `strategy_replay` table | honestly empty (no historical chain data) |
 
-The last two tools are a deliberate demonstration of this project's stance on missing data:
+The options-snapshot tool is a deliberate demonstration of this project's stance on missing data
+(`run_strategy_replay` was removed with the replay engine in the V4-only reset):
 they query the real table and report honestly that nothing is there, rather than the
 orchestrator silently omitting the capability or a tool fabricating a plausible-looking answer.
 

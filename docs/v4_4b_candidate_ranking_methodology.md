@@ -3,8 +3,9 @@
 **Status: authoritative technical reference for V4.4B.**
 **Ranking version: `v4-4b-t1-executable-ranking-v1` (frozen).**
 
-V4.4B is **experimental**. It is not wired into the official V3 forward test, does not create
-official evidence, and does not place orders. V3 remains the frozen official control cohort.
+V4.4B is the ranking layer of the V4 forward test. It creates prospective V4 evidence only and
+never places orders. (The V3 engine it was originally benchmarked against was retired on
+2026-09-02; see `v4_methodology.md`.)
 
 ---
 
@@ -214,9 +215,9 @@ silently reusing this one would invalidate every replay already keyed to it. Ups
 (V4.1–V4.4A) are unchanged; `expiration_version` remains an explicit placeholder because V4.4B did
 not reintroduce V3's expiration score.
 
-## 16. Future forward validation (design only — not authorized)
+## 16. Forward validation (built)
 
-The honest next step is a **shadow cohort**: V3 remains the official control; V4 produces shadow
-decisions at the same legal timestamp from the same point-in-time data, into separate immutable
-V4 snapshots, with no brokerage order and real forward settlement. This is **designed, not
-built** — it requires explicit authorization.
+V4 produces prospective decisions at 15:30 ET on the legal pre-earnings trading day into
+immutable `v4_shadow_*` tables, observes executable entries for six configurations, and settles
+at 15:30 ET on the first post-earnings trading day — with no brokerage order. See
+`v4_forward_testing.md`.

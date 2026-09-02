@@ -10,36 +10,29 @@
 - **Never an order.** No brokerage order capability exists anywhere in the codebase. "Entry
   observation" means an executable quote was recorded at the required side; nothing was bought.
 
-## Two clocks
+## One clock: 15:30 ET in, 15:30 ET out (T+1)
 
-| Cohort | Decision / entry | Settlement (T+1) | Policy version |
-|---|---|---|---|
-| V3 official control | 15:55 ET | 15:55 ET, first post-earnings trading day | `v3-pre-earnings-1555et-v1` |
-| V4 shadow | **15:30 ET** | 15:55 ET, first post-earnings trading day | `v4-pre-earnings-1530et-v1` |
+| Phase | When | Legal day |
+|---|---|---|
+| Decision + entry observation | **15:30 ET** | the last trading day before the announcement (AMC: the earnings day itself, D0; BMO: the previous trading day, D−1) |
+| Settlement | **15:30 ET** | the first post-earnings trading day (AMC: D+1; BMO: D0) |
 
-V4 observes 25 minutes earlier to leave runway for six configuration evaluations before the close.
-V3 was deliberately **not** moved: doing so mid-flight would split the control cohort across two
-clocks. The consequence is stated rather than hidden — V3 and V4 entry prices come from different
-moments of the session, so a same-event comparison is not timestamp-identical. Settlement is the
-same instant for both. Every record carries its policy version.
-
-Historical V3 rows keep the 15:55 ET they were observed at; none are relabelled.
+Policy version `v4-1530-entry-1530-t1-settlement-v2` (`analytics/decision_timing_policy.py`,
+`V4_ACTIVE_TIMING_POLICY`). It replaced `v4-pre-earnings-1530et-v1` (15:30 entry, 15:55
+settlement) prospectively on 2026-09-02: entry rows frozen under v1 keep their v1 stamp, and
+their settlement rows carry v2 — the transition is recorded, never rewritten. An AMC decision is
+therefore never settled the same afternoon.
 
 ### Due windows
 
-Both V4 jobs derive their windows from the **same** schedule function V3 uses
-(`compute_entry_exit_schedule`), with the V4 policy passed in — so V4 can never land on a different
-legal decision *day* than V3, and its settlement instant is V3's exactly.
-
 | Job | Window | Outside the window |
 |---|---|---|
-| `v4_shadow_decision` (15:30 ET cron) | `entry(V4) ≤ now ≤ entry(V4) + 5 min` on the legal pre-earnings trading day | event not selected |
-| `v4_shadow_settlement` (15:55 ET cron) | `exit − 5 min ≤ now ≤ exit + 5 min`, exit = 15:55 ET on the first post-earnings trading day (V3's own early tolerance and late grace) | before: left pending; after: every pending configuration is closed as a terminal `SETTLEMENT_WINDOW_MISSED` failure — no later quote is ever used as exit evidence |
+| `v4_shadow_decision` (15:30 ET cron) | `entry ≤ now ≤ entry + 5 min` on the legal pre-earnings trading day; a per-event deadline guard at 15:50 ET records `DEADLINE_SKIPPED` for events that could not be evaluated in time | event not selected |
+| `v4_shadow_settlement` (15:30 ET cron) | `exit − 5 min ≤ now ≤ exit + 5 min`, exit = 15:30 ET on the first post-earnings trading day | `NOT_DUE` before; `SETTLEMENT_WINDOW_MISSED` recorded after |
 
-A 15:30 entry is therefore never settled the same afternoon. Found live on 2026-09-02 before
-activation: the decision job had reused V3's 15:55-keyed predicate (0 of 34 events selected at
-15:30) and the settlement job had no exit-window guard; both are fixed and pinned by
-`tests/test_v4_shadow_timing_windows.py`.
+Both crons share one in-process market-data lock so the decision and settlement passes never
+run their TWS sweeps concurrently. Windows are pinned by `tests/test_v4_shadow_timing_windows.py`
+and `tests/test_v4_only_reset_stage1.py`.
 
 ## DecisionView model provenance
 
@@ -47,9 +40,8 @@ The V4 DecisionView is produced by **one explicitly configured model**: `V4_DECI
 (production: `deepseek-v4-pro`) with `V4_DECISION_VIEW_THINKING=enabled` and
 `V4_DECISION_VIEW_REASONING_EFFORT=high`, sent on every request as DeepSeek's documented
 `thinking: {"type": "enabled", "reasoning_effort": "high"}` field (thinking mode rejects
-`temperature`, so it is omitted). This is separate from `DEEPSEEK_MODEL`, which the research jobs
-and the official V3 control engine keep using with thinking disabled: the V3 cohort's model does
-not move.
+`temperature`, so it is omitted). This is separate from `DEEPSEEK_MODEL`, which the research jobs (AI theses, RAG answers) keep
+using with thinking disabled.
 
 Every frozen V4 decision records the configured model alias **and** the model identity the API
 reported (`llm_model` vs `llm_returned_model`), the thinking mode and effort, the token budget,
@@ -90,11 +82,12 @@ question for a future, explicitly versioned change.
 
 Below **30 settled observations** a cohort shows `INSUFFICIENT SAMPLE` and no win rate, average or
 median return, or realized P&L is displayed. No portfolio drawdown or Sharpe ratio is computed
-anywhere: there is no real capital ledger, and V3's static-$2,000 portfolio accounting is not
-reproduced. Until a ledger exists, metrics are per-decision and standardized.
+anywhere: there is no real capital ledger. Metrics are per-decision and standardized.
 
-## Activation gate
+## Activation status
 
-Production shadow activation requires a live, in-process, market-hours dry-run that measures
-real latency and TWS request budget against live quotes and confirms zero official writes.
-Until that passes, `V4_SHADOW_ENABLED` stays `false` and no shadow job is registered.
+`V4_SHADOW_ENABLED=true` in production since the live, in-process, market-hours dry-run of
+2026-09-02 (real latency and TWS request budget measured against live quotes). The first natural
+sample — AVGO, decided 2026-09-02 15:32 ET, six configurations observed at entry — settles
+prospectively at 15:30 ET on 2026-09-03. Activation is never a code default: the flag is `false`
+unless the environment sets it.

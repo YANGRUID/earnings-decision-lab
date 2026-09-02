@@ -1,7 +1,7 @@
 # Data model
 
 Covers the schema landed in Phase 1 (`backend/migrations/versions/c535e22e3a6d_*`).
-Later phases add tables (documented in this file as they land): `strategy_replay` (Phase 4),
+Later phases add tables (documented in this file as they land):
 document/chunk/embedding tables (Phase 5), `ai_extraction` (Phase 6), `model_evaluation`
 (Phase 9).
 
@@ -97,16 +97,13 @@ reference tickers that aren't in the `company` table.
 **Status:** live — 25,046 real daily bars across NVDA/AMD/MU/SNDK/SPY/SOXX from Tiingo,
 2007-01-03 to present (SNDK from its 2025 spin-off date).
 
-### `strategy_replay` (added Phase 4)
-**Grain:** one row per `(earnings_event, strategy_name, strike_selection_rule)` — a
-deterministic reconstruction of an options strategy entered before a historical earnings event.
-**Keys:** `id` PK; `earnings_event_id` FK, indexed.
-`legs` and `breakevens` are stored as JSON for full auditability of exactly which
-strikes/premiums/rule produced the result — see
-[earnings_methodology.md](earnings_methodology.md).
-**Status:** table and engine (`analytics/options/replay.py`) exist and are unit-tested; **no
-rows exist yet** — there is no historical options-chain data to reconstruct a real strategy
-from (see [limitations.md](limitations.md)).
+### `strategy_replay` — dropped (V4-only reset, 2026-09-02)
+Added in Phase 4 for rule-based historical replays; it never held a real row and was dropped by
+migration `f4b6d8e0c2a3` together with every V3 evidence table (`decision_snapshot`,
+`entry_capture_attempt`, `entry_snapshot`, `settlement_capture_attempt`, `exit_snapshot`,
+`settlement_snapshot`, `quote_acquisition_attempt`, `benchmark_portfolio`,
+`portfolio_position_snapshot`, `ai_decision_version`). The V4 forward-test tables are
+`v4_shadow_*` (see [v4_architecture.md](v4_architecture.md)).
 
 ### `document_chunk` (added Phase 5)
 **Grain:** one row per `(filing, chunk_index)` — a section-bounded, token-approximate chunk of

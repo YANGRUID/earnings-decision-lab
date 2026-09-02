@@ -34,11 +34,9 @@ IBKRTWSProvider                 providers/ibkr_tws_options.py
     v
 providers/factory.py            _build_ibkr_transport -> the process's shared provider
     |
-    +--> decision generation        services/decision_engine.py
-    +--> entry capture              services/benchmark_entry_capture.py
-    +--> exit / settlement capture  services/benchmark_exit_capture.py
-    +--> close reconstruction       services/options_reconstruction.py
-    +--> research preparation       workers/research_preparation_worker.py
+    +--> V4 decision + entry observation   services/v4_shadow_scheduler.py -> v4_shadow_orchestration.py
+    +--> V4 settlement (15:30 ET, T+1)      services/v4_shadow_cohort.py
+    +--> research preparation              workers/research_preparation_worker.py
 ```
 
 ### One shared connection per process
@@ -122,7 +120,7 @@ correct behavior, not a fault: the system never claims `delayed` before IBKR has
 Current entitlements deliver **delayed** data. Every `OptionQuote` and `UnderlyingQuote` carries
 `market_data_quality="delayed"` and `source_provider="ibkr_tws"`, persisted rows record it, and
 the UI shows it prominently rather than hiding it in a tooltip. This matters for interpreting any
-V4 research or benchmark output.
+V4 forward-test output.
 
 **Live/paper account is not knowable over TWS.** The Web Gateway exposes an `isPaper` boolean;
 the TWS socket API has no equivalent wired up here. `live_account` is therefore reported as
@@ -134,19 +132,18 @@ TWS rather than fabricated as a pass.
 ## Known limitation: historical bars (error 2188)
 
 TWS returns **error 2188** — *"Up-to-the-second historical data requires additional subscription
-for the API"* — for the historical-bar requests `services/options_reconstruction.py` uses.
+for the API"* — for historical-bar requests. Nothing on the V4 path asks for them.
 
 Traced dependency, deliberately not worked around:
 
 | Consumer | Depends on historical bars? |
 |---|---|
-| Official entry capture | **No** |
-| Official settlement / exit capture | **No** |
-| Decision generation | Only when the market is closed *and* nothing adequate was captured live |
-| Strategy Lab / research | Yes (research only, never an official record) |
+| V4 decision + entry observation | **No** (live chain at 15:30 ET) |
+| V4 settlement | **No** (frozen conIds re-quoted at 15:30 ET T+1) |
+| Research preparation | **No** (persisted snapshots) |
 
-Because neither official entry nor official settlement depends on it, this is **non-blocking**.
-Reconstruction fails honestly with a typed `IBKRError` where TWS historical data is unavailable.
+Because nothing on the forward-test path depends on it, this is **non-blocking**. (The retired
+close-reconstruction service that used these bars was removed in the V4-only reset.)
 No fallback data is fabricated, and no other provider supplies these bars
 (Alpha Vantage inherits the "unsupported" default; Tiingo has no options provider).
 

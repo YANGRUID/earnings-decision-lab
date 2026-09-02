@@ -1,7 +1,7 @@
 # Earnings analytics methodology
 
-Covers `backend/src/analytics/earnings/iv_crush.py` and
-`backend/src/analytics/options/replay.py`. Deterministic Python throughout — no LLM
+Covers `backend/src/analytics/earnings/iv_crush.py` and the historical-move statistics in
+`backend/src/analytics/earnings/historical_moves.py`. Deterministic Python throughout — no LLM
 involvement, per this project's core rule.
 
 ## IV crush (`iv_crush.py`)
@@ -24,23 +24,13 @@ realised move, counts by verdict, and average IV crush — directly answering th
 project set out to answer ("how often did the straddle underprice the event," "how large is
 typical IV crush for a ticker").
 
-## Event replay (`replay.py`)
+## Event replay — retired
 
-**Strike selection is rule-based and deterministic** — never chosen with knowledge of an
-event's actual outcome. Three rules are implemented, selected through one entry point
-(`select_strike`) so every replay's strike choice is auditable to the same code path:
-
-- `nearest_atm` — nearest available strike to the underlying price at entry.
-- `fixed_pct_otm` — nearest available strike to `underlying × (1 ± pct)`.
-- `nearest_to_target` — nearest available strike to an arbitrary target (e.g. a fixed-delta
-  target, if reliable historical delta data is ever available).
-
-`build_replay()` reconstructs entry economics (net premium, max profit/loss, breakevens) using
-the same `analytics.options.payoff` engine from Phase 3, and — only if an evaluation price is
-explicitly supplied by the caller (e.g. the actual post-earnings close) — the resulting payoff.
-The function never selects that evaluation price itself; a caller cannot "cherry-pick" a
-flattering outcome through this API because the evaluation price is always an input, not a
-search.
+The rule-based historical strategy replay (`analytics/options/replay.py`, the `strategy_replay`
+table and the Cross-Company Replay screen) was removed in the V4-only reset of 2026-09-02. It
+never ran against real historical options chains (none were ever wired up), and the V4 forward
+test replaces reconstruction with prospective observation. The code remains on
+`archive/pre-v4-only-reset`.
 
 ## Current data status — important
 
@@ -48,18 +38,12 @@ search.
 — every free option evaluated either lacks historical coverage or requires a paid subscription
 like ORATS/CBOE DataShop). This means:
 
-- `iv_crush.py` and `replay.py` are implemented and unit-tested against clearly-labeled
-  synthetic strike/IV data (see `tests/test_analytics_earnings_iv_crush.py` and
-  `tests/test_analytics_options_replay.py`) — never against data presented as real.
-- The `strategy_replay` table (added in this phase's migration) exists and is ready to store
-  real results, but **contains zero rows** — there is no real historical options chain to
-  reconstruct a strategy from.
+- `iv_crush.py` is implemented and unit-tested against clearly-labeled synthetic strike/IV data
+  (see `tests/test_analytics_earnings_iv_crush.py`) — never against data presented as real.
 - The "how large is typical IV crush for ticker X" and "how often did the straddle underprice
   the event" questions this project set out to answer **cannot be answered with real numbers
   yet**. The functions that would answer them are built and tested; they have no real data to
   run against.
 
-This is intentional, not an oversight: per this project's rule against fabricating data, it is
-better to ship a working, tested engine with an honestly-empty results table than to backfill
-`strategy_replay` with invented strikes and prices. The moment a historical options-chain
-provider is wired up, this phase's code runs against real data without changes.
+This is intentional, not an oversight: per this project's rule against fabricating data, the
+forward test observes real chains prospectively instead of reconstructing history.

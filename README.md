@@ -1,102 +1,146 @@
 # Earnings Decision Lab
 
-An auditable earnings-options research and forward-testing workstation. Before an earnings
-release it assembles real evidence — SEC filings, earnings history, expectations, price data and a
-live option chain — synthesizes a grounded AI view, and deterministically constructs, values and
-ranks real option structures against that view. Every decision is a point-in-time record that is
-never rewritten; every outcome is observed prospectively.
+A personal, forward-only research system for **earnings-event options decisions**. One engine
+(V4) decides at **15:30 ET** on the last trading day before an earnings announcement, freezes the
+evidence, observes an executable entry for **six standardized configurations**, and settles at
+**15:30 ET on the first post-earnings trading day**. Every row is prospective and immutable.
+Nothing is back-filled, nothing is simulated, and **no brokerage order is ever placed**.
 
-> **Not investment advice.** A personal research tool, not a trading system. **No brokerage
-> order-placement capability exists anywhere in this codebase.** See [Disclaimer](#disclaimer).
+> Not investment advice. A research instrument for one person, built to be honest about what it
+> knows and what it does not.
 
 ## Contents
 
-1. [What it is](#what-it-is) · 2. [Architecture](#architecture) · 3. [V3 control](#v3-control) ·
-4. [V4 experimental shadow](#v4-experimental-shadow) · 5. [Six configurations](#six-configurations) ·
-6. [TWS market data](#tws-market-data) · 7. [DeepSeek's role](#deepseeks-role) ·
-8. [Deterministic engine](#deterministic-engine) · 9. [Forward-testing philosophy](#forward-testing-philosophy) ·
-10. [Current activation status](#current-activation-status) · 11. [Run locally](#run-locally) · 12. [Safety](#safety)
+1. [What it is](#what-it-is) · 2. [Architecture](#architecture) · 3. [The V4 forward test](#the-v4-forward-test) ·
+4. [Six configurations](#six-configurations) · 5. [Timing policy](#timing-policy) ·
+6. [Market data (TWS)](#market-data-tws) · 7. [DeepSeek's role](#deepseeks-role) ·
+8. [Research preparation](#research-preparation) · 9. [Product surfaces](#product-surfaces) ·
+10. [Run locally](#run-locally) · 11. [Testing](#testing) · 12. [Documentation](#documentation) ·
+13. [Safety](#safety) · 14. [Limitations](#limitations) · 15. [History](#history)
 
 ## What it is
 
-A company workspace (Overview → Earnings Setup → Research → Market View → V4 Decision →
-Candidates → Forward Outcome → Historical / Control), a V4 Decision Lab and Candidate Explorer, a
-six-cohort forward track record, a same-event V3-vs-V4 comparison, and a live operations monitor
-— all reading immutable, prospectively collected evidence.
+- A **calendar-driven pipeline**: real earnings events are discovered, companies are resolved
+  against SEC EDGAR, research (filings, price history, estimates, options snapshots, an AI thesis)
+  is prepared automatically ahead of each event, and the V4 engine decides only when that research
+  is ready.
+- A **deterministic decision engine** with one narrow AI input: the DecisionView (direction,
+  volatility view, move intent, confidence) comes from an explicitly configured DeepSeek model;
+  everything after it — expected move, strike geometry, T+1 valuation, ranking, sizing — is
+  deterministic Python with a version stamp.
+- A **forward track record** per configuration, honest about sample size: below 30 settled
+  observations a cohort shows `INSUFFICIENT SAMPLE` and no performance metric.
 
 ## Architecture
 
 ```
-earnings calendar (EarningsAPI, Finnhub fallback)
-  └─ research preparation (durable queue, company-scoped RAG over SEC filings)
-     └─ DecisionView  ── DeepSeek: direction / move / confidence (an AI judgment, never a price)
-        └─ one market-evidence freeze ── TWS: underlying, option chain, exact-contract quotes
-           └─ expected move · strike geometry · T+1 scenario valuation · ranking v1
-              └─ six configuration evaluations (pure, in-memory)
-                 └─ immutable shadow evidence ── entry observation ── T+1 settlement
+Earnings calendar (EarningsAPI → Finnhub fallback)          nightly 20:00 ET
+  → company resolution (EDGAR)                              worker, on demand
+  → business eligibility (≥ $10B market cap, US-listed, options chain)
+  → research preparation queue                              nightly 21:00 ET + 13:00 ET catch-up + startup catch-up
+  → research worker (filings, prices, estimates, options snapshot, AI thesis)
+  → READY_FOR_V4_DECISION
+  → V4 decision + entry observation                         15:30 ET, legal pre-earnings day (deadline guard 15:50 ET)
+  → six configuration results, frozen candidates and legs
+  → V4 settlement                                           15:30 ET, first post-earnings trading day
+  → V4 Forward Track Record (six cohorts)
 ```
 
-Backend: FastAPI + SQLAlchemy + APScheduler on Postgres/pgvector. Frontend: React + Vite.
-See [`docs/v4_architecture.md`](docs/v4_architecture.md).
+| Layer | Where |
+|---|---|
+| FastAPI backend, SQLAlchemy 2.0, Alembic, APScheduler | `backend/src` |
+| Research worker (separate process, own TWS client id) | `backend/src/workers` |
+| V4 engine (methodology, semantics, strike engine, T+1 grids, ranking, configurations) | `backend/src/analytics/decision/v4_*.py` |
+| V4 forward evidence (append-only, DB trigger enforced) | `backend/src/models/v4_shadow.py` (`v4_shadow_*` tables) |
+| V4 orchestration, cohorts, settlement, scheduler | `backend/src/services/v4_shadow_*.py` |
+| Operations read model (pipeline states, readiness, staleness) | `backend/src/services/operations.py` |
+| React + Vite frontend | `frontend/src` |
+| PostgreSQL + pgvector, Docker Compose | `docker-compose.yml` |
 
-## V3 control
+The internal module prefix `v4_shadow_*` is historical (V4 began as a shadow cohort next to the
+retired V3 engine). In the product these are the **V4 Forward Test** surfaces.
 
-The original official engine. It still runs daily as the **historical control cohort**: decision
-and entry observed at **15:55 ET**, T+1 settlement at 15:55 ET. Its methodology is frozen and its
-evidence tables are append-only. In the product it appears as *V3 Historical Control*.
+## The V4 forward test
 
-## V4 experimental shadow
+- **Prospective only.** A V4 record exists only because the engine observed a real market at the
+  legal window. Empty states are genuinely empty.
+- **Immutable.** Every `v4_shadow_*` table rejects updates at the database level; a decision,
+  candidate, configuration result, observation or settlement can be superseded by a new row,
+  never edited.
+- **Never an order.** No order API, no order model, no brokerage write path exists in the
+  codebase. "Entry observed" means an executable quote at the required side was recorded.
+- **Delayed stays delayed.** Every quote carries its `market_data_quality`; delayed data is
+  labelled delayed everywhere it is shown.
 
-The engine under test. One DecisionView, one market-evidence freeze, one deterministic ranking —
-evaluated under six capital/risk configurations — observed at **15:30 ET** on the legal
-pre-earnings trading day (settlement unchanged at 15:55 ET). Runs *alongside* V3, never instead
-of it. Methodology: [`docs/v4_methodology.md`](docs/v4_methodology.md).
+First natural sample: **AVGO**, decided 2026-09-02 15:32 ET, six configurations observed at
+entry, settling prospectively 2026-09-03 15:30 ET.
 
 ## Six configurations
 
-| Capital | Conservative | Moderate | Aggressive |
-|---|---|---|---|
-| **$2,000** | 15% cap ($300), 0.80 liquidity floor, no single-leg longs | 30% ($600), 0.40 | 50% ($1,000), no floor |
-| **$10,000** | 15% ($1,500), 0.80, no single-leg longs | 30% ($3,000), 0.40 | 50% ($5,000), no floor |
+| Key | Capital | Risk cap | Max risk | Liquidity floor | Families |
+|---|---|---|---|---|---|
+| `v4_2k_conservative` | $2,000 | 15% | $300 | 0.80 | no single-leg longs |
+| `v4_2k_moderate` | $2,000 | 30% | $600 | 0.40 | all generated |
+| `v4_2k_aggressive` | $2,000 | 50% | $1,000 | none | all generated |
+| `v4_10k_conservative` | $10,000 | 15% | $1,500 | 0.80 | no single-leg longs |
+| `v4_10k_moderate` | $10,000 | 30% | $3,000 | 0.40 | all generated |
+| `v4_10k_aggressive` | $10,000 | 50% | $5,000 | none | all generated |
 
-All six are evaluated in memory against the **same** frozen evidence — never six pipelines — and
-each independently records RANKED or NO_ACTION. Moderate and Aggressive currently share one
-strategy-family universe (a stated methodology question, not a hidden one).
+All six evaluate the same frozen evidence and may independently produce `RANKED` or
+`NO_ACTION`. `NO_ACTION` is evidence, never relaxed away.
 
-## TWS market data
+## Timing policy
 
-Interactive Brokers TWS / IB Gateway is the production transport (client id 101 for the backend,
-1001 for its health probe, 102 for the research worker). Delayed data is labelled delayed
-everywhere it appears and is never promoted to live. The older Web/Client-Portal gateway is
-retained only as a rollback path. See [`docs/ibkr_architecture.md`](docs/ibkr_architecture.md).
+`v4-1530-entry-1530-t1-settlement-v2` (`backend/src/analytics/decision_timing_policy.py`):
+
+| Announcement | Decision / entry | Settlement |
+|---|---|---|
+| After market close (AMC) | D0 15:30 ET | D+1 15:30 ET |
+| Before market open (BMO) | D−1 15:30 ET | D0 15:30 ET |
+
+Settlement is bounded to ±5 minutes around 15:30 ET; a missed window is recorded as
+`SETTLEMENT_WINDOW_MISSED`, never settled late. The decision pass has a 15:50 ET deadline guard
+(`DEADLINE_SKIPPED`). Policy v1 (15:55 ET settlement) was replaced prospectively on 2026-09-02:
+rows frozen under v1 keep their stamp; every settlement records the version it ran under.
+
+## Market data (TWS)
+
+Interactive Brokers TWS over the socket API (`IBKR_PROVIDER=tws`): one long-lived connection per
+process (backend client id, research worker client id), bounded timeouts, typed errors, a
+per-run TWS request budget, and a shared in-process lock so the decision and settlement sweeps
+never run concurrently. Delayed entitlements are reported as delayed. See
+[docs/ibkr_architecture.md](docs/ibkr_architecture.md).
 
 ## DeepSeek's role
 
-DeepSeek produces the unstructured **DecisionView** — direction, volatility/move view, a
-confidence *label* (explicitly not a probability) and reasoning — and answers AI Research
-questions with filing citations. It never prices, sizes, ranks or explains a ranking.
+Exactly one AI input reaches the decision: the **DecisionView**, generated by
+`V4_DECISION_VIEW_MODEL` (production: `deepseek-v4-pro`, thinking enabled, reasoning effort
+high) with full provenance frozen on every decision (configured and returned model, thinking,
+effort, tokens, latency, prompt and schema versions). There is no fallback model: a missing or
+invalid configuration produces a recorded failure, not a substitute view. The same provider
+writes the research **AI thesis** with the general model. DeepSeek never ranks, sizes, prices or
+places anything.
 
-## Deterministic engine
+## Research preparation
 
-Expected move (implied + historical), strike geometry against ±EM, T+1 executable scenario
-valuation (7 moves × 3 IV levels core; ±1.5/±2 EM tail stress kept separate), V4.4B banded
-lexicographic ranking v1, capital/risk policy. Every number is reproducible from frozen evidence,
-and "why this strategy ranked first" is derived from the ranking dimensions — not generated by an
-LLM.
+Research is prepared **automatically**:
 
-## Forward-testing philosophy
+- nightly at 21:00 ET (misfire grace 6 h, coalesced), a same-day catch-up at 13:00 ET, and a
+  one-shot catch-up 90 s after every backend start;
+- the queue re-enqueues any company whose research is not V4-ready (a company record plus an AI
+  thesis younger than 7 days);
+- the worker resolves unknown symbols against EDGAR; a symbol EDGAR cannot resolve is recorded as
+  `COMPANY_RESOLUTION_FAILED`, never fabricated.
 
-Prospective only; no backfill; immutable rows enforced by database triggers; executable pricing
-(buy at ASK, sell at BID, never mid); INSUFFICIENT SAMPLE below 30 settled observations; no
-portfolio drawdown or Sharpe until a real capital ledger exists; V3 and V4 compared side by side
-with their different clocks stated. See [`docs/v4_forward_testing.md`](docs/v4_forward_testing.md).
+Live Operations shows readiness KPIs (upcoming → eligible → resolved → queued/running/ready →
+AI thesis ready → V4 decision ready) and per-job freshness (`ON TIME` / `STALE` / `MISSED RUN`).
 
-## Current activation status
+## Product surfaces
 
-**V4 engineering is complete enough for shadow validation. V4 shadow is still disabled**
-(`V4_SHADOW_ENABLED=false`) pending a live market-hours dry-run that measures real latency and TWS
-request budget against live quotes. No V4 performance claim is made. V3 remains the official
-control.
+Dashboard · Company Search · Company workspace (Overview, Earnings Setup, Research, Market
+View, V4 Decision, Candidates, Forward Outcome) · AI Research · V4 Decision Lab · Candidate
+Explorer · V4 Forward Track Record · Live Operations · Settings (Data Providers, AI Provider,
+IBKR / TWS, API Usage) · System Status.
 
 ## Run locally
 
@@ -106,464 +150,64 @@ docker compose up -d db migrate backend research-worker frontend
 open http://localhost:5173
 ```
 
-Backend tests: `cd backend && pytest` (uses the disposable `edl-test-db` on :5434 — the suite
-refuses to run against the application database). Frontend: `cd frontend && npm run build &&
-npx playwright test`. The live-QA spec runs only with `RUN_LIVE_QA=1`.
-
-## Safety
-
-No order placement, no order API, no brokerage write path. Delayed data stays labelled delayed.
-Tests cannot reach production. Evidence tables reject updates at the database level.
-
----
-
-## V3 Product Overview (historical control engine)
-
-Earnings Decision Lab is an AI earnings analyst you can actually audit. Before an earnings
-release, it answers: what happened last time, how did the stock react, what is the market
-currently pricing in, and what has management actually said in its own filings — the real text,
-cited, not a summary someone else wrote. That evidence becomes an explainable directional/
-volatility view, which the **Options Decision Engine V3** turns into a real, scored, ranked
-options recommendation: which expiration, which strategy, how risky, how it compares to the
-runner-up — every number traceable back to real market data, never invented by the LLM. Nothing
-the system produces is silently rewritten later; a new generation is always a new, point-in-time
-version, and once real outcomes exist they're evaluated honestly, including when the honest
-answer is "not enough data yet."
-
-## Major Features
-
-### Options Decision Engine V3
-
-The core of this release: a deterministic pipeline that goes from a real option chain to a
-scored, explained recommendation, with every intermediate decision — which expiration, how much
-risk, how likely, why — shown explicitly rather than buried in a black box.
-
-#### Expiration Engine
-
-Real, listed expirations are discovered live from the options provider and scored on six
-components (Event Fit, Liquidity, Quote Coverage, Bid/Ask Quality, DTE Suitability, Data
-Quality) — never a single hard-coded "nearest expiration" pick. **Auto** mode selects the
-highest-scoring real candidate; **Manual** mode lets the user pick any real listed expiration
-directly, and every contract, strike, premium, and strategy candidate downstream is recomputed
-from exactly that date. Alternatives are never hidden — the full comparison is always shown, so
-"why this expiration and not the others" has a real, inspectable answer.
-
-Real, live AVGO example (screenshot below):
-
-| Expiration | DTE | Contracts priceable | Score |
-|---|---|---|---|
-| Sep 4  | 2  | 14/22 | 67  |
-| **Sep 11** | **9**  | **10/10** | **90** — selected |
-| Sep 25 | 23 | 10/10 | 83  |
-
-Auto picked Sep 11 over the nearer Sep 4 expiration — a shorter DTE is not automatically better;
-Sep 4's lower bid/ask coverage and worse DTE-suitability score outweighed its proximity to the
-earnings date.
-
-![Strategy Lab expiration ranking](docs/images/strategy_lab_expiration_ranking.png)
-
-#### Risk Profile Engine
-
-Risk profile is selected **per decision**, not a single global setting, and genuinely changes
-what gets recommended — not just a cosmetic label:
-
-- **Conservative** — defined-risk structures only, requires ≥80% real bid/ask coverage on the
-  chain, lower default risk-budget utilization (~15%).
-- **Moderate** — defined-risk spreads, iron condors, and butterflies allowed, requires ≥40%
-  bid/ask coverage, moderate default utilization (~30%).
-- **Aggressive** — may allow single-leg long calls/puts and closer-to-the-money strikes, no
-  minimum liquidity gate, higher default utilization (~50%) — uncovered/naked short options are
-  never a default recommendation at any profile.
-
-The same ticker, snapshot, and budget can produce a genuinely different recommended category and
-position size across the three profiles — confirmed live: the identical AVGO snapshot produced a
-defined-risk spread at Conservative/Moderate (differing only in size) and switched to a
-single-leg long option at Aggressive.
-
-![Risk profile selection](docs/images/risk_profile_selection.png)
-
-#### Probability Engine
-
-"How likely is this to work" is deliberately never collapsed into one number:
-
-- **Historical Compatibility** — how often the company's own real past earnings-day moves would
-  have satisfied this exact strategy's breakeven condition, with its real sample size shown
-  (e.g. "100.0% (25/25 events)") — never a bare percentage.
-- **Estimated Probability** — the same empirical basis, explicitly labeled by method, with a
-  **Wilson 95% confidence interval** and a `Low sample confidence` flag whenever N is below 20 —
-  no fake precision on a small sample.
-- **True Strategy Win Rate** — the strictest metric (real settled option entry/exit P&L) — shown
-  as honestly `Unavailable (No settled historical option trades yet)` until this project actually
-  captures that data, rather than substituted with one of the other two.
-- **Calibration foundation** — confidence-bucketed realized accuracy already exists in the Track
-  Record (below); the same real settled-decision data is the basis a full probability-calibration
-  view builds on as more decisions settle.
-
-The Model Strategy Score (0–100) is shown right alongside these and is explicitly labeled a
-deterministic **fit** score, never a probability of profit — the UI never lets the two be
-confused for each other.
-
-#### Strategy Ranking V2
-
-Every candidate is scored on 9 components, summing to 100:
-
-| Component | Weight |
-|---|---|
-| Direction Fit | 15 |
-| Volatility Fit | 11 |
-| Expiration Fit | 10 |
-| Breakeven Fit | 12 |
-| Historical Fit | 12 |
-| Risk/Reward | 12 |
-| Risk Profile Fit | 8 |
-| Liquidity | 10 |
-| Data Quality | 10 |
-
-Liquidity scoring distinguishes a chain with real, live bid/ask from one reconstructed from
-historical last-price data — a last-price-only chain is explicitly labeled and never scores full
-execution confidence; real bid/ask is labeled "Estimated Entry at Mid," reconstructed pricing is
-labeled "Historical Last Reference" — the two are never presented as equivalent.
-
-#### Explanation Engine
-
-Every recommendation carries four distinct, numeric explanation sections — never generic,
-duplicated prose:
-
-- **Why This Strategy** — view, breakeven distance, implied move, historical compatibility, real
-  capped risk.
-- **Why This Expiration** — real DTE relative to the earnings date and this project's DTE
-  reference window.
-- **Why These Strikes** — real strike distance from the underlying, resulting breakeven distance.
-- **Why Not Alternative** — a direct, numeric comparison against the #2 candidate: premium cost
-  ratio, max loss difference, which score component drove the gap, and the real historical
-  compatibility difference between the two.
-
-![AI Decision recommendation](docs/images/ai_decision_recommendation.png)
-![Probability and explanation detail](docs/images/probability_explanation.png)
-
-## How it works
-
-1. **Search a ticker.** Symbol resolution against a real reference dataset; no hard-coded list.
-2. **Prepare or refresh research.** Earnings history, filings, price data, analyst estimates, and
-   options data are ingested on demand, with real, persistent progress.
-3. **Review the upcoming earnings event** — consensus expectations, implied move, ATM IV, and the
-   real options-market state, shown with an explicit data-quality state rather than collapsed
-   into a generic "no data."
-4. **Read the grounded AI Earnings Thesis** — a cited synthesis of filings, historical pattern,
-   and guidance trend, persisted so it survives navigation, a browser refresh, or a backend
-   restart.
-5. **Choose a risk profile and expiration mode**, then **generate an AI Decision** — a direction
-   and volatility view classified from real evidence, run through the full Options Decision
-   Engine V3 pipeline above.
-6. **Compare the recommendation against real alternatives** — legs, debit/credit, max profit/
-   loss, breakeven, the 9-component score, probability/reliability, and the numeric "why not #2"
-   comparison.
-7. **Mark a Final Decision** once you're satisfied — later research creates new, separate
-   versions; nothing is silently rewritten, and the Final Decision is the record used for later
-   evaluation.
-8. **After earnings, settle the outcome** where real data supports it — directional accuracy,
-   breakeven success — without ever fabricating an options P&L the system doesn't actually have
-   the data to compute.
-9. **Track decision reliability over time** — directional accuracy, breakeven success, confidence
-   calibration, and (only once real point-in-time option pricing exists) strategy win rate, each
-   with its own real sample size.
-
-![Track Record](docs/images/track_record.png)
-
-## Current capabilities
-
-**On-demand research**
-- Search any supported US-listed ticker; symbol resolution against a real reference dataset
-- On-demand ingestion, freshness-aware refresh, real persistent per-step preparation status
-- **Retry Missing Data** — re-attempts only what actually failed or is stale
-- Existing data stays on screen during a refresh — a failed refresh never blanks the workspace
-
-**Data Provider Control Center** (Settings → Data Providers / AI Provider / IBKR / System Status)
-- Per-domain provider configuration with primary/fallback selection, real health/Test Connection
-  checks, masked credential status only, requested/actual/fallback-reason provenance
-
-**Earnings**
-- Real historical earnings events (EPS, report date, next-day/five-day price reaction) from SEC
-  EDGAR and Tiingo/Alpha Vantage; the next unreported event tracked separately from history;
-  analyst consensus and historical move statistics
-
-**Strategy Lab** (market-focused, real chain, no budget/sizing)
-- A canonical options-market state shared by every page that shows it — chain existence, priceable
-  contract count, IV/Greeks availability, and implied-move computability are genuinely distinct
-  states, never collapsed into one generic "no data"
-- The full Expiration Engine comparison (above), deterministic strategy-candidate generation
-  (long call/put, spreads, straddle, strangle, iron condor, butterflies), and a historical move
-  compatibility check per candidate
-- Advanced: a manual payoff calculator for arbitrary strikes/premiums
-
-**AI Decision** (budget-aware, the full Options Decision Engine V3 pipeline)
-- Direction/volatility classification from real evidence, risk-profile-aware strategy generation
-  and sizing, the 9-component Strategy Ranking V2 score, the Probability Engine, and the
-  Explanation Engine — all described above
-- An owner can override the AI's direction/volatility view manually; everything downstream stays
-  fully deterministic either way
-
-**Persistent AI Research & AI Earnings Thesis**
-- Every AI Research answer and every Earnings Thesis generation is persisted as a new,
-  append-only version in PostgreSQL — survives navigation, refresh, and restart; never silently
-  overwritten or regenerated on selection
-
-**Decision Journal**
-- Every AI Decision generation is a new, point-in-time version; **Mark as Final Decision**
-  designates the record used for later, real evaluation
-- Each record keeps the real snapshot ids and exact strategy legs it was built from, for later,
-  honest settlement
-
-**Track Record & reliability**
-- Directional Accuracy and Breakeven Success as two explicitly distinct, real-sample-size metrics
-- Strategy Win Rate shown only once real, point-in-time option entry/exit prices actually exist —
-  never fabricated
-- Confidence-calibration buckets; the live track record only ever contains decisions the system
-  recorded before the event they're about — see [No-lookahead principle](#no-lookahead-principle)
-
-**Portfolio**
-- Real, read-only positions from the user's own Interactive Brokers account; never a market-quote
-  source, never places, modifies, or cancels an order
-
-**System**
-- Python 3.12 / FastAPI / SQLAlchemy 2.0 / Alembic / PostgreSQL + pgvector
-- React 18 + TypeScript / Vite frontend
-- Docker Compose for the full stack; GitHub Actions CI (frontend, backend, and Docker
-  build-and-boot jobs) on every push
-- Provider abstraction for market data, filings, options, and the LLM — swappable by the owner at
-  runtime from Settings, without touching calling code
-
-## Data-state UX
-
-Every data point that comes from an external provider is shown with an explicit state, never
-silently presented as more current than it is: `live`, `delayed`, `frozen`, `stale`,
-`previous_session`, `market_closed`, `gateway_disconnected`, `provider_unavailable`,
-`rate_limited`, `premium_required`, `not_collected`, `unsupported`. A frozen or stale quote is
-still shown — it's real, already-ingested data — but labeled as what it is rather than blended in
-with a live one.
-
-## Supported tickers and data
-
-Search prepares research for any supported US-listed ticker on demand — detailed data (earnings
-history, filings, price bars, options snapshots) is ingested and persisted only once a ticker is
-actually requested, rather than preloading thousands of companies nobody has asked about.
-Provider coverage (SEC EDGAR, Tiingo, Alpha Vantage, IBKR) can vary by ticker: a newly requested
-company may come back with partial data, or a preparation run may complete with warnings, if a
-provider has limited or no data for it.
-
-As of the most recent local run (the live `GET /api/v1/system-status` endpoint): 9 companies
-researched, 359 earnings events, 48,208 daily price bars, 237 SEC filings, 4,641 searchable
-filing chunks. These are live counts for one local deployment, not a fixed catalog — treat them
-as an example snapshot rather than a permanent number.
-
-## Screenshots
-
-**Options Decision Engine V3** screenshots are inline in the [Major Features](#major-features)
-section above (real, live AVGO and NVDA data). General product screens:
-
-| | |
-|---|---|
-| ![Home](docs/screenshots/home.png) **Dashboard** — today, V4 decisions, readiness, forward performance | ![Company Overview](docs/screenshots/company_overview.png) **Company Overview** — underlying, market-data quality, research and V4 readiness |
-|---|---|
-| ![V4 Decision](docs/screenshots/v4_decision.png) **V4 Decision** — six-configuration selector, why-this-strategy, expected-move geometry, T+1 core and stress matrices | ![Candidates](docs/screenshots/candidates.png) **Candidates** — every frozen structure with legs, conIds, required sides and quotes |
-| ![Forward Outcome](docs/screenshots/forward_outcome.png) **Forward Outcome** — entry observation and settlement per configuration | ![V4 Track Record](docs/screenshots/v4_track_record.png) **V4 Forward Track Record** — six cohorts, INSUFFICIENT SAMPLE until 30 settled |
-
-Additional screens: [Earnings Setup](docs/screenshots/earnings_setup.png) ·
-[Research](docs/screenshots/research.png) · [Market View](docs/screenshots/market_view.png) ·
-[Historical / Control](docs/screenshots/historical_control.png) ·
-[V4 Decision Lab](docs/screenshots/v4_decision_lab.png) ·
-[Same-Event Comparison](docs/screenshots/same_event_comparison.png) ·
-[AI Research](docs/screenshots/ai_research.png) ·
-[V3 Historical Control](docs/screenshots/v3_historical_control.png) ·
-[System Status](docs/screenshots/system_status.png).
-
-General screens are captured by `npm run screenshots`
-(`frontend/scripts/capture_screenshots.ts`); the V3-specific screenshots above by
-`npm run screenshots:v3` (`frontend/scripts/capture_v3_screenshots.ts`) — both fixed-viewport,
-real already-rendered page content, no manual cropping, driven by Playwright against a locally
-running dev stack with at least one company already researched and at least one AI Decision
-generated.
-
-## Architecture
-
-```
-backend/    FastAPI service: providers, research orchestration, analytics, RAG, agents, API
-frontend/   React + TypeScript research workspace
-evaluation/ Hand-curated Q&A dataset and scripts that measure retrieval/RAG/agent/extraction quality
-docs/       Architecture, methodology, and engineering-decision documentation (see below)
-```
-
-```
-User
-  -> Research Preparation Orchestrator (symbol resolution, freshness/cache, provider routing)
-  -> Providers (SEC EDGAR, Tiingo, Alpha Vantage, IBKR)
-  -> PostgreSQL + pgvector
-  -> Deterministic analytics (earnings, options, strategy candidates/scoring, historical moves)
-  -> AI Earnings Thesis (RAG + tool orchestration)
-  -> Options Decision Engine V3 (Expiration Engine, Risk Profile, Probability, Ranking V2, Explanation)
-  -> Decision Journal (point-in-time versions, Final Decision)
-  -> Post-earnings settlement / Track Record
-  -> React research workspace
-```
-
-The no-lookahead-bias principle governs the whole data model: every pre-earnings snapshot stores
-only what existed at that timestamp, every externally-sourced record carries its provider and
-retrieval time, and an AI Decision or Earnings Thesis version is never edited after the fact — new
-evidence produces a new version, not a silent rewrite. Full design rationale — including
-deliberate scope boundaries and what was evaluated and rejected — in
-[docs/engineering_decisions.md](docs/engineering_decisions.md).
-
-## Interactive Brokers integration
-
-Real option-chain data and portfolio positions come from the user's own Interactive Brokers
-account via the official, locally-run **Client Portal Gateway** — read-only, no order placement,
-modification, or cancellation anywhere in the integration. The Gateway is deliberately
-**local-first**: it runs and is authenticated on the user's own machine, and this project never
-sees an IBKR username, password, or 2FA code; the Gateway session can also expire and require
-local re-authentication — the Expiration Engine's live comparison and any manual-expiration
-selection depend on it being authenticated, and degrade to an explicit, honest unavailable state
-(never a fabricated one) when it isn't. Cloud/Azure synchronization for IBKR data has not been
-implemented. Full architecture and real, live-captured request/response examples in
-[docs/ibkr_integration.md](docs/ibkr_integration.md).
-
-## Deterministic analytics vs. AI
-
-A core design principle of this system: **all financial arithmetic is deterministic Python, never
-an LLM guess.** Breakeven, max profit/loss, net premium, implied move, ATM IV, historical move
-statistics, expiration/strategy/risk-profile scores, probability/confidence-interval math, and
-settlement metrics are all computed by plain code with unit tests.
-
-| | LLM | Deterministic Python |
-|---|---|---|
-| Does | Interprets filing text, synthesizes evidence, classifies direction/volatility, writes the explanation prose | Payoff math, breakeven, expiration/strategy/risk-profile scoring, probability/Wilson-CI math, historical move comparisons, settlement metrics |
-| Never does | Compute a number, invent a strike, premium, expiration, or probability | Judge qualitative evidence or write prose |
-
-Every AI-generated answer is grounded in data computed or retrieved by the deterministic layer,
-cited back to its source, and never the source of a number that appears elsewhere in the app.
-
-## No-lookahead principle
-
-Point-in-time correctness is enforced structurally, not just by convention: an AI Decision or
-Earnings Thesis is only ever created going forward, from a real generation call — nothing is
-backfilled after the fact using information that wasn't available yet.
-
-- The live Track Record only ever contains decisions the system actually recorded *before* the
-  earnings event they're being evaluated against.
-- There is no code path that manufactures a retrospective "the AI would have predicted this"
-  entry using outcome data the system already knows.
-- A separate, explicitly labeled **Historical Replay** experiment (reconstructing only what was
-  knowable before a past event) is a distinct, clearly-labeled dataset if it's ever built — it
-  must never be merged into or presented as the live decision track record.
-
-## Measured evaluation
-
-This system's AI components are evaluated against a hand-curated, hand-verified dataset, not
-graded on impression ([docs/evaluation.md](docs/evaluation.md) has full methodology, per-item
-results, and an honest discussion of *why* retrieval scores what it does):
-
-| Category | Metric | Result |
-|---|---|---|
-| Retrieval (18 hand-verified items) | Recall@5 | 35% |
-| RAG answer (15 items, incl. 1 negative control) | Fact coverage | 70% |
-| Agent orchestration (10 items) | Intent + tool-selection accuracy | 100% |
-| Structured extraction (8 items) | Capex-guidance accuracy | 100% |
+The production compose file runs the backend on `:8000`, the frontend on `:5173`, PostgreSQL on
+`:5433`. Rebuild after code changes with `docker compose build backend research-worker migrate
+frontend` and `docker compose up -d --no-deps backend research-worker frontend`. Do not restart
+the backend inside the 15:30 ET windows.
 
 ## Testing
 
-**Backend**: 925+ tests passing on a clean, disposable PostgreSQL database, `ruff` clean, `mypy`
-clean.
+**Backend**: `cd backend && .venv/bin/python -m pytest -q` — the suite rebinds every session
+factory to the disposable test database (`:5434`) and runs `alembic upgrade head` there; it cannot
+reach the application database or open a live TWS socket. `ruff` and `mypy` clean.
 
-**Frontend**: TypeScript (`tsc`) clean, ESLint clean, production build clean.
-
-**Playwright E2E**: 8/8 passing, deterministic — a dedicated fixture ticker seeded into a
-disposable database, run against a backend configured with a DB-backed fixture options provider
-(`OPTIONS_PROVIDER=fixture`), so the suite has zero live-IBKR dependency and is safe in CI.
-Covers: Auto expiration selection is score-driven (not just nearest), Manual expiration
-recomputes the active expiration and strategy set, the Risk Profile selector round-trips through
-decision generation, budget sizing stays within its configured risk cap, probability fields
-always carry a real sample size, True Strategy Win Rate is never fabricated, Why Not Alternative
-carries real numeric comparisons, and an unresearched ticker never fabricates a recommendation. A
-separate, CI-skipped live spec covers the same flow against real IBKR data for local manual QA.
-
-GitHub Actions runs the frontend, backend, and Docker build-and-boot jobs on every push to `main`.
+**Frontend**: `npx tsc -b`, `npx eslint . --max-warnings 0`, `npm run build`, and Playwright
+(`npx playwright test`) with route-mocked fixtures — including deterministic SPA navigation tests
+(A→B→C→D without refresh, refresh, back/forward) and a slow-endpoint test proving abandoned
+requests are aborted.
 
 ## Documentation
 
 | Doc | Covers |
 |---|---|
-| [docs/architecture.md](docs/architecture.md) | System design as of Phase 11 — schema, providers, and module status at that point; superseded on research orchestration, Strategy Lab, and the Options Decision Engine by this README |
-| [docs/data_model.md](docs/data_model.md) | Table grain, keys, indexing, point-in-time semantics |
-| [docs/data_sources.md](docs/data_sources.md) | Providers evaluated, chosen, and why |
-| [docs/options_methodology.md](docs/options_methodology.md) / [docs/earnings_methodology.md](docs/earnings_methodology.md) | Payoff formulas, Greeks assumptions, implied-move methodology |
-| [docs/llm_providers.md](docs/llm_providers.md) | Provider-agnostic LLM layer |
-| [docs/ai_architecture.md](docs/ai_architecture.md) | RAG pipeline + agent orchestration design |
-| [docs/ibkr_integration.md](docs/ibkr_integration.md) | Interactive Brokers integration architecture, auth flow, real request/response examples |
-| [docs/evaluation.md](docs/evaluation.md) | Evaluation methodology, real results, honest analysis |
-| [docs/deployment.md](docs/deployment.md) | Docker architecture, real cost research for hosting |
-| [docs/engineering_decisions.md](docs/engineering_decisions.md) | Every major technical decision and why, phase by phase, including real bugs found and fixed along the way |
-| [docs/limitations.md](docs/limitations.md) | Known gaps for Phases 1–10 in detail; see this README's own [Limitations](#limitations) section for what's specific to later phases |
-| [SYSTEM_AUDIT.md](SYSTEM_AUDIT.md) | An independent verification pass against the real system, dated to Phase 11 |
+| [docs/v4_architecture.md](docs/v4_architecture.md) | One event → one evidence freeze → six results; modules and tables |
+| [docs/v4_methodology.md](docs/v4_methodology.md) | Objective, strategy semantics, capital terminology, why V4 exists |
+| [docs/v4_4b_candidate_ranking_methodology.md](docs/v4_4b_candidate_ranking_methodology.md) | The frozen T+1 executable ranking |
+| [docs/v4_forward_testing.md](docs/v4_forward_testing.md) | Evidence rules, timing policy, windows, model provenance, activation |
+| [docs/ibkr_architecture.md](docs/ibkr_architecture.md) / [docs/ibkr_integration.md](docs/ibkr_integration.md) / [docs/ibkr_gateway_runtime.md](docs/ibkr_gateway_runtime.md) | TWS integration and runtime |
+| [docs/ai_architecture.md](docs/ai_architecture.md) / [docs/llm_providers.md](docs/llm_providers.md) | RAG pipeline, agent, provider layer |
+| [docs/options_methodology.md](docs/options_methodology.md) / [docs/earnings_methodology.md](docs/earnings_methodology.md) | Shared payoff, pricing, implied-move and earnings analytics |
+| [docs/data_model.md](docs/data_model.md) / [docs/data_sources.md](docs/data_sources.md) | Tables and providers |
+| [docs/evaluation.md](docs/evaluation.md) | RAG / agent evaluation methodology and results |
+| [docs/deployment.md](docs/deployment.md) | Docker architecture |
+| [docs/engineering_decisions.md](docs/engineering_decisions.md) | Decisions by phase (historical record) |
+| [docs/limitations.md](docs/limitations.md) | Known gaps |
 
-## Local setup
+## Safety
 
-```bash
-cp .env.example .env   # fill in real values — see docs/data_sources.md and docs/llm_providers.md
-docker compose up --build
-```
-
-Runs the full stack: PostgreSQL + pgvector, a one-shot Alembic migration, the FastAPI backend
-(`http://localhost:8000`), and the frontend (`http://localhost:5173`). Backend and frontend can
-also be run independently outside Docker — see `backend/README.md` and `frontend/README.md`.
-
-Everything works without a running IBKR Client Portal Gateway except real option-chain data, the
-Expiration Engine's live comparison, manual-expiration selection, IBKR-sourced implied move/ATM
-IV, and Portfolio/My Exposure — those show an explicit not-available state instead of a number.
-See [docs/ibkr_integration.md](docs/ibkr_integration.md) for how to run and authenticate the
-Gateway locally.
+No order placement, no order API, no brokerage write path. Delayed data stays labelled delayed.
+Tests cannot reach production. Evidence tables reject updates at the database level. The V4
+forward test flag is never a code default. Credentials live only in `.env`.
 
 ## Limitations
 
-- The IBKR Client Portal Gateway requires local authentication on the user's own machine and its
-  session can expire and need re-authentication; there is no cloud-hosted IBKR connection today,
-  and Azure/cloud synchronization for IBKR data has not been built (see
-  [Interactive Brokers integration](#interactive-brokers-integration)). The Expiration Engine's
-  live, multi-candidate comparison degrades to an explicit unavailable state (never a fabricated
-  one) when the Gateway session has expired.
-- Provider rate limits and plan entitlements can degrade an individual preparation step — a
-  malformed or degraded provider response is detected rather than silently parsed as real data.
-- An options chain can exist without enough priceable quotes (real bid/ask) to compute an implied
-  move or generate strategy candidates from — shown as its own explicit state, never collapsed
-  into a generic "no data."
-- Complete historical point-in-time options-chain data does not exist for all past earnings
-  events, so historical move compatibility compares against real past price moves, not a real
-  options backtest.
-- The Model Strategy Score is a deterministic, explainable fit heuristic, not a probability of
-  profit; Estimated Probability is a real empirical estimate with a real confidence interval, but
-  is still distinct from — and must never be read as — a guarantee. AI Decision confidence is
-  built from real signals, not a probability the direction will turn out correct.
-- True Strategy Win Rate has a real, current system-wide sample size of zero — this project does
-  not yet capture real point-in-time option entry/exit prices for any settled decision, so the
-  metric is honestly `Unavailable` everywhere rather than estimated.
-- The AI decision track record currently has a limited sample size — confidence-calibration and
-  win-rate figures become more meaningful as more real, settled decisions accumulate.
-- No retrospective AI predictions are ever inserted into the live track record — see
-  [No-lookahead principle](#no-lookahead-principle).
-- Decision/thesis/research history management is currently owner/private functionality without
-  production authentication in front of it — acceptable for a local, single-owner deployment, not
-  yet suitable for a public multi-user one.
-- Cloud deployment (Azure or otherwise) has not been implemented.
-- AI-generated research (the Earnings Thesis, AI Decision, AI Research answers) is grounded in
-  retrieved evidence but is only as complete as that evidence — a newly researched company with
-  sparse filing history produces a correspondingly limited answer.
+- One natural sample so far; no performance claim is made or implied.
+- Delayed market data; live/paper account status is not knowable over TWS and is shown as unknown.
+- No capital ledger: metrics are per-decision and standardized, never portfolio drawdown or Sharpe.
+- Aggressive differs from Moderate only through risk cap and liquidity floor (documented open
+  methodology question).
 
-Full, phase-by-phase list for Phases 1–10 in [docs/limitations.md](docs/limitations.md).
+## History
+
+The V3 decision engine, its 15:55 ET benchmark pipeline, track record, AI Decision Journal,
+Cross-Company Replay, Strategy Lab and their evidence tables were retired on 2026-09-02 (the
+V4-only reset). The pre-reset state is preserved on the `archive/pre-v4-only-reset` branch.
 
 ## Disclaimer
 
-This is a personal research tool. It is not investment advice, has no live users, and no claim is
-made about trading performance — see [docs/limitations.md](docs/limitations.md) and the
-[Limitations](#limitations) section above for a full, honest account of what is and isn't real.
+This is a personal research tool. Nothing here is investment advice, a recommendation, or an
+offer to trade. Options involve substantial risk.
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+See [LICENSE](LICENSE).
