@@ -119,18 +119,29 @@ class TestOperationsEvents:
             assert isinstance(event["timeline"], list)
 
 
+OFFICIAL_JOB_IDS = {
+    "earnings_calendar_sync",
+    "earnings_research_preparation",
+    "decision_and_entry_capture",
+    "exit_capture",
+    "ibkr_gateway_healthcheck",
+}
+SHADOW_JOB_IDS = {"v4_shadow_decision", "v4_shadow_settlement"}
+
+
 class TestOperationsJobs:
-    def test_returns_all_five_real_jobs(self, client):
+    def test_lists_the_five_official_jobs_plus_the_shadow_pair_only_when_enabled(self, client):
+        """The monitor reports every job the live scheduler has registered:
+        the official five always, and the two V4 shadow jobs exactly when
+        V4_SHADOW_ENABLED is on (activated in production 2026-09-02)."""
+        from core.config import get_settings
+
         response = client.get("/api/v1/operations/jobs")
         assert response.status_code == 200
         job_ids = {j["job_id"] for j in response.json()["jobs"]}
-        assert job_ids == {
-            "earnings_calendar_sync",
-            "earnings_research_preparation",
-            "decision_and_entry_capture",
-            "exit_capture",
-            "ibkr_gateway_healthcheck",
-        }
+        shadow = SHADOW_JOB_IDS if get_settings().v4_shadow_enabled else set()
+        expected = OFFICIAL_JOB_IDS | shadow
+        assert job_ids == expected
 
 
 class TestOperationsFailures:

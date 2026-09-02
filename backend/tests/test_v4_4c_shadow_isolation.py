@@ -141,11 +141,16 @@ class TestActivationGate:
 
         assert Settings(_env_file=None).v4_shadow_enabled is False
 
-    def test_real_env_has_not_activated_shadow_generation(self):
-        """Guards against this task accidentally shipping it enabled."""
-        from core.config import get_settings
+    def test_activation_is_an_explicit_environment_decision_never_a_code_default(self):
+        """The shadow cohort was activated in production on 2026-09-02 after
+        the live activation gate (dry-run PASS_WITH_WARNINGS, zero writes).
+        Activation is carried ONLY by the environment: the code default
+        stays False, so a fresh deployment never starts the cohort
+        implicitly, and the running value is always an explicit bool."""
+        from core.config import Settings, get_settings
 
-        assert get_settings().v4_shadow_enabled is False
+        assert Settings(_env_file=None).v4_shadow_enabled is False
+        assert isinstance(get_settings().v4_shadow_enabled, bool)
 
 
 class TestImmutabilityShape:

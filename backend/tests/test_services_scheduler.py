@@ -41,6 +41,24 @@ _TIMING_TO_ANNOUNCEMENT = {
 }
 
 
+
+def _expected_registered_ids() -> set[str]:
+    """The official five, plus the V4 shadow pair exactly when the running
+    environment has activated the cohort (production, 2026-09-02). The
+    scheduler registers the pair only while V4_SHADOW_ENABLED is on."""
+    from core.config import get_settings
+
+    ids = {
+        CALENDAR_SYNC_JOB_ID,
+        EARNINGS_RESEARCH_PREPARATION_JOB_ID,
+        DECISION_AND_ENTRY_CAPTURE_JOB_ID,
+        EXIT_CAPTURE_JOB_ID,
+        IBKR_GATEWAY_HEALTHCHECK_JOB_ID,
+    }
+    if get_settings().v4_shadow_enabled:
+        ids |= {"v4_shadow_decision", "v4_shadow_settlement"}
+    return ids
+
 def _due_now_for(earnings_date, earnings_time):
     """The real, authoritative entry_timestamp for an event with this
     earnings_date/earnings_time -- pre-live hardening added a real
@@ -203,12 +221,12 @@ def test_job_persists_across_app_restart_without_duplicating():
 
     app1 = main_module.create_app()
     with TestClient(app1):
-        assert len(app1.state.scheduler.get_jobs()) == 5
+        assert len(app1.state.scheduler.get_jobs()) == len(_expected_registered_ids())
 
     app2 = main_module.create_app()
     with TestClient(app2):
         jobs = app2.state.scheduler.get_jobs()
-        assert len(jobs) == 5
+        assert len(jobs) == len(_expected_registered_ids())
         assert app2.state.scheduler.get_job(CALENDAR_SYNC_JOB_ID) is not None
         assert app2.state.scheduler.get_job(EARNINGS_RESEARCH_PREPARATION_JOB_ID) is not None
         assert app2.state.scheduler.get_job(DECISION_AND_ENTRY_CAPTURE_JOB_ID) is not None
@@ -1108,13 +1126,7 @@ class TestGetSchedulerStatus:
 
             assert status.running is True
             job_ids = {job.job_id for job in status.jobs}
-            assert job_ids == {
-                CALENDAR_SYNC_JOB_ID,
-                EARNINGS_RESEARCH_PREPARATION_JOB_ID,
-                DECISION_AND_ENTRY_CAPTURE_JOB_ID,
-                EXIT_CAPTURE_JOB_ID,
-                IBKR_GATEWAY_HEALTHCHECK_JOB_ID,
-            }
+            assert job_ids == _expected_registered_ids()
             # Every job has a real cron/interval trigger -- next_run_time
             # must always be populated once the scheduler is running,
             # never left None/unknown.

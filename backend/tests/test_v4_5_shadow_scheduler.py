@@ -118,11 +118,13 @@ class TestShadowSchedulerRegistration:
         assert hhmm(V4_SHADOW_DECISION_JOB_ID) == ("15", "30")          # V4 entry: moved
         assert hhmm(V4_SHADOW_SETTLEMENT_JOB_ID) == ("15", "55")        # V4 exit: unmoved
 
-    def test_production_flag_is_still_off(self):
-        """Guards against this task accidentally shipping activated."""
-        from core.config import get_settings
+    def test_activation_is_never_a_code_default(self):
+        """Activated in production on 2026-09-02 by an explicit environment
+        decision after the live gate. The code default stays False: a
+        fresh deployment never registers the shadow jobs implicitly."""
+        from core.config import Settings
 
-        assert get_settings().v4_shadow_enabled is False
+        assert Settings(_env_file=None).v4_shadow_enabled is False
 
 
 class TestShadowJobSafety:
