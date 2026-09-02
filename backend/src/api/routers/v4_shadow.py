@@ -94,10 +94,18 @@ def _decision_summary(row: V4ShadowDecision) -> dict:
 
 
 @router.get("/decisions")
-def list_shadow_decisions(db: DbSession, limit: int = Query(50, ge=1, le=200)) -> dict:
+def list_shadow_decisions(
+    db: DbSession,
+    limit: int = Query(50, ge=1, le=200),
+    ticker: str | None = Query(None, min_length=1, max_length=16),
+) -> dict:
+    """``ticker`` (V4 consolidation) scopes the list to one company so the
+    company workspace can find its own latest decision without paging."""
+    query = db.query(V4ShadowDecision)
+    if ticker:
+        query = query.filter(V4ShadowDecision.ticker == ticker.upper())
     rows = (
-        db.query(V4ShadowDecision)
-        .order_by(V4ShadowDecision.legal_decision_window_at.desc())
+        query.order_by(V4ShadowDecision.legal_decision_window_at.desc())
         .limit(limit)
         .all()
     )
@@ -377,6 +385,37 @@ def get_shadow_decision_configurations(decision_id: int, db: DbSession) -> dict:
             "rank_explanation": c.rank_explanation,
         }
 
+    # Lifecycle (Sections 23-27): the ENTRY observation and settlement are
+    # recorded once at event level against the unconstrained rank #1. A
+    # configuration whose own rank #1 is that same candidate inherits the
+    # observation; a configuration whose rank #1 differs has no separate
+    # observation stream yet and honestly reports WAITING_ENTRY rather than
+    # borrowing evidence for a different structure.
+    entry_obs = (
+        db.query(V4ShadowObservation)
+        .filter_by(shadow_decision_id=decision_id, phase="ENTRY")
+        .first()
+    )
+    settlement = (
+        db.query(V4ShadowSettlement)
+        .filter_by(shadow_decision_id=decision_id)
+        .order_by(V4ShadowSettlement.id.desc())
+        .first()
+    )
+
+    def lifecycle(row: V4ShadowConfigResult) -> str:
+        if row.status == "NO_ACTION":
+            return "NO_ACTION"
+        if row.status == "FAILED":
+            return "FAILED"
+        if entry_obs is None or entry_obs.candidate_id != row.rank_1_candidate_id:
+            return "WAITING_ENTRY"
+        if entry_obs.status != "OBSERVED":
+            return "ENTRY_FAILED"
+        if settlement is None:
+            return "WAITING_SETTLEMENT"
+        return "SETTLED" if settlement.status == "SETTLED" else "SETTLEMENT_FAILED"
+
     configurations = []
     for key in _CONFIG_DISPLAY_ORDER:
         row = config_rows.get(key)
@@ -385,6 +424,7 @@ def get_shadow_decision_configurations(decision_id: int, db: DbSession) -> dict:
         summary = _config_result_summary(row)
         top = by_id.get(row.rank_1_candidate_id) if row.rank_1_candidate_id else None
         summary["rank_1"] = candidate_summary(top) if top is not None else None
+        summary["lifecycle"] = lifecycle(row)
         configurations.append(summary)
 
     return {
@@ -394,6 +434,27 @@ def get_shadow_decision_configurations(decision_id: int, db: DbSession) -> dict:
         "configurations": configurations,
         "candidates": [candidate_summary(c) for c in candidates],
         "default_configuration_key": "v4_2k_moderate",
+        "entry_observation": None if entry_obs is None else {
+            "status": entry_obs.status,
+            "candidate_id": entry_obs.candidate_id,
+            "observed_at": entry_obs.observed_at,
+            "failure_category": entry_obs.failure_category,
+            "failure_detail": entry_obs.failure_detail,
+            "market_data_quality": entry_obs.market_data_quality,
+            "net_executable_value": entry_obs.net_executable_value,
+        },
+        "settlement": None if settlement is None else {
+            "status": settlement.status,
+            "settled_at": settlement.settled_at,
+            "failure_category": settlement.failure_category,
+            "failure_detail": settlement.failure_detail,
+            "entry_net_value": settlement.entry_net_value,
+            "exit_net_value": settlement.exit_net_value,
+            "realized_pnl": settlement.realized_pnl,
+            "return_on_standardized_capital": settlement.return_on_standardized_capital,
+            "market_data_quality": settlement.market_data_quality,
+        },
+        "settlement_policy": "T+1 at 15:55 ET on the first post-earnings trading day",
     }
 
 
