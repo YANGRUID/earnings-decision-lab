@@ -14,7 +14,7 @@ const E2E_FRONTEND_PORT = 5182;
 
 export default defineConfig({
   testDir: "./e2e",
-  testMatch: "operations.spec.ts",
+  testMatch: ["operations.spec.ts", "navigation.spec.ts"],
   fullyParallel: false,
   workers: 1,
   retries: process.env.CI ? 1 : 0,
