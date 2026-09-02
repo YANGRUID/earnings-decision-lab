@@ -1,32 +1,121 @@
 # Earnings Decision Lab
 
-An auditable earnings-options research and forward-testing terminal. Before an earnings
-release it assembles real evidence — filings, earnings history, expectations, price data and a
+An auditable earnings-options research and forward-testing workstation. Before an earnings
+release it assembles real evidence — SEC filings, earnings history, expectations, price data and a
 live option chain — synthesizes a grounded AI view, and deterministically constructs, values and
 ranks real option structures against that view. Every decision is a point-in-time record that is
-never rewritten, and every outcome is observed prospectively.
+never rewritten; every outcome is observed prospectively.
 
-> **Not investment advice.** A personal research tool, not a trading system. No brokerage order
-> capability exists anywhere in the codebase. See [Disclaimer](#disclaimer).
+> **Not investment advice.** A personal research tool, not a trading system. **No brokerage
+> order-placement capability exists anywhere in this codebase.** See [Disclaimer](#disclaimer).
 
-## Current state (September 2026)
+## Contents
 
-| Component | Role | Status |
-|---|---|---|
-| **V3** | Official historical / control engine. Decision and entry observed at **15:55 ET**; T+1 settlement at 15:55 ET. | Frozen methodology; still runs daily as the control cohort. Its evidence is immutable. |
-| **V4** | Experimental forward-test ("shadow") engine. One DecisionView, one market-evidence freeze, **six standardized capital/risk configurations** evaluated on the same evidence. Decision observed at **15:30 ET**; settlement unchanged at 15:55 ET. | **Experimental / shadow.** Not activated in production until a live market-hours dry-run passes. No proven performance advantage is claimed. |
-| **TWS API** | Production market-data transport (Interactive Brokers TWS / IB Gateway). Delayed data is labelled delayed. | Live since 2026-09-01. The Web/Client-Portal gateway is retained only as a rollback path. |
-| **DeepSeek** | Produces the unstructured *DecisionView* (direction, volatility, move intent, confidence). | It never prices, sizes, ranks or explains a ranking. |
-| **Deterministic engine** | Expected move, strike geometry, T+1 scenario valuation, V4.4B ranking v1, capital/risk policy, six-configuration evaluation. | All numeric decisions are reproducible from frozen evidence. |
+1. [What it is](#what-it-is) · 2. [Architecture](#architecture) · 3. [V3 control](#v3-control) ·
+4. [V4 experimental shadow](#v4-experimental-shadow) · 5. [Six configurations](#six-configurations) ·
+6. [TWS market data](#tws-market-data) · 7. [DeepSeek's role](#deepseeks-role) ·
+8. [Deterministic engine](#deterministic-engine) · 9. [Forward-testing philosophy](#forward-testing-philosophy) ·
+10. [Current activation status](#current-activation-status) · 11. [Run locally](#run-locally) · 12. [Safety](#safety)
 
-The six V4 configurations are $2,000 and $10,000 crossed with Conservative / Moderate /
-Aggressive. All six are evaluated in memory against one frozen market observation — never six
-pipelines — and each independently records RANKED or NO_ACTION.
+## What it is
 
-Start with [`docs/v4_architecture.md`](docs/v4_architecture.md),
-[`docs/v4_methodology.md`](docs/v4_methodology.md) and
-[`docs/v4_forward_testing.md`](docs/v4_forward_testing.md). The V3 engine described below
-remains fully operational as the control cohort.
+A company workspace (Overview → Earnings Setup → Research → Market View → V4 Decision →
+Candidates → Forward Outcome → Historical / Control), a V4 Decision Lab and Candidate Explorer, a
+six-cohort forward track record, a same-event V3-vs-V4 comparison, and a live operations monitor
+— all reading immutable, prospectively collected evidence.
+
+## Architecture
+
+```
+earnings calendar (EarningsAPI, Finnhub fallback)
+  └─ research preparation (durable queue, company-scoped RAG over SEC filings)
+     └─ DecisionView  ── DeepSeek: direction / move / confidence (an AI judgment, never a price)
+        └─ one market-evidence freeze ── TWS: underlying, option chain, exact-contract quotes
+           └─ expected move · strike geometry · T+1 scenario valuation · ranking v1
+              └─ six configuration evaluations (pure, in-memory)
+                 └─ immutable shadow evidence ── entry observation ── T+1 settlement
+```
+
+Backend: FastAPI + SQLAlchemy + APScheduler on Postgres/pgvector. Frontend: React + Vite.
+See [`docs/v4_architecture.md`](docs/v4_architecture.md).
+
+## V3 control
+
+The original official engine. It still runs daily as the **historical control cohort**: decision
+and entry observed at **15:55 ET**, T+1 settlement at 15:55 ET. Its methodology is frozen and its
+evidence tables are append-only. In the product it appears as *V3 Historical Control*.
+
+## V4 experimental shadow
+
+The engine under test. One DecisionView, one market-evidence freeze, one deterministic ranking —
+evaluated under six capital/risk configurations — observed at **15:30 ET** on the legal
+pre-earnings trading day (settlement unchanged at 15:55 ET). Runs *alongside* V3, never instead
+of it. Methodology: [`docs/v4_methodology.md`](docs/v4_methodology.md).
+
+## Six configurations
+
+| Capital | Conservative | Moderate | Aggressive |
+|---|---|---|---|
+| **$2,000** | 15% cap ($300), 0.80 liquidity floor, no single-leg longs | 30% ($600), 0.40 | 50% ($1,000), no floor |
+| **$10,000** | 15% ($1,500), 0.80, no single-leg longs | 30% ($3,000), 0.40 | 50% ($5,000), no floor |
+
+All six are evaluated in memory against the **same** frozen evidence — never six pipelines — and
+each independently records RANKED or NO_ACTION. Moderate and Aggressive currently share one
+strategy-family universe (a stated methodology question, not a hidden one).
+
+## TWS market data
+
+Interactive Brokers TWS / IB Gateway is the production transport (client id 101 for the backend,
+1001 for its health probe, 102 for the research worker). Delayed data is labelled delayed
+everywhere it appears and is never promoted to live. The older Web/Client-Portal gateway is
+retained only as a rollback path. See [`docs/ibkr_architecture.md`](docs/ibkr_architecture.md).
+
+## DeepSeek's role
+
+DeepSeek produces the unstructured **DecisionView** — direction, volatility/move view, a
+confidence *label* (explicitly not a probability) and reasoning — and answers AI Research
+questions with filing citations. It never prices, sizes, ranks or explains a ranking.
+
+## Deterministic engine
+
+Expected move (implied + historical), strike geometry against ±EM, T+1 executable scenario
+valuation (7 moves × 3 IV levels core; ±1.5/±2 EM tail stress kept separate), V4.4B banded
+lexicographic ranking v1, capital/risk policy. Every number is reproducible from frozen evidence,
+and "why this strategy ranked first" is derived from the ranking dimensions — not generated by an
+LLM.
+
+## Forward-testing philosophy
+
+Prospective only; no backfill; immutable rows enforced by database triggers; executable pricing
+(buy at ASK, sell at BID, never mid); INSUFFICIENT SAMPLE below 30 settled observations; no
+portfolio drawdown or Sharpe until a real capital ledger exists; V3 and V4 compared side by side
+with their different clocks stated. See [`docs/v4_forward_testing.md`](docs/v4_forward_testing.md).
+
+## Current activation status
+
+**V4 engineering is complete enough for shadow validation. V4 shadow is still disabled**
+(`V4_SHADOW_ENABLED=false`) pending a live market-hours dry-run that measures real latency and TWS
+request budget against live quotes. No V4 performance claim is made. V3 remains the official
+control.
+
+## Run locally
+
+```bash
+cp .env.example .env            # fill in your own keys; never commit .env
+docker compose up -d db migrate backend research-worker frontend
+open http://localhost:5173
+```
+
+Backend tests: `cd backend && pytest` (uses the disposable `edl-test-db` on :5434 — the suite
+refuses to run against the application database). Frontend: `cd frontend && npm run build &&
+npx playwright test`. The live-QA spec runs only with `RUN_LIVE_QA=1`.
+
+## Safety
+
+No order placement, no order API, no brokerage write path. Delayed data stays labelled delayed.
+Tests cannot reach production. Evidence tables reject updates at the database level.
+
+---
 
 ## V3 Product Overview (historical control engine)
 
@@ -274,16 +363,19 @@ section above (real, live AVGO and NVDA data). General product screens:
 
 | | |
 |---|---|
-| ![Home](docs/screenshots/home.png) **Home** — search-first, recently researched companies | ![Upcoming Earnings](docs/screenshots/upcoming_earnings.png) **Upcoming Earnings** — consensus, implied move, ATM IV, historical comparison |
-| ![Strategy Lab](docs/screenshots/strategy_lab.png) **Strategy Lab** — the Expiration Engine's real Auto/Manual comparison, ranked candidates from a real option chain (including butterflies and condors), with breakeven and historical compatibility | ![AI Decision](docs/screenshots/ai_decision.png) **AI Decision** — risk-profile-aware recommendation with the 9-component score, probability/reliability, and the full Why This Strategy/Expiration/Strikes/Not-Alternative explanation |
-| ![AI Earnings Thesis](docs/screenshots/earnings_thesis.png) **AI Earnings Thesis** — grounded, cited synthesis | ![Track Record](docs/screenshots/track_record.png) **Track Record** — honest reliability metrics and pending Final Decisions awaiting a real outcome |
+| ![Home](docs/screenshots/home.png) **Dashboard** — today, V4 decisions, readiness, forward performance | ![Company Overview](docs/screenshots/company_overview.png) **Company Overview** — underlying, market-data quality, research and V4 readiness |
+|---|---|
+| ![V4 Decision](docs/screenshots/v4_decision.png) **V4 Decision** — six-configuration selector, why-this-strategy, expected-move geometry, T+1 core and stress matrices | ![Candidates](docs/screenshots/candidates.png) **Candidates** — every frozen structure with legs, conIds, required sides and quotes |
+| ![Forward Outcome](docs/screenshots/forward_outcome.png) **Forward Outcome** — entry observation and settlement per configuration | ![V4 Track Record](docs/screenshots/v4_track_record.png) **V4 Forward Track Record** — six cohorts, INSUFFICIENT SAMPLE until 30 settled |
 
-Additional screens: [Company Overview](docs/screenshots/company_overview.png) ·
-[Historical Events](docs/screenshots/history.png) (real past earnings moves) ·
-[AI Research](docs/screenshots/ai_research.png) (grounded Q&A with tool trace) ·
-[My Exposure](docs/screenshots/my_exposure.png) (real IBKR positions) ·
-[System Status](docs/screenshots/system_status.png) (live data coverage and freshness) ·
-[Cross-Company Replay](docs/screenshots/cross_company_replay.png).
+Additional screens: [Earnings Setup](docs/screenshots/earnings_setup.png) ·
+[Research](docs/screenshots/research.png) · [Market View](docs/screenshots/market_view.png) ·
+[Historical / Control](docs/screenshots/historical_control.png) ·
+[V4 Decision Lab](docs/screenshots/v4_decision_lab.png) ·
+[Same-Event Comparison](docs/screenshots/same_event_comparison.png) ·
+[AI Research](docs/screenshots/ai_research.png) ·
+[V3 Historical Control](docs/screenshots/v3_historical_control.png) ·
+[System Status](docs/screenshots/system_status.png).
 
 General screens are captured by `npm run screenshots`
 (`frontend/scripts/capture_screenshots.ts`); the V3-specific screenshots above by

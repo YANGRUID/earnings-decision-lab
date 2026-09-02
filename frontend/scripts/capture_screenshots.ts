@@ -39,18 +39,24 @@ interface Shot {
 }
 
 const SHOTS: Shot[] = [
+  // V4-first product (2026-09-02). Tab names must match the company
+  // workspace exactly; routes must exist in App.tsx.
   { name: "home", path: "/" },
   { name: "company_overview", path: `/company/${TICKER}` },
-  { name: "upcoming_earnings", path: `/company/${TICKER}`, tab: "Upcoming Earnings" },
-  { name: "strategy_lab", path: `/company/${TICKER}`, tab: "Strategy Lab" },
-  { name: "earnings_thesis", path: `/company/${TICKER}`, tab: "AI Thesis" },
-  { name: "ai_decision", path: `/company/${TICKER}`, tab: "AI Decision" },
-  { name: "my_exposure", path: `/company/${TICKER}`, tab: "My Exposure" },
-  { name: "history", path: `/company/${TICKER}`, tab: "Historical Events" },
+  { name: "earnings_setup", path: `/company/${TICKER}`, tab: "Earnings Setup" },
+  { name: "research", path: `/company/${TICKER}`, tab: "Research" },
+  { name: "market_view", path: `/company/${TICKER}`, tab: "Market View" },
+  { name: "v4_decision", path: `/company/${TICKER}`, tab: "V4 Decision" },
+  { name: "candidates", path: `/company/${TICKER}`, tab: "Candidates" },
+  { name: "forward_outcome", path: `/company/${TICKER}`, tab: "Forward Outcome" },
+  { name: "historical_control", path: `/company/${TICKER}`, tab: "Historical / Control" },
+  { name: "v4_decision_lab", path: "/v4-decision-lab" },
+  { name: "v4_track_record", path: "/v4-shadow-track-record" },
+  { name: "same_event_comparison", path: "/same-event-comparison" },
+  { name: "operations", path: "/operations" },
   { name: "ai_research", path: `/research?ticker=${TICKER}` },
+  { name: "v3_historical_control", path: "/benchmark-track-record" },
   { name: "system_status", path: "/system-status" },
-  { name: "cross_company_replay", path: "/historical-replay" },
-  { name: "track_record", path: "/track-record" },
 ];
 
 /** Waits for the page to settle: no in-flight network requests, no visible
