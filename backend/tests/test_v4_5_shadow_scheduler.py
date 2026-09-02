@@ -12,7 +12,9 @@ from unittest.mock import patch
 import pytest
 
 from services.scheduler import (
+    CALENDAR_SYNC_JOB_ID,
     DECISION_AND_ENTRY_CAPTURE_JOB_ID,
+    EARNINGS_RESEARCH_PREPARATION_JOB_ID,
     EXIT_CAPTURE_JOB_ID,
     V4_SHADOW_DECISION_JOB_ID,
     V4_SHADOW_SETTLEMENT_JOB_ID,
@@ -43,11 +45,13 @@ class TestShadowSchedulerRegistration:
         assert V4_SHADOW_DECISION_JOB_ID not in ids
         assert V4_SHADOW_SETTLEMENT_JOB_ID not in ids
 
-    def test_flag_off_leaves_official_v3_jobs_untouched(self):
+    def test_flag_off_leaves_platform_jobs_untouched(self):
         """V4 being disabled must not disturb the official schedule."""
         ids = _job_ids(enabled=False)
-        assert DECISION_AND_ENTRY_CAPTURE_JOB_ID in ids
-        assert EXIT_CAPTURE_JOB_ID in ids
+        assert CALENDAR_SYNC_JOB_ID in ids
+        assert EARNINGS_RESEARCH_PREPARATION_JOB_ID in ids
+        assert DECISION_AND_ENTRY_CAPTURE_JOB_ID not in ids  # V3 retired 2026-09-02
+        assert EXIT_CAPTURE_JOB_ID not in ids
 
     def test_flag_on_registers_both_shadow_jobs(self):
         """Section 99 -- proven in an ISOLATED test config only; the
@@ -56,10 +60,12 @@ class TestShadowSchedulerRegistration:
         assert V4_SHADOW_DECISION_JOB_ID in ids
         assert V4_SHADOW_SETTLEMENT_JOB_ID in ids
 
-    def test_flag_on_still_keeps_official_jobs(self):
+    def test_flag_on_still_keeps_platform_jobs(self):
         ids = _job_ids(enabled=True)
-        assert DECISION_AND_ENTRY_CAPTURE_JOB_ID in ids
-        assert EXIT_CAPTURE_JOB_ID in ids
+        assert CALENDAR_SYNC_JOB_ID in ids
+        assert EARNINGS_RESEARCH_PREPARATION_JOB_ID in ids
+        assert DECISION_AND_ENTRY_CAPTURE_JOB_ID not in ids  # V3 retired 2026-09-02
+        assert EXIT_CAPTURE_JOB_ID not in ids
 
     def test_shadow_job_ids_are_distinct_from_official_ids(self):
         """Section 52 -- must never overload the official V3 job's own
@@ -68,55 +74,22 @@ class TestShadowSchedulerRegistration:
         shadow = {V4_SHADOW_DECISION_JOB_ID, V4_SHADOW_SETTLEMENT_JOB_ID}
         assert not (official & shadow)
 
-    def test_v4_decision_runs_at_its_own_1530_policy_not_v3s_1555(self):
-        """V4 product consolidation (2026-09-02) -- the V4 DECISION
-        observation moves to 15:30 ET while V3 stays at 15:55 ET.
-
-        This test previously asserted the opposite (identical crons). That
-        assertion encoded the old methodology and is deliberately replaced,
-        not deleted: the requirement it protected -- that V4 never gets a
-        post-event timing advantage -- still holds, and is now stronger,
-        because 15:30 is EARLIER than V3's 15:55. V4 sees less of the
-        session, never more.
-        """
+    def test_v4_decision_and_settlement_both_fire_at_1530_eastern(self):
+        """V4-only reset (2026-09-02): decision/entry at 15:30 ET and the T+1
+        settlement at 15:30 ET (timing policy v2). The V3 jobs no longer
+        exist, so the only clock left is V4's own."""
         with patch("services.scheduler.get_settings", return_value=_settings_with(True)):
             jobs = {job.id: job for job in build_scheduler().get_jobs()}
 
-        # Compare by field NAME rather than positional index -- APScheduler's
-        # field order is an implementation detail, and an index that silently
-        # shifted would make this assertion pass while comparing the wrong
-        # thing entirely.
         def fields(job_id):
             return {f.name: str(f) for f in jobs[job_id].trigger.fields}
 
-        official = fields(DECISION_AND_ENTRY_CAPTURE_JOB_ID)
-        shadow_decision = fields(V4_SHADOW_DECISION_JOB_ID)
-
-        assert official["hour"] == "15" and official["minute"] == "55"
-        assert shadow_decision["hour"] == "15" and shadow_decision["minute"] == "30"
-        # Same timezone -- only the minute differs, never the clock itself.
-        assert str(jobs[DECISION_AND_ENTRY_CAPTURE_JOB_ID].trigger.timezone) == str(
-            jobs[V4_SHADOW_DECISION_JOB_ID].trigger.timezone
-        )
-        # V4 observes EARLIER than V3, never later: no post-event advantage.
-        assert int(shadow_decision["minute"]) < int(official["minute"])
-
-    def test_v4_settlement_did_not_move_with_the_decision_time(self):
-        """Entry timing and settlement timing are separate policies
-        (Sections 26/56). The four jobs used to share one constant pair, so
-        the real hazard here is an edit that moves settlement along with the
-        decision. Pin all four explicitly."""
-        with patch("services.scheduler.get_settings", return_value=_settings_with(True)):
-            jobs = {job.id: job for job in build_scheduler().get_jobs()}
-
-        def hhmm(job_id):
-            f = {x.name: str(x) for x in jobs[job_id].trigger.fields}
-            return f["hour"], f["minute"]
-
-        assert hhmm(DECISION_AND_ENTRY_CAPTURE_JOB_ID) == ("15", "55")  # V3 entry
-        assert hhmm(EXIT_CAPTURE_JOB_ID) == ("15", "55")                # V3 exit
-        assert hhmm(V4_SHADOW_DECISION_JOB_ID) == ("15", "30")          # V4 entry: moved
-        assert hhmm(V4_SHADOW_SETTLEMENT_JOB_ID) == ("15", "55")        # V4 exit: unmoved
+        decision = fields(V4_SHADOW_DECISION_JOB_ID)
+        settlement = fields(V4_SHADOW_SETTLEMENT_JOB_ID)
+        assert (decision["hour"], decision["minute"]) == ("15", "30")
+        assert (settlement["hour"], settlement["minute"]) == ("15", "30")
+        assert str(jobs[V4_SHADOW_DECISION_JOB_ID].trigger.timezone) == "America/New_York"
+        assert str(jobs[V4_SHADOW_SETTLEMENT_JOB_ID].trigger.timezone) == "America/New_York"
 
     def test_activation_is_never_a_code_default(self):
         """Activated in production on 2026-09-02 by an explicit environment
@@ -180,8 +153,10 @@ class TestShadowJobSafety:
 
         ids = {job.id for job in scheduler.get_jobs()}
         # V3 survives the V4 failure -- which is the whole point.
-        assert DECISION_AND_ENTRY_CAPTURE_JOB_ID in ids
-        assert EXIT_CAPTURE_JOB_ID in ids
+        assert CALENDAR_SYNC_JOB_ID in ids
+        assert EARNINGS_RESEARCH_PREPARATION_JOB_ID in ids
+        assert DECISION_AND_ENTRY_CAPTURE_JOB_ID not in ids  # V3 retired 2026-09-02
+        assert EXIT_CAPTURE_JOB_ID not in ids
         assert V4_SHADOW_DECISION_JOB_ID not in ids
 
     @pytest.mark.parametrize(

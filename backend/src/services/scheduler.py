@@ -35,7 +35,10 @@ from apscheduler.events import EVENT_JOB_ERROR, EVENT_JOB_EXECUTED, JobExecution
 from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
-from analytics.decision_timing_policy import V3_TIMING_POLICY, V4_TIMING_POLICY
+from analytics.decision_timing_policy import (
+    V3_TIMING_POLICY,
+    V4_ACTIVE_TIMING_POLICY,
+)
 from analytics.earnings_timing import compute_entry_exit_schedule
 from analytics.market_session import EASTERN
 from core.config import get_settings
@@ -69,7 +72,11 @@ from services.decision_pipeline import (
     run_decision_pipeline_for_event,
 )
 from services.earnings_calendar_sync import sync_earnings_calendar
-from services.earnings_research_preparation import EnqueueResult, enqueue_preparation_candidates
+from services.earnings_research_preparation import (
+    EnqueueResult,
+    enqueue_preparation_candidates,
+    enqueue_readiness_catchup,
+)
 from services.llm.factory import get_llm_provider
 from services.scheduler_run_tracking import (
     OUTCOME_DECISION_NO_ACTION,
@@ -154,8 +161,31 @@ _ENTRY_MINUTE_ET = V3_TIMING_POLICY.entry_minute
 # capture, the V3 exit capture, and the V4 settlement. Entry timing and
 # settlement timing are different policies (see analytics/
 # decision_timing_policy.py) and only the V4 decision job reads these.
-_V4_DECISION_HOUR_ET = V4_TIMING_POLICY.entry_hour
-_V4_DECISION_MINUTE_ET = V4_TIMING_POLICY.entry_minute
+_V4_DECISION_HOUR_ET = V4_ACTIVE_TIMING_POLICY.entry_hour
+_V4_DECISION_MINUTE_ET = V4_ACTIVE_TIMING_POLICY.entry_minute
+# V4-only reset (2026-09-02): the settlement observation moved to the active
+# policy's exit time (15:30 ET, first post-earnings trading day).
+_V4_SETTLEMENT_HOUR_ET = V4_ACTIVE_TIMING_POLICY.exit_time.hour
+_V4_SETTLEMENT_MINUTE_ET = V4_ACTIVE_TIMING_POLICY.exit_time.minute
+
+# Research readiness catch-up (V4-only reset, 2026-09-02). Evidence: the
+# nightly 01:00 UTC preparation cron did not fire on any night between
+# 2026-08-25 and 2026-09-01 -- the backend was down or restarting at that
+# minute every time, and APScheduler's default 1-second misfire grace
+# simply dropped the day's run (Operations kept saying "last run Aug 25").
+# Three defences, all idempotent enqueues (the worker does the real work):
+#   * a generous misfire grace on the nightly crons, so a run delayed by a
+#     restart still happens once the process is back;
+#   * a one-shot catch-up shortly after every startup;
+#   * a same-day readiness pass at 13:00 ET, well before the 15:30 window,
+#     that (re)queues any event in the next few days that is not V4-ready.
+RESEARCH_READINESS_CATCHUP_JOB_ID = "research_readiness_catchup"
+RESEARCH_PREPARATION_STARTUP_CATCHUP_JOB_ID = "research_preparation_startup_catchup"
+_READINESS_CATCHUP_HOUR_ET = 13
+_READINESS_CATCHUP_MINUTE_ET = 0
+_NIGHTLY_MISFIRE_GRACE_SECONDS = 6 * 3600
+_CATCHUP_MISFIRE_GRACE_SECONDS = 2 * 3600
+_STARTUP_CATCHUP_DELAY_SECONDS = 90
 
 # Pre-live hardening (2026-08-25): how far forward run_decision_and_
 # entry_capture_job's own SQL query looks for candidate events, before
@@ -739,6 +769,49 @@ def run_exit_capture_job() -> None:
         db.close()
 
 
+def run_research_readiness_catchup_job(*, now: datetime | None = None) -> list[EnqueueResult]:
+    """Same-day readiness pass (V4-only reset, 2026-09-02): (re)queues every
+    upcoming event in the next few days that is not yet V4-ready -- no
+    Company row, or no fresh AI thesis -- so the 15:30 ET decision window
+    is not met with RESEARCH_NOT_READY for companies nobody prepared.
+    Idempotent and cheap; also used as the one-shot startup catch-up."""
+    db = SessionLocal()
+    run = start_scheduler_run(db, RESEARCH_READINESS_CATCHUP_JOB_ID)
+    try:
+        settings = get_settings()
+        options_provider = build_options_provider_chain(settings, db=db)
+        results = enqueue_readiness_catchup(db, options_provider, now=now)
+        for result in results:
+            record_scheduler_run_event(
+                db,
+                run,
+                calendar_event_id=result.calendar_event_id,
+                symbol=result.symbol,
+                stage="readiness",
+                outcome=result.outcome,
+                reason=result.reason,
+            )
+        finish_scheduler_run(
+            db,
+            run,
+            status=RUN_STATUS_SUCCESS,
+            items_evaluated=len(results),
+            items_succeeded=sum(1 for r in results if r.outcome in ("queued", "already_ready")),
+            items_failed=0,
+        )
+        return results
+    except Exception as exc:  # noqa: BLE001 -- the job must record its own failure
+        log.error("research readiness catch-up failed", exc_info=True)
+        try:
+            db.rollback()
+        except Exception:  # noqa: BLE001
+            pass
+        finish_scheduler_run(db, run, status=RUN_STATUS_ERROR, error_summary=_error_summary(exc))
+        return []
+    finally:
+        db.close()
+
+
 def run_ibkr_gateway_healthcheck_job() -> None:
     """Phase 4.8A -- periodic, low-cost observation of the active IBKR
     provider's real health, independent of the two daily capture jobs.
@@ -867,6 +940,8 @@ def build_scheduler(
         minute=0,
         id=CALENDAR_SYNC_JOB_ID,
         replace_existing=True,
+        misfire_grace_time=_NIGHTLY_MISFIRE_GRACE_SECONDS,
+        coalesce=True,
     )
     scheduler.add_job(
         run_earnings_research_preparation_job,
@@ -875,24 +950,27 @@ def build_scheduler(
         minute=_RESEARCH_PREPARATION_MINUTE_UTC,
         id=EARNINGS_RESEARCH_PREPARATION_JOB_ID,
         replace_existing=True,
+        misfire_grace_time=_NIGHTLY_MISFIRE_GRACE_SECONDS,
+        coalesce=True,
     )
     scheduler.add_job(
-        run_decision_and_entry_capture_job,
+        run_research_readiness_catchup_job,
         trigger="cron",
-        hour=_ENTRY_HOUR_ET,
-        minute=_ENTRY_MINUTE_ET,
+        hour=_READINESS_CATCHUP_HOUR_ET,
+        minute=_READINESS_CATCHUP_MINUTE_ET,
         timezone="America/New_York",
-        id=DECISION_AND_ENTRY_CAPTURE_JOB_ID,
+        id=RESEARCH_READINESS_CATCHUP_JOB_ID,
         replace_existing=True,
+        misfire_grace_time=_CATCHUP_MISFIRE_GRACE_SECONDS,
+        coalesce=True,
     )
     scheduler.add_job(
-        run_exit_capture_job,
-        trigger="cron",
-        hour=_ENTRY_HOUR_ET,
-        minute=_ENTRY_MINUTE_ET,
-        timezone="America/New_York",
-        id=EXIT_CAPTURE_JOB_ID,
+        run_research_readiness_catchup_job,
+        trigger="date",
+        run_date=datetime.now(UTC) + timedelta(seconds=_STARTUP_CATCHUP_DELAY_SECONDS),
+        id=RESEARCH_PREPARATION_STARTUP_CATCHUP_JOB_ID,
         replace_existing=True,
+        misfire_grace_time=_CATCHUP_MISFIRE_GRACE_SECONDS,
     )
     scheduler.add_job(
         run_ibkr_gateway_healthcheck_job,
@@ -901,21 +979,6 @@ def build_scheduler(
         id=IBKR_GATEWAY_HEALTHCHECK_JOB_ID,
         replace_existing=True,
     )
-
-    # V4.5 (Sections 33/34/99) -- shadow jobs are registered ONLY when the
-    # activation flag is on. With it off (the default and the current
-    # production state) they do not exist in the job store at all, so
-    # there is nothing to fire accidentally and nothing for Operations to
-    # misreport as an active-but-failing job.
-    #
-    # Registered LAST, and inside its own try/except, for a real reason
-    # found by this project's own V4-isolation test: api/main.py wraps
-    # build_scheduler() in a try/except that disables the ENTIRE scheduler
-    # on failure. Without this guard, an exception while registering an
-    # EXPERIMENTAL V4 job would take every OFFICIAL V3 job down with it --
-    # exactly the "V4 must never block V3" rule inverted. Official jobs are
-    # already registered above by the time this runs, so a shadow failure
-    # here costs only the shadow cohort.
     try:
         if get_settings().v4_shadow_enabled:
             scheduler.add_job(
@@ -926,17 +989,19 @@ def build_scheduler(
                 timezone="America/New_York",
                 id=V4_SHADOW_DECISION_JOB_ID,
                 replace_existing=True,
+                misfire_grace_time=int(LATE_CUTOFF_GRACE.total_seconds()),
             )
             # Settlement stays at 15:55 ET on purpose -- the T+1 exit
             # benchmark is unchanged from V3. Only ENTRY timing moved.
             scheduler.add_job(
                 run_v4_shadow_settlement_job,
                 trigger="cron",
-                hour=_ENTRY_HOUR_ET,
-                minute=_ENTRY_MINUTE_ET,
+                hour=_V4_SETTLEMENT_HOUR_ET,
+                minute=_V4_SETTLEMENT_MINUTE_ET,
                 timezone="America/New_York",
                 id=V4_SHADOW_SETTLEMENT_JOB_ID,
                 replace_existing=True,
+                misfire_grace_time=int(LATE_CUTOFF_GRACE.total_seconds()),
             )
     except Exception:  # noqa: BLE001 -- V4 must never break V3's scheduler
         log.error(

@@ -117,6 +117,48 @@ def _latest_job_for_event(
     )
 
 
+def v4_research_ready(db: Session, symbol: str, *, now: datetime) -> tuple[bool, str]:
+    """The V4 decision gate's own readiness definition (V4-only reset,
+    2026-09-02): a Company row exists AND a fresh AI thesis is on record.
+    Shared with the catch-up pass so "ready" means the same thing at 13:00
+    ET as it does at 15:30 ET."""
+    from models.ai_thesis_version import AIThesisVersion  # noqa: PLC0415
+    from models.company import Company  # noqa: PLC0415
+    from services.research_orchestration import THESIS_FRESHNESS_DAYS  # noqa: PLC0415
+
+    company = db.query(Company).filter_by(ticker=symbol).one_or_none()
+    if company is None:
+        return False, "no Company row"
+    latest = (
+        db.query(AIThesisVersion)
+        .filter_by(company_id=company.id)
+        .order_by(AIThesisVersion.created_at.desc())
+        .first()
+    )
+    if latest is None:
+        return False, "no AI thesis"
+    if (now - latest.created_at).total_seconds() >= THESIS_FRESHNESS_DAYS * 86400:
+        return False, f"AI thesis is {(now - latest.created_at).days}d old"
+    return True, ""
+
+
+def enqueue_readiness_catchup(
+    db: Session,
+    options_provider: OptionsDataProvider | None,
+    *,
+    now: datetime | None = None,
+    lookahead_days: int = 3,
+) -> list[EnqueueResult]:
+    """Same-day / startup catch-up: the nightly enqueue for a shorter
+    horizon, with the V4 readiness rule applied to already-prepared
+    companies (a COMPLETED job without a fresh thesis is queued again --
+    the worker's data steps are freshness-gated, only the thesis is new
+    work)."""
+    return enqueue_preparation_candidates(
+        db, options_provider, now=now, lookahead_days=lookahead_days
+    )
+
+
 def enqueue_preparation_candidates(
     db: Session,
     options_provider: OptionsDataProvider | None,
@@ -156,12 +198,35 @@ def enqueue_preparation_candidates(
 
         existing = _latest_job_for_event(db, event.symbol, event.id)
         if existing is not None and existing.status in _NO_REENQUEUE_STATUSES:
-            reason = (
-                None
-                if existing.status in _READY_JOB_STATUSES
-                else f"already {existing.status.value}"
+            if existing.status in _READY_JOB_STATUSES:
+                # V4-only reset (2026-09-02): "prepared" is not "V4-ready".
+                # A completed job whose company still lacks a fresh AI
+                # thesis (e.g. prepared before the thesis step existed) is
+                # queued again so the decision window does not meet
+                # RESEARCH_NOT_READY for a company that was, on paper, done.
+                ready, why = v4_research_ready(db, event.symbol, now=now)
+                if not ready:
+                    job = ResearchPreparationJob(
+                        ticker=event.symbol,
+                        earnings_calendar_event_id=event.id,
+                        status=JobStatus.PENDING,
+                        steps=[],
+                        started_at=now,
+                        attempt_count=0,
+                    )
+                    db.add(job)
+                    db.commit()
+                    results.append(
+                        EnqueueResult(event.id, event.symbol, "queued", f"not V4-ready: {why}")
+                    )
+                    continue
+                results.append(EnqueueResult(event.id, event.symbol, "already_ready", None))
+                continue
+            results.append(
+                EnqueueResult(
+                    event.id, event.symbol, "already_ready", f"already {existing.status.value}"
+                )
             )
-            results.append(EnqueueResult(event.id, event.symbol, "already_ready", reason))
             continue
 
         job = ResearchPreparationJob(

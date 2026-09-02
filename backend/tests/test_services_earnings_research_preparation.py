@@ -52,6 +52,36 @@ def _event(db_session, *, symbol, market_cap="50000000000", country="US", earnin
     return event
 
 
+
+def _make_v4_ready(db, symbol, now):
+    """V4-only reset (2026-09-02): a completed preparation job counts as
+    'nothing more to do' only when the company is actually V4-ready --
+    a Company row with a fresh AI thesis."""
+    from models.ai_thesis_version import AIThesisVersion
+    from models.company import Company
+
+    company = db.query(Company).filter_by(ticker=symbol).one_or_none()
+    if company is None:
+        company = Company(ticker=symbol, name=f"{symbol} Inc")
+        db.add(company)
+        db.flush()
+    db.add(
+        AIThesisVersion(
+            company_id=company.id,
+            business_context="b",
+            historical_earnings_pattern="h",
+            guidance_trend="g",
+            key_risks="k",
+            market_setup="m",
+            disclaimer="d",
+            citations=[],
+            provider="deepseek",
+            model="deepseek-v4-flash",
+            created_at=now - timedelta(hours=1),
+        )
+    )
+    db.flush()
+
 class _FakeOptionsProvider:
     """A real options-chain check_eligibility can call cheaply -- always
     reports a tradable expiration, so eligibility here is governed
@@ -187,6 +217,7 @@ class TestEnqueue:
             attempt_count=0,
         )
         db_session.add(prior)
+        _make_v4_ready(db_session, "TESTEXIST", FAR_FUTURE_NOW)
         db_session.commit()
 
         results = enqueue_preparation_candidates(db_session, options_provider, now=FAR_FUTURE_NOW)
@@ -213,6 +244,7 @@ class TestEnqueue:
                 attempt_count=1,
             )
         )
+        _make_v4_ready(db_session, "TESTREADY", FAR_FUTURE_NOW)
         pending_event = _event(db_session, symbol="TESTPEND")
         db_session.add(
             ResearchPreparationJob(

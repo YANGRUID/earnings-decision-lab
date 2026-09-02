@@ -65,6 +65,10 @@ class PreparationStep(enum.StrEnum):
     FILING_EMBEDDINGS = "filing_embeddings"
     OPTIONS_CHAIN = "options_chain"
     EARNINGS_ANALYSIS = "earnings_analysis"
+    # V4-only reset (2026-09-02): the V4 decision gate needs a fresh AI
+    # thesis, so preparation generates one as its final step (optional --
+    # a research-data step never fails the job because the model was busy).
+    AI_THESIS = "ai_thesis"
 
 
 # Steps whose failure fails the whole preparation run -- without these, the

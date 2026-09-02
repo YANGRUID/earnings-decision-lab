@@ -9,6 +9,7 @@ const STEP_LABELS: Record<string, string> = {
   filing_embeddings: "Filing embeddings",
   options_chain: "Options chain",
   earnings_analysis: "Earnings analysis",
+  ai_thesis: "AI thesis",
 };
 
 const STATUS_ICON: Record<string, string> = {

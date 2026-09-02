@@ -122,8 +122,8 @@ class TestOperationsEvents:
 OFFICIAL_JOB_IDS = {
     "earnings_calendar_sync",
     "earnings_research_preparation",
-    "decision_and_entry_capture",
-    "exit_capture",
+    "research_readiness_catchup",
+    "research_preparation_startup_catchup",
     "ibkr_gateway_healthcheck",
 }
 SHADOW_JOB_IDS = {"v4_shadow_decision", "v4_shadow_settlement"}
@@ -132,7 +132,7 @@ SHADOW_JOB_IDS = {"v4_shadow_decision", "v4_shadow_settlement"}
 class TestOperationsJobs:
     def test_lists_the_five_official_jobs_plus_the_shadow_pair_only_when_enabled(self, client):
         """The monitor reports every job the live scheduler has registered:
-        the official five always, and the two V4 shadow jobs exactly when
+        the platform jobs always, and the two V4 shadow jobs exactly when
         V4_SHADOW_ENABLED is on (activated in production 2026-09-02)."""
         from core.config import get_settings
 

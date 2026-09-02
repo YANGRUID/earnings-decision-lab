@@ -47,12 +47,16 @@ def _expected_registered_ids() -> set[str]:
     environment has activated the cohort (production, 2026-09-02). The
     scheduler registers the pair only while V4_SHADOW_ENABLED is on."""
     from core.config import get_settings
+    from services.scheduler import (
+        RESEARCH_PREPARATION_STARTUP_CATCHUP_JOB_ID,
+        RESEARCH_READINESS_CATCHUP_JOB_ID,
+    )
 
     ids = {
         CALENDAR_SYNC_JOB_ID,
         EARNINGS_RESEARCH_PREPARATION_JOB_ID,
-        DECISION_AND_ENTRY_CAPTURE_JOB_ID,
-        EXIT_CAPTURE_JOB_ID,
+        RESEARCH_READINESS_CATCHUP_JOB_ID,
+        RESEARCH_PREPARATION_STARTUP_CATCHUP_JOB_ID,
         IBKR_GATEWAY_HEALTHCHECK_JOB_ID,
     }
     if get_settings().v4_shadow_enabled:
@@ -155,43 +159,6 @@ def test_calendar_sync_job_registered_correctly():
     assert str(field_by_name["minute"]) == "0"
 
 
-def test_decision_and_entry_capture_job_registered_correctly():
-    """Phase 4.4 sec 14: one daily cron job at the fixed 15:55 ET entry
-    time (analytics/earnings_timing.py's own ENTRY_EXIT_TIME), in
-    America/New_York -- not the scheduler's default UTC, and not a
-    continuously-polling job (every eligible event's entry_timestamp
-    resolves to this same wall-clock time, only the date varies)."""
-    scheduler = build_scheduler()
-
-    job = scheduler.get_job(DECISION_AND_ENTRY_CAPTURE_JOB_ID)
-    assert job is not None
-    assert job.func.__name__ == "run_decision_and_entry_capture_job"
-    assert job.args == ()  # not a job argument -- see the module's own note on pickling
-
-    field_by_name = {field.name: field for field in job.trigger.fields}
-    assert str(field_by_name["hour"]) == "15"
-    assert str(field_by_name["minute"]) == "55"
-    assert str(job.trigger.timezone) == "America/New_York"
-
-
-def test_exit_capture_job_registered_correctly():
-    """Phase 4.5 approved decision 5: its own job, at the same 15:55 ET
-    daily trigger the entry job uses (compute_entry_exit_schedule's
-    exit_timestamp shares ENTRY_EXIT_TIME with entry_timestamp -- only
-    the date differs per event)."""
-    scheduler = build_scheduler()
-
-    job = scheduler.get_job(EXIT_CAPTURE_JOB_ID)
-    assert job is not None
-    assert job.func.__name__ == "run_exit_capture_job"
-    assert job.args == ()
-
-    field_by_name = {field.name: field for field in job.trigger.fields}
-    assert str(field_by_name["hour"]) == "15"
-    assert str(field_by_name["minute"]) == "55"
-    assert str(job.trigger.timezone) == "America/New_York"
-
-
 def test_ibkr_gateway_healthcheck_job_registered_correctly():
     """Phase 4.8A: a real interval trigger (every IBKR_HEALTHCHECK_
     INTERVAL_MINUTES, all day) -- unlike the other three jobs, this one
@@ -229,8 +196,8 @@ def test_job_persists_across_app_restart_without_duplicating():
         assert len(jobs) == len(_expected_registered_ids())
         assert app2.state.scheduler.get_job(CALENDAR_SYNC_JOB_ID) is not None
         assert app2.state.scheduler.get_job(EARNINGS_RESEARCH_PREPARATION_JOB_ID) is not None
-        assert app2.state.scheduler.get_job(DECISION_AND_ENTRY_CAPTURE_JOB_ID) is not None
-        assert app2.state.scheduler.get_job(EXIT_CAPTURE_JOB_ID) is not None
+        assert app2.state.scheduler.get_job(DECISION_AND_ENTRY_CAPTURE_JOB_ID) is None  # V3 retired
+        assert app2.state.scheduler.get_job(EXIT_CAPTURE_JOB_ID) is None
         assert app2.state.scheduler.get_job(IBKR_GATEWAY_HEALTHCHECK_JOB_ID) is not None
 
 
@@ -242,8 +209,8 @@ def test_scheduler_starts_and_shuts_down_gracefully_with_the_app():
         assert app.state.scheduler is not None
         assert app.state.scheduler.running is True
         assert app.state.scheduler.get_job(CALENDAR_SYNC_JOB_ID) is not None
-        assert app.state.scheduler.get_job(DECISION_AND_ENTRY_CAPTURE_JOB_ID) is not None
-        assert app.state.scheduler.get_job(EXIT_CAPTURE_JOB_ID) is not None
+        assert app.state.scheduler.get_job(DECISION_AND_ENTRY_CAPTURE_JOB_ID) is None  # V3 retired
+        assert app.state.scheduler.get_job(EXIT_CAPTURE_JOB_ID) is None
         assert app.state.scheduler.get_job(IBKR_GATEWAY_HEALTHCHECK_JOB_ID) is not None
 
     assert app.state.scheduler.running is False
@@ -1179,7 +1146,7 @@ class TestGetSchedulerStatus:
             scheduler = app.state.scheduler
             event = JobExecutionEvent(
                 code=EVENT_JOB_ERROR,
-                job_id=EXIT_CAPTURE_JOB_ID,
+                job_id=CALENDAR_SYNC_JOB_ID,
                 jobstore="default",
                 scheduled_run_time=None,
                 exception=RuntimeError("boom"),
@@ -1187,8 +1154,8 @@ class TestGetSchedulerStatus:
             scheduler._dispatch_event(event)  # noqa: SLF001
 
             status = get_scheduler_status(scheduler)
-            exit_job = next(j for j in status.jobs if j.job_id == EXIT_CAPTURE_JOB_ID)
-            assert exit_job.last_run_status == "error"
+            sync_job = next(j for j in status.jobs if j.job_id == CALENDAR_SYNC_JOB_ID)
+            assert sync_job.last_run_status == "error"
 
 
 class TestMultiCompanyThroughput:

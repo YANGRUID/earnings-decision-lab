@@ -36,6 +36,7 @@ from models.scheduler_run import SchedulerRun, SchedulerRunEvent
 from models.settlement_capture_attempt import SettlementCaptureAttempt
 from services.decision_pipeline import LATE_CUTOFF_GRACE
 from services.operations import (
+    ALL_JOB_IDS,
     STATE_CALENDAR_DISCOVERED,
     STATE_ENTRY_FAILED,
     STATE_FILTERED_OUT,
@@ -929,7 +930,7 @@ class TestGetTodaysPipeline:
 
 
 class TestGetSchedulerJobs:
-    def test_returns_all_four_real_job_ids_even_with_no_history(self, db_session):
+    def test_returns_every_platform_job_id_even_with_no_history(self, db_session):
         from services.scheduler import SchedulerStatus
 
         # This shared dev Postgres instance may already have a real,
@@ -943,13 +944,7 @@ class TestGetSchedulerJobs:
         }
         views = get_scheduler_jobs(db_session, SchedulerStatus(running=True, jobs=[]))
         job_ids = {v.job_id for v in views}
-        assert job_ids == {
-            CALENDAR_SYNC_JOB_ID,
-            DECISION_AND_ENTRY_CAPTURE_JOB_ID,
-            "earnings_research_preparation",
-            "exit_capture",
-            "ibkr_gateway_healthcheck",
-        }
+        assert job_ids == set(ALL_JOB_IDS)
         assert all(
             v.last_run_at is None for v in views if v.job_id not in job_ids_with_real_history
         )
