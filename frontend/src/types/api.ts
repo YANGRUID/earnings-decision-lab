@@ -1600,6 +1600,36 @@ export interface V4ConfigResult {
   // rank #1 differs from the event-level observed candidate -- no separate
   // observation stream exists yet, and evidence is never borrowed.
   lifecycle?: V4Lifecycle;
+  // Per-configuration forward evidence (activation phase). Never borrowed
+  // from another configuration or from the event-level observation.
+  entry?: V4ConfigEntry | null;
+  settlement?: V4ConfigSettlement | null;
+}
+
+export interface V4ObservedLeg {
+  leg_index: number; action: string; right: string; strike: string;
+  external_contract_id: string | null; required_side: string; price: string | null;
+  bid: string | null; ask: string | null; market_data_quality: string | null;
+  implied_volatility?: string | null; retrieved_at?: string | null;
+}
+
+export interface V4ConfigEntry {
+  status: string; candidate_id: string; quantity: number; standardized_capital: string;
+  capital_used: string | null; max_risk_per_contract: string | null; max_risk_used: string | null;
+  entry_net_value: string | null; pricing_convention: string; observed_at: string;
+  market_data_quality: string | null; failure_category: string | null; failure_detail: string | null;
+  timing_policy_version: string | null; legs: V4ObservedLeg[] | null;
+  earliest_leg_observed_at: string | null; latest_leg_observed_at: string | null;
+  max_leg_timestamp_skew_seconds: string | null;
+}
+
+export interface V4ConfigSettlement {
+  status: string; candidate_id: string; quantity: number; standardized_capital: string;
+  capital_used: string | null; entry_net_value: string | null; exit_net_value: string | null;
+  realized_pnl: string | null; return_on_standardized_capital: string | null;
+  entry_observed_at: string | null; settled_at: string; pricing_convention: string;
+  market_data_quality: string | null; failure_category: string | null; failure_detail: string | null;
+  legs: V4ObservedLeg[] | null;
 }
 
 export type V4Lifecycle =
@@ -1682,10 +1712,17 @@ export interface V4ConfigTrackRecordRow {
   actionable: number;
   no_action: number;
   failed: number;
-  entry_observed: number | null;
-  entry_failed: number | null;
-  settled: number | null;
-  settlement_failed: number | null;
+  entry_observed: number;
+  entry_failed: number;
+  settled: number;
+  settlement_failed: number;
+  wins: number | null;
+  losses: number | null;
+  win_rate: number | null;
+  average_standardized_return: number | null;
+  median_standardized_return: number | null;
+  average_realized_pnl: number | null;
+  average_capital_used: number | null;
   sample_sufficiency: string;
 }
 
@@ -1730,6 +1767,8 @@ export interface SameEventComparisonV4Config {
   core_median_return: string | null;
   core_worst_return: string | null;
   stress_worst_return: string | null;
+  entry: { status: string; quantity: number; capital_used: string | null; entry_net_value: string | null; observed_at: string; market_data_quality: string | null } | null;
+  settlement: { status: string; realized_pnl: string | null; return_on_standardized_capital: string | null; settled_at: string } | null;
 }
 
 export interface SameEventComparisonV4 {

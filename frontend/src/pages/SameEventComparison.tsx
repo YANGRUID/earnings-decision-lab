@@ -93,7 +93,7 @@ export function SameEventComparison() {
                 <div className="stat"><span className="stat-label">T+1 result</span><span className="stat-value small mono">{v4.settlement ? pct(v4.settlement.return_on_standardized_capital) : "Waiting for post-earnings settlement observation"}</span></div>
               </div>
               <table style={{ marginTop: 10, fontVariantNumeric: "tabular-nums" }}>
-                <thead><tr><th>Configuration</th><th>Action</th><th>Strategy</th><th style={{ textAlign: "right" }}>Capital</th><th style={{ textAlign: "right" }}>Max risk</th><th style={{ textAlign: "right" }}>Core median</th><th style={{ textAlign: "right" }}>Core worst</th></tr></thead>
+                <thead><tr><th>Configuration</th><th>Action</th><th>Strategy</th><th style={{ textAlign: "right" }}>Capital</th><th style={{ textAlign: "right" }}>Max risk</th><th style={{ textAlign: "right" }}>Core median</th><th>Entry</th><th style={{ textAlign: "right" }}>T+1 P&L</th></tr></thead>
                 <tbody>
                   {v4.configurations.map((c) => {
                     const pill = statusPill(c.status);
@@ -105,7 +105,8 @@ export function SameEventComparison() {
                         <td className="mono" style={{ textAlign: "right" }}>{money(c.entry_cash_required)}</td>
                         <td className="mono" style={{ textAlign: "right" }}>{money(c.max_risk_dollars)}</td>
                         <td className="mono" style={{ textAlign: "right" }}>{pct(c.core_median_return)}</td>
-                        <td className="mono" style={{ textAlign: "right" }}>{pct(c.core_worst_return)}</td>
+                        <td>{c.entry ? <span className={statusPill(c.entry.status).className}>{c.entry.status === "OBSERVED" ? `${c.entry.quantity}× observed` : "Required quote unavailable"}</span> : <span className="text-faint">—</span>}</td>
+                        <td className="mono" style={{ textAlign: "right" }}>{c.settlement ? (c.settlement.status === "SETTLED" ? `${money(c.settlement.realized_pnl, 2)} (${pct(c.settlement.return_on_standardized_capital, 2)})` : "settlement failed") : <span className="text-faint">waiting</span>}</td>
                       </tr>
                     );
                   })}

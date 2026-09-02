@@ -555,13 +555,14 @@ function CandidateExplorer({ candidates, cfg, onHighlight }: {
 }
 
 // --- Forward outcome (Sections 23-26): entry observation / settlement --
-export function ForwardOutcomePanel({ cfg, entry, settlement, policy }: {
-  cfg: V4ConfigResult | null; entry: V4EntryObservation | null | undefined;
-  settlement: V4SettlementOutcome | null | undefined; policy?: string;
+export function ForwardOutcomePanel({ cfg, policy }: {
+  cfg: V4ConfigResult | null; entry?: V4EntryObservation | null; settlement?: V4SettlementOutcome | null; policy?: string;
 }) {
   if (!cfg) return null;
   const life = cfg.lifecycle ?? cfg.status;
-  const shares = !!entry && entry.candidate_id === cfg.rank_1_candidate_id;
+  const e = cfg.entry ?? null;
+  const st = cfg.settlement ?? null;
+  const legs = (e?.legs ?? st?.legs ?? null);
   return (
     <div className="card" data-testid="forward-outcome">
       <SectionHeader title="Forward outcome" eyebrow={cfg.label} right={<LifecyclePill lifecycle={life} />} />
@@ -570,38 +571,59 @@ export function ForwardOutcomePanel({ cfg, entry, settlement, policy }: {
       )}
       {life === "FAILED" && <p className="negative" style={{ margin: 0 }}>{cfg.no_action_reason}</p>}
       {life === "WAITING_ENTRY" && (
-        <p className="text-muted" style={{ margin: 0 }}>
-          {entry && !shares
-            ? "The event-level entry observation was taken for a different structure than this configuration's rank #1; no separate observation stream exists for it yet."
-            : "Waiting for the entry observation at the 15:30 ET decision window."}
-        </p>
+        <p className="text-muted" style={{ margin: 0 }}>Waiting for this configuration's own entry observation at the 15:30 ET decision window.</p>
       )}
-      {life === "ENTRY_FAILED" && entry && (
-        <FailureExplanation category={entry.failure_category} detail={entry.failure_detail} provider="ibkr_tws" quality={entry.market_data_quality} retryable={false} />
+      {life === "ENTRY_FAILED" && e && (
+        <FailureExplanation category={e.failure_category} detail={e.failure_detail} provider="ibkr_tws" quality={e.market_data_quality} retryable={false}
+          requiredSide={legs?.find((l) => l.price == null)?.required_side ?? null} />
       )}
-      {(life === "WAITING_SETTLEMENT" || life === "ENTRY_OBSERVED") && entry && (
+      {(life === "WAITING_SETTLEMENT" || life === "ENTRY_OBSERVED") && e && (
         <>
           <div className="grid grid-4" style={{ gap: 8 }}>
-            <Metric label="Entry observed" value={<Timestamp iso={entry.observed_at} />} />
-            <Metric label="Net executable value" value={money(entry.net_executable_value, 2)} mono />
-            <Metric label="Market data" value={<MarketDataQualityBadge quality={entry.market_data_quality} provider="ibkr_tws" />} />
-            <Metric label="Settlement" value="Waiting for post-earnings settlement observation" sub={policy} />
+            <Metric label="Position" value={`${e.quantity} × ${humanStrategy(cfg.rank_1?.strategy)}`} sub={<span className="mono">{e.candidate_id}</span>} />
+            <Metric label="Capital used" value={money(e.capital_used, 2)} mono sub={`max risk ${money(e.max_risk_used, 2)} of ${money(cfg.max_risk_dollars)}`} />
+            <Metric label="Entry value" value={money(e.entry_net_value, 2)} mono sub={<Timestamp iso={e.observed_at} />} />
+            <Metric label="Market data" value={<MarketDataQualityBadge quality={e.market_data_quality} provider="ibkr_tws" />} sub={e.pricing_convention.replace(/_/g, " ").toLowerCase()} />
           </div>
-          <p className="text-faint text-sm" style={{ margin: "8px 0 0" }}>No interim P&amp;L is shown before the settlement observation.</p>
+          <p className="text-faint text-sm" style={{ margin: "8px 0 0" }}>Waiting for post-earnings settlement observation ({policy ?? "T+1 at 15:55 ET"}). No interim P&amp;L is shown.</p>
         </>
       )}
-      {life === "SETTLED" && settlement && (
-        <div className="grid grid-4" style={{ gap: 8 }}>
-          <Metric label="Entry value" value={money(settlement.entry_net_value, 2)} mono />
-          <Metric label="Exit value" value={money(settlement.exit_net_value, 2)} mono sub={<Timestamp iso={settlement.settled_at} />} />
-          <Metric label="Realized P&L" value={<span className={Number(settlement.realized_pnl ?? 0) >= 0 ? "positive" : "negative"}>{money(settlement.realized_pnl, 2)}</span>} mono />
-          <Metric label="Standardized return" value={pct(settlement.return_on_standardized_capital, 2)} mono sub={<MarketDataQualityBadge quality={settlement.market_data_quality} provider="ibkr_tws" />} />
-        </div>
+      {life === "SETTLED" && st && (
+        <>
+          <div className="grid grid-4" style={{ gap: 8 }}>
+            <Metric label="Position" value={`${st.quantity} × ${humanStrategy(cfg.rank_1?.strategy)}`} sub={<span className="mono">{st.candidate_id}</span>} />
+            <Metric label="Entry → exit" value={`${money(st.entry_net_value, 2)} → ${money(st.exit_net_value, 2)}`} mono sub={<><Timestamp iso={st.entry_observed_at} /> → <Timestamp iso={st.settled_at} /></>} />
+            <Metric label="Realized P&L" value={<span className={Number(st.realized_pnl ?? 0) >= 0 ? "positive" : "negative"}>{money(st.realized_pnl, 2)}</span>} mono sub={`capital used ${money(st.capital_used, 2)}`} />
+            <Metric label="Standardized return" value={pct(st.return_on_standardized_capital, 2)} mono sub={<MarketDataQualityBadge quality={st.market_data_quality} provider="ibkr_tws" />} />
+          </div>
+          <p className="text-faint text-sm" style={{ margin: "8px 0 0" }}>{st.pricing_convention.replace(/_/g, " ").toLowerCase()} · One observation. No statistical significance is implied.</p>
+        </>
       )}
-      {life === "SETTLEMENT_FAILED" && settlement && (
-        <FailureExplanation category={settlement.failure_category} detail={settlement.failure_detail} provider="ibkr_tws" quality={settlement.market_data_quality} retryable={true} />
+      {life === "SETTLEMENT_FAILED" && st && (
+        <FailureExplanation category={st.failure_category} detail={st.failure_detail} provider="ibkr_tws" quality={st.market_data_quality} retryable={false} />
       )}
-      {life === "SETTLED" && <p className="text-faint text-sm" style={{ margin: "8px 0 0" }}>One observation. No statistical significance is implied.</p>}
+      {legs && legs.length > 0 && (
+        <details style={{ marginTop: 8 }}>
+          <summary className="text-muted text-sm">Observed legs — required sides and quotes</summary>
+          <table style={{ marginTop: 6, fontSize: ".8rem" }}>
+            <thead><tr><th>Leg</th><th>Side</th><th>conId</th><th style={{ textAlign: "right" }}>Required</th><th style={{ textAlign: "right" }}>Price</th><th style={{ textAlign: "right" }}>Bid</th><th style={{ textAlign: "right" }}>Ask</th><th>Quality</th></tr></thead>
+            <tbody>
+              {legs.map((l) => (
+                <tr key={l.leg_index}>
+                  <td className="mono">{l.action} {l.right[0]?.toUpperCase()} {fmtStrike(l.strike)}</td>
+                  <td className="mono">{l.required_side.toUpperCase()}</td>
+                  <td className="mono">{l.external_contract_id ?? "—"}</td>
+                  <td className="mono" style={{ textAlign: "right" }}>{l.required_side.toUpperCase()}</td>
+                  <td className="mono" style={{ textAlign: "right" }}>{money(l.price, 2)}</td>
+                  <td className="mono" style={{ textAlign: "right" }}>{money(l.bid, 2)}</td>
+                  <td className="mono" style={{ textAlign: "right" }}>{money(l.ask, 2)}</td>
+                  <td><span className={`pill ${(l.market_data_quality ?? "").toLowerCase() === "delayed" ? "pill-warning" : "pill-neutral"}`}>{(l.market_data_quality ?? "—").toUpperCase()}</span></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </details>
+      )}
     </div>
   );
 }

@@ -101,6 +101,8 @@ export function humanStatus(status: string | null | undefined): string {
 
 export function humanReasonCode(code: string): string {
   switch (code) {
+    case "SETTLEMENT_WINDOW_MISSED":
+      return "Settlement window missed: the legal T+1 exit window (15:55 ET, ±5 min) passed without an observation, so this position was closed unsettled rather than priced from a later quote";
     case "STRATEGY_FAMILY_NOT_ALLOWED":
       return "Strategy family not allowed for this risk profile";
     case "CAPITAL_INSUFFICIENT":

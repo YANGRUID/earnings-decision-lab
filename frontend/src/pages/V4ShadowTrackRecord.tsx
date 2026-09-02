@@ -20,7 +20,7 @@ export function V4ShadowTrackRecord() {
   const rows = record.data.configurations;
   const visible = selected === "all" ? rows : rows.filter((r) => r.configuration_key === selected);
   const totalEvents = rows.reduce((a, r) => Math.max(a, r.events), 0);
-  const settledAll = overall.data?.counts.settled ?? 0;
+  const settledAll = rows.reduce((a, r) => Math.max(a, r.settled), 0);
 
   return (
     <div>
@@ -72,8 +72,8 @@ export function V4ShadowTrackRecord() {
                     <td className="mono" style={{ textAlign: "right" }}>{r.actionable}</td>
                     <td className="mono" style={{ textAlign: "right" }}>{r.no_action}</td>
                     <td className="mono" style={{ textAlign: "right" }}>{r.failed}</td>
-                    <td className="mono text-faint" style={{ textAlign: "right" }} title="Per-configuration entry observation is not yet a separate evidence stream">{r.entry_observed ?? "n/a"}</td>
-                    <td className="mono text-faint" style={{ textAlign: "right" }} title="Per-configuration settlement is not yet a separate evidence stream">{r.settled ?? "n/a"}</td>
+                    <td className="mono" style={{ textAlign: "right" }}>{r.entry_observed}{r.entry_failed ? <span className="text-faint"> / {r.entry_failed} failed</span> : null}</td>
+                    <td className="mono" style={{ textAlign: "right" }}>{r.settled}{r.settlement_failed ? <span className="text-faint"> / {r.settlement_failed} failed</span> : null}</td>
                     <td><span className="pill pill-warning">{r.sample_sufficiency}</span></td>
                   </tr>
                 ))}

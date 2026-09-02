@@ -29,6 +29,30 @@ const cand = (id: string, strategy: string, cash: string) => ({
   core_worst_return: "-0.30", core_median_return: "0.05", core_positive_scenario_fraction: "0.57", stress_worst_return: "-0.40",
   mean_relative_spread: "0.05", entry_cash_required: cash, market_data_quality: "delayed", rank_explanation: "better downside band",
 });
+const entryFor = (lifecycle: string, cap: string) => {
+  if (["NO_ACTION", "WAITING_ENTRY", "FAILED"].includes(lifecycle)) return null;
+  const qty = cap === "10000" ? 3 : 1;
+  const failed = lifecycle === "ENTRY_FAILED";
+  return {
+    status: failed ? "NOT_EXECUTABLE" : "OBSERVED", candidate_id: "spread", quantity: qty, standardized_capital: cap,
+    capital_used: String(180 * qty), max_risk_per_contract: "200", max_risk_used: String(200 * qty),
+    entry_net_value: failed ? null : String(-180 * qty), pricing_convention: "BUY_AT_ASK_SELL_AT_BID", observed_at: NOW,
+    market_data_quality: "delayed", failure_category: failed ? "REQUIRED_SIDE_QUOTE_MISSING" : null,
+    failure_detail: failed ? "Required ask quote unavailable on leg 0" : null, timing_policy_version: "v4-pre-earnings-1530et-v1",
+    legs: [{ leg_index: 0, action: "buy", right: "call", strike: "100", external_contract_id: "91284950", required_side: "ask", price: failed ? null : "3.20", bid: "3.00", ask: failed ? null : "3.20", market_data_quality: "delayed" }],
+    earliest_leg_observed_at: NOW, latest_leg_observed_at: NOW, max_leg_timestamp_skew_seconds: "0",
+  };
+};
+const settlementFor = (lifecycle: string, cap: string) => {
+  if (lifecycle !== "SETTLED") return null;
+  const qty = cap === "10000" ? 3 : 1;
+  return {
+    status: "SETTLED", candidate_id: "spread", quantity: qty, standardized_capital: cap, capital_used: String(180 * qty),
+    entry_net_value: String(-180 * qty), exit_net_value: String(-140 * qty), realized_pnl: String(40 * qty),
+    return_on_standardized_capital: String((40 * qty) / Number(cap)), entry_observed_at: NOW, settled_at: "2026-09-11T19:55:00+00:00",
+    pricing_convention: "CLOSE_LONG_AT_BID_CLOSE_SHORT_AT_ASK", market_data_quality: "delayed", failure_category: null, failure_detail: null, legs: null,
+  };
+};
 const cfg = (key: string, cap: string, risk: string, maxRisk: string, status: string, rank1: string | null, lifecycle: string) => ({
   configuration_key: key, label: `$${Number(cap).toLocaleString()} ${risk[0].toUpperCase()}${risk.slice(1)}`, capital_base: cap, risk_profile: risk,
   configuration_version: "v4-forward-configurations-v1", max_risk_dollars: maxRisk, max_risk_utilization_pct: "30",
@@ -36,6 +60,7 @@ const cfg = (key: string, cap: string, risk: string, maxRisk: string, status: st
   rank_1_candidate_id: rank1, eligible_candidate_count: rank1 ? 1 : 0, excluded_candidate_count: rank1 ? 0 : 2, exclusions: [],
   ranked_candidate_ids: rank1 ? [rank1] : [], ranking_version: "v4-4b-t1-executable-ranking-v1",
   rank_1: rank1 ? cand(rank1, "bull_call_spread", "180") : null, lifecycle,
+  entry: entryFor(lifecycle, cap), settlement: settlementFor(lifecycle, cap),
 });
 function configurations(state: "waiting" | "entry_failed" | "settlement_pending" | "settled" | "no_action") {
   const life = state === "waiting" ? "WAITING_ENTRY" : state === "entry_failed" ? "ENTRY_FAILED" : state === "settlement_pending" ? "WAITING_SETTLEMENT" : state === "settled" ? "SETTLED" : "NO_ACTION";
@@ -132,7 +157,7 @@ test.describe("Company workspace (V4-first)", () => {
 
 test.describe("Forward outcome states", () => {
   for (const [state, expectText, kind] of [
-    ["waiting", "Waiting for the entry observation", "warning"],
+    ["waiting", "own entry observation", "warning"],
     ["entry_failed", "Required ask quote unavailable", "failure"],
     ["settlement_pending", "Waiting for post-earnings settlement observation", "warning"],
     ["settled", "Standardized return", "settled"],
