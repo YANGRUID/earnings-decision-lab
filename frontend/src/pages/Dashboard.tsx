@@ -29,9 +29,13 @@ function nextEarningsLabel(overview: ResearchOverview): string {
   return `${date} (${source})`;
 }
 
-async function fetchResearchedOverviews(): Promise<ResearchOverview[]> {
-  const companies = await api.listCompanies();
-  return Promise.all(companies.map((c) => api.getResearchOverview(c.ticker)));
+// SPA navigation fix (V4-only reset, 2026-09-02): ONE bulk, abortable
+// request. The previous fan-out (one /research/{ticker}/overview per
+// researched company) held the browser's per-origin connection budget
+// after the user had navigated away, which is what stalled the next page.
+async function fetchResearchedOverviews(signal: AbortSignal): Promise<ResearchOverview[]> {
+  const response = await api.listResearchOverviews({ signal });
+  return response.overviews;
 }
 
 export function Dashboard() {
@@ -42,7 +46,7 @@ export function Dashboard() {
   // /search?ticker=SYMBOL) -- never auto-submits, so the user still
   // confirms before a real preparation job is queued.
   const [query, setQuery] = useState(() => searchParams.get("ticker") ?? "");
-  const overviews = useAsync(fetchResearchedOverviews, []);
+  const overviews = useAsync((signal) => fetchResearchedOverviews(signal), []);
 
   const submit = (e: React.FormEvent) => {
     e.preventDefault();
