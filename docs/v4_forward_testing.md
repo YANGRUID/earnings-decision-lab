@@ -39,6 +39,16 @@ Historical V3 rows keep the 15:55 ET they were observed at; none are relabelled.
 All six evaluate the **same** frozen evidence. Each may independently produce RANKED or
 NO_ACTION; no rule is relaxed to make all six trade. NO_ACTION is evidence.
 
+### Aggressive profile — current reality (methodology question, not resolved here)
+
+Moderate and Aggressive currently share the **same strategy-family universe**: the only family
+restriction in `risk_profile.py` is Conservative's exclusion of single-leg long calls/puts, and
+no uncovered-short family exists for Aggressive to additionally permit. Aggressive therefore
+differs from Moderate only through a **higher risk cap (50% vs 30%)** and **no liquidity
+floor (vs 0.40)**. Naked short strategies were deliberately *not* opened merely to manufacture
+differentiation. Whether Aggressive should have its own family universe is an open methodology
+question for a future, explicitly versioned change.
+
 ## Sample-size honesty
 
 Below **30 settled observations** a cohort shows `INSUFFICIENT SAMPLE` and no win rate, average or
