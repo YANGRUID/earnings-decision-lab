@@ -146,7 +146,7 @@ export function Pager<T>({ controls, testId }: { controls: ListControls<T>; test
         </div>
       )}
       {controls.pageSize !== "all" && controls.pageCount > 1 && (
-        <button type="button" className="text-link text-sm" onClick={() => controls.setPageSize("all")}>
+        <button type="button" className="btn-secondary btn-small pager-show-all" onClick={() => controls.setPageSize("all")}>
           Show all {controls.filtered}
         </button>
       )}

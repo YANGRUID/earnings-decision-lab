@@ -1121,6 +1121,15 @@ label {
   padding: 5px 10px;
   font-size: 12px;
 }
+/* "Show all N" sits with the pager controls and shares their quiet bordered
+   look on both themes -- never a browser-default button or a bare link. */
+.pager-show-all {
+  color: var(--color-text-muted);
+}
+.pager-show-all:hover {
+  color: var(--color-accent);
+  border-color: var(--color-accent);
+}
 .page-outline {
   position: sticky;
   top: 0;
