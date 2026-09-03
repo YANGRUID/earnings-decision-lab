@@ -49,6 +49,14 @@ jobs:
       - name: Set up Python
         run: uv python install 3.12
 
+      # `ibapi` is a local-path dependency on the OFFICIAL IBKR TWS API client,
+      # fetched and SHA256-verified at build time (never committed, never PyPI --
+      # see backend/vendor/ibapi_official/PROVENANCE.md). The Dockerfile does the
+      # same; without it `uv sync` cannot resolve the project.
+      - name: Fetch the official IBKR TWS API client
+        working-directory: backend
+        run: python3 scripts/fetch_ibapi_official.py
+
       - name: Install backend dependencies
         working-directory: backend
         run: uv sync --all-groups

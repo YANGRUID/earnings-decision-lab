@@ -12,8 +12,8 @@ replaces them, and a stale row would otherwise fire alongside it. The two
 ids live on as the coordinator's recorded phases in ``scheduler_run``.
 """
 
-from alembic import op
 import sqlalchemy as sa
+from alembic import op
 
 revision = "b7d9f1a3c5e7"
 down_revision = "f4b6d8e0c2a3"
@@ -68,12 +68,20 @@ def upgrade() -> None:
     op.create_index(
         "ix_v4_forward_window_telemetry_symbol", "v4_forward_window_telemetry", ["symbol"]
     )
-    op.execute(
-        "DELETE FROM apscheduler_jobs WHERE id IN ('v4_shadow_decision', 'v4_shadow_settlement')"
-    )
+    _delete_retired_jobs(("v4_shadow_decision", "v4_shadow_settlement"))
 
 
 def downgrade() -> None:
     op.drop_table("v4_forward_window_telemetry")
     # The retired registrations are not recreated: the scheduler re-registers
     # whatever the running code declares on its next start.
+
+
+def _delete_retired_jobs(job_ids: tuple[str, ...]) -> None:
+    """apscheduler_jobs is created by APScheduler at first start, not by Alembic:
+    on a fresh database (CI, a new deployment) there is nothing to retire."""
+    bind = op.get_bind()
+    if "apscheduler_jobs" not in sa.inspect(bind).get_table_names():
+        return
+    placeholders = ", ".join(f"'{job_id}'" for job_id in job_ids)
+    op.execute(f"DELETE FROM apscheduler_jobs WHERE id IN ({placeholders})")
