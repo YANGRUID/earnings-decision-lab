@@ -86,11 +86,39 @@ a {
 }
 
 .sidebar-brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
   padding: 0 20px 16px;
   font-weight: 700;
   font-size: 15px;
   border-bottom: 1px solid var(--color-border);
   margin-bottom: 12px;
+}
+/* Brand mark (docs/brand/BRAND.md): the navy-tile variant on the light theme,
+   the white-background variant on the dark theme. Swap the files to rebrand. */
+.sidebar-brand-mark {
+  flex: 0 0 auto;
+  width: 36px;
+  height: 36px;
+  border-radius: 8px;
+}
+.sidebar-brand-mark--dark {
+  display: none;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .sidebar-brand-mark--light {
+    display: none;
+  }
+  :root:not([data-theme="light"]) .sidebar-brand-mark--dark {
+    display: block;
+  }
+}
+:root[data-theme="dark"] .sidebar-brand-mark--light {
+  display: none;
+}
+:root[data-theme="dark"] .sidebar-brand-mark--dark {
+  display: block;
 }
 .sidebar-brand small {
   display: block;
@@ -241,6 +269,16 @@ tr:hover td {
   border-radius: 999px;
   font-size: 11px;
   font-weight: 600;
+  white-space: nowrap;
+}
+/* Metric sub-lines never spill into the neighbouring metric: long identifiers
+   are clipped with an ellipsis and carried in full by the tooltip. */
+.stat-sub {
+  display: block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .pill-positive {
   background: var(--color-positive-bg);

@@ -603,18 +603,18 @@ export function ForwardOutcomePanel({ cfg, policy }: {
       {(life === "WAITING_SETTLEMENT" || life === "ENTRY_OBSERVED") && e && (
         <>
           <div className="grid grid-4" style={{ gap: 8 }}>
-            <Metric label="Position" value={`${e.quantity} × ${humanStrategy(cfg.rank_1?.strategy)}`} sub={<span className="mono">{e.candidate_id}</span>} />
+            <Metric label="Position" value={`${e.quantity} × ${humanStrategy(cfg.rank_1?.strategy)}`} sub={<span className="mono" title={e.candidate_id}>{e.candidate_id}</span>} />
             <Metric label="Capital used" value={money(e.capital_used, 2)} mono sub={`max risk ${money(e.max_risk_used, 2)} of ${money(cfg.max_risk_dollars)}`} />
             <Metric label="Entry value" value={money(e.entry_net_value, 2)} mono sub={<Timestamp iso={e.observed_at} />} />
             <Metric label="Market data" value={<MarketDataQualityBadge quality={e.market_data_quality} provider="ibkr_tws" />} sub={e.pricing_convention.replace(/_/g, " ").toLowerCase()} />
           </div>
-          <p className="text-faint text-sm" style={{ margin: "8px 0 0" }}>Waiting for post-earnings settlement observation ({policy ?? "T+1 at 15:55 ET"}). No interim P&amp;L is shown.</p>
+          <p className="text-faint text-sm" style={{ margin: "8px 0 0" }}>Waiting for post-earnings settlement observation ({policy ?? "T+1 at 15:30 ET on the first post-earnings trading day"}). No interim P&amp;L is shown.</p>
         </>
       )}
       {life === "SETTLED" && st && (
         <>
           <div className="grid grid-4" style={{ gap: 8 }}>
-            <Metric label="Position" value={`${st.quantity} × ${humanStrategy(cfg.rank_1?.strategy)}`} sub={<span className="mono">{st.candidate_id}</span>} />
+            <Metric label="Position" value={`${st.quantity} × ${humanStrategy(cfg.rank_1?.strategy)}`} sub={<span className="mono" title={st.candidate_id}>{st.candidate_id}</span>} />
             <Metric label="Entry → exit" value={`${money(st.entry_net_value, 2)} → ${money(st.exit_net_value, 2)}`} mono sub={<><Timestamp iso={st.entry_observed_at} /> → <Timestamp iso={st.settled_at} /></>} />
             <Metric label="Realized P&L" value={<span className={Number(st.realized_pnl ?? 0) >= 0 ? "positive" : "negative"}>{money(st.realized_pnl, 2)}</span>} mono sub={`capital used ${money(st.capital_used, 2)}`} />
             <Metric label="Standardized return" value={pct(st.return_on_standardized_capital, 2)} mono sub={<MarketDataQualityBadge quality={st.market_data_quality} provider="ibkr_tws" />} />

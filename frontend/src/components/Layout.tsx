@@ -62,8 +62,13 @@ export function Layout() {
     <div className="app-shell">
       <aside className="sidebar">
         <div className="sidebar-brand">
-          Earnings Decision Lab
-          <small>Research &amp; analytics</small>
+          {/* Light theme: the navy-tile mark; dark theme: the white-background mark (docs/brand/BRAND.md). */}
+          <img className="sidebar-brand-mark sidebar-brand-mark--light" src="/brand/EDL-logo-dark.svg" alt="" width="36" height="36" />
+          <img className="sidebar-brand-mark sidebar-brand-mark--dark" src="/brand/EDL-logo-light.svg" alt="" width="36" height="36" />
+          <div>
+            Earnings Decision Lab
+            <small>V4 forward engine</small>
+          </div>
         </div>
         {NAV_SECTIONS.map((section) => (
           <div key={section.heading ?? "home"}>

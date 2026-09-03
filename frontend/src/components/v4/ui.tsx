@@ -10,20 +10,22 @@ export function StatusPill({ status, title }: { status: string | null | undefine
   return <span className={p.className} title={title ?? status ?? undefined}>{p.label}</span>;
 }
 
+// Pills stay on one line: a short label carries the state, the tooltip carries
+// the full explanation (the long labels used to wrap into a tall blob in tables).
 export function LifecyclePill({ lifecycle }: { lifecycle: string | null | undefined }) {
-  const map: Record<string, { cls: string; label: string }> = {
-    RANKED: { cls: "pill pill-positive", label: "Recommended" },
-    NO_ACTION: { cls: "pill pill-neutral", label: "No action" },
-    FAILED: { cls: "pill pill-negative", label: "Failed" },
-    WAITING_ENTRY: { cls: "pill pill-warning", label: "Waiting for entry observation" },
-    ENTRY_OBSERVED: { cls: "pill pill-positive", label: "Entry observed" },
-    ENTRY_FAILED: { cls: "pill pill-negative", label: "Entry observation failed" },
-    WAITING_SETTLEMENT: { cls: "pill pill-warning", label: "Waiting for post-earnings settlement" },
-    SETTLED: { cls: "pill pill-positive", label: "Settled" },
-    SETTLEMENT_FAILED: { cls: "pill pill-negative", label: "Settlement observation error" },
+  const map: Record<string, { cls: string; label: string; title: string }> = {
+    RANKED: { cls: "pill pill-positive", label: "Recommended", title: "Ranked #1 for this configuration" },
+    NO_ACTION: { cls: "pill pill-neutral", label: "No action", title: "No candidate was eligible for this configuration" },
+    FAILED: { cls: "pill pill-negative", label: "Failed", title: "The evaluation failed; see the failure detail" },
+    WAITING_ENTRY: { cls: "pill pill-warning", label: "Awaiting entry", title: "Waiting for the entry observation at the 15:30 ET window" },
+    ENTRY_OBSERVED: { cls: "pill pill-positive", label: "Entry observed", title: "An executable entry was observed at the required sides" },
+    ENTRY_FAILED: { cls: "pill pill-negative", label: "Entry failed", title: "The entry observation failed; no position was recorded" },
+    WAITING_SETTLEMENT: { cls: "pill pill-warning", label: "Awaiting settlement", title: "Waiting for the post-earnings settlement observation (T+1 at 15:30 ET)" },
+    SETTLED: { cls: "pill pill-positive", label: "Settled", title: "Settled at the post-earnings T+1 window" },
+    SETTLEMENT_FAILED: { cls: "pill pill-negative", label: "Settlement failed", title: "The settlement observation failed or missed its window" },
   };
-  const v = (lifecycle && map[lifecycle]) || { cls: "pill pill-neutral", label: humanStatus(lifecycle) };
-  return <span className={v.cls} data-lifecycle={lifecycle ?? ""}>{v.label}</span>;
+  const v = (lifecycle && map[lifecycle]) || { cls: "pill pill-neutral", label: humanStatus(lifecycle), title: lifecycle ?? "" };
+  return <span className={v.cls} data-lifecycle={lifecycle ?? ""} title={v.title}>{v.label}</span>;
 }
 
 export function Metric({ label, value, sub, mono = false, testId }: {
@@ -33,7 +35,7 @@ export function Metric({ label, value, sub, mono = false, testId }: {
     <div className="stat" data-testid={testId}>
       <span className="stat-label">{label}</span>
       <span className={`stat-value small${mono ? " mono" : ""}`}>{value ?? "—"}</span>
-      {sub ? <span className="text-faint text-sm">{sub}</span> : null}
+      {sub ? <span className="text-faint text-sm stat-sub" title={typeof sub === "string" ? sub : undefined}>{sub}</span> : null}
     </div>
   );
 }

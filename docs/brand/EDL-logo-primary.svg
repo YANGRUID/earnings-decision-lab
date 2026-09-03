@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024" aria-hidden="true" focusable="false">
+  <path id="gold-facet" d="M145 765 L596 530 L702 566 L860 791 C676 718 423 682 145 765 Z" fill="#CDB086"/>
+  <path id="ascending-peak" d="M132 769 C246 660 379 385 509 218 C561 312 614 405 660 482 C635 474 611 445 589 450 C438 560 285 667 132 769 Z" fill="#0A1118"/>
+  <path id="market-arc" d="M132 769 C315 621 568 659 889 801 C634 744 340 683 132 769 Z" fill="#0A1118"/>
+</svg>
