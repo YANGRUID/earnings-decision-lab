@@ -159,7 +159,7 @@ async function mockOperations(
   } = {},
 ) {
   await page.route("**/operations/summary", (route: Route) =>
-    route.fulfill({ json: { health, today: today(), readiness: readiness(), preflight, market_clock: marketClock(), staleness } }),
+    route.fulfill({ json: { health, today: today(), readiness: readiness(), preflight, market_clock: marketClock(), staleness, forward_window: { window_time_et: "15:30", priority: ["Due settlements", "New decision observations"], next_window_at: "2026-09-03T19:30:00Z", settlements_due: ["AVGO"], decisions_ready: ["CPRT", "DOCU", "GWRE", "IOT", "ZS"], decisions_not_ready: [], last_window_started_at: "2026-09-02T19:30:01Z", last_settlements_due: 0, last_settlements_settled: 0, last_settlements_failed: 0, last_settlements_window_missed: 0, last_settlement_lock_wait_ms_max: null, last_settlement_total_ms_max: null, last_decisions_ready: 1, last_deadline_skipped: 0, last_decision_lock_wait_ms: 0 } } }),
   );
   await page.route("**/operations/events", (route: Route) => route.fulfill({ json: { events } }));
   await page.route("**/operations/jobs", (route: Route) => route.fulfill({ json: { jobs } }));
@@ -272,13 +272,14 @@ const HEALTHCHECK_JOB = {
   last_error: null,
 };
 
-const V4_DECISION_JOB = { ...HEALTHCHECK_JOB, job_id: "v4_shadow_decision", last_run_at: null, last_run_status: null, duration_ms: null, next_run_time: "2026-09-03T19:30:00Z" };
-const V4_SETTLEMENT_JOB = { ...V4_DECISION_JOB, job_id: "v4_shadow_settlement" };
+const V4_WINDOW_JOB = { ...HEALTHCHECK_JOB, job_id: "v4_forward_window", last_run_at: null, last_run_status: null, duration_ms: null, next_run_time: "2026-09-03T19:30:00Z" };
+const V4_DECISION_JOB = { ...V4_WINDOW_JOB, job_id: "v4_shadow_decision" };
+const V4_SETTLEMENT_JOB = { ...V4_WINDOW_JOB, job_id: "v4_shadow_settlement" };
 const PREP_JOB = { ...HEALTHCHECK_JOB, job_id: "earnings_research_preparation", last_run_at: "2026-09-03T01:00:04Z", next_run_time: "2026-09-04T01:00:00Z" };
 
 test.describe("Live Operations (V4-only)", () => {
   test("renders a healthy V4 system with READY preflight, today's window and readiness KPIs", async ({ page }) => {
-    await mockOperations(page, { jobs: [HEALTHCHECK_JOB, V4_DECISION_JOB, V4_SETTLEMENT_JOB, PREP_JOB] });
+    await mockOperations(page, { jobs: [HEALTHCHECK_JOB, V4_WINDOW_JOB, V4_DECISION_JOB, V4_SETTLEMENT_JOB, PREP_JOB] });
     await page.goto("/operations");
     await expect(page.getByRole("heading", { name: "Live Operations" })).toBeVisible();
     await expect(page.getByText("READY FOR TODAY'S FORWARD TEST")).toBeVisible();
@@ -289,6 +290,12 @@ test.describe("Live Operations (V4-only)", () => {
     await expect(page.getByTestId("ops-readiness")).toContainText("1 / 2");
     await expect(page.getByTestId("operations-v4")).toContainText("v4-1530-entry-1530-t1-settlement-v2");
     await expect(page.getByTestId("operations-v4")).toContainText("no brokerage orders");
+    // The 15:30 forward window states its execution order and previews real symbols.
+    const fw = page.getByTestId("ops-forward-window");
+    await expect(fw).toContainText("V4 Forward Window — 15:30 ET");
+    await expect(fw).toContainText("1. Due settlements · 2. New decision observations");
+    await expect(fw).toContainText("AVGO");
+    await expect(fw).toContainText("CPRT, DOCU, GWRE, IOT, ZS");
     // Nothing from the retired control engine survives.
     await expect(page.locator("body")).not.toContainText("V3");
     await expect(page.locator("body")).not.toContainText("Legacy");
@@ -325,7 +332,7 @@ test.describe("Live Operations (V4-only)", () => {
       ],
     });
     await page.goto("/operations");
-    await expect(page.getByText(/CRITICAL: MISSED RUN — V4 Decision \(15:30 ET\)/)).toBeVisible();
+    await expect(page.getByText(/CRITICAL: MISSED RUN — V4 Decision phase \(15:30 ET\)/)).toBeVisible();
     await expect(page.getByText(/WARNING: STALE — Research Preparation \(nightly\)/)).toBeVisible();
     const jobs = page.getByTestId("ops-jobs");
     await expect(jobs.getByText("MISSED RUN")).toBeVisible();
@@ -351,13 +358,14 @@ test.describe("Live Operations (V4-only)", () => {
   });
 
   test("scheduler job rows show V4 labels, real status and next run — and no retired V3 job", async ({ page }) => {
-    await mockOperations(page, { jobs: [HEALTHCHECK_JOB, V4_DECISION_JOB, V4_SETTLEMENT_JOB, PREP_JOB] });
+    await mockOperations(page, { jobs: [HEALTHCHECK_JOB, V4_WINDOW_JOB, V4_DECISION_JOB, V4_SETTLEMENT_JOB, PREP_JOB] });
     await page.goto("/operations");
     const jobsCard = page.getByTestId("ops-jobs");
     await expect(jobsCard.getByText("IBKR Provider Healthcheck")).toBeVisible();
     await expect(jobsCard.getByText("READY").first()).toBeVisible();
-    await expect(jobsCard.getByText("V4 Decision (15:30 ET)")).toBeVisible();
-    await expect(jobsCard.getByText("V4 Settlement (15:30 ET, T+1)")).toBeVisible();
+    await expect(jobsCard.getByText("V4 Forward Window (15:30 ET: settlements, then decisions)")).toBeVisible();
+    await expect(jobsCard.getByText("V4 Decision phase (15:30 ET)")).toBeVisible();
+    await expect(jobsCard.getByText("V4 Settlement phase (15:30 ET, T+1)")).toBeVisible();
     await expect(jobsCard.getByText("NO RUNS YET").first()).toBeVisible();
     await expect(jobsCard.getByText("Decision + Entry Capture")).toHaveCount(0);
     await expect(jobsCard.getByText("Exit Capture")).toHaveCount(0);

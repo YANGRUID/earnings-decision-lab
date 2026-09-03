@@ -32,7 +32,7 @@ PLATFORM_JOB_IDS = {
     "research_preparation_startup_catchup",
     "ibkr_gateway_healthcheck",
 }
-SHADOW_JOB_IDS = {"v4_shadow_decision", "v4_shadow_settlement"}
+SHADOW_JOB_IDS = {"v4_forward_window", "v4_shadow_decision", "v4_shadow_settlement"}
 
 
 class TestOperationsSummary:
@@ -47,6 +47,7 @@ class TestOperationsSummary:
             "preflight",
             "market_clock",
             "staleness",
+            "forward_window",
         }
         assert body["today"]["decision_window_et"] == "15:30"
         assert body["today"]["settlement_window_et"] == "15:30"
@@ -79,7 +80,7 @@ class TestOperationsEvents:
 
 
 class TestOperationsJobs:
-    def test_lists_platform_jobs_plus_the_v4_pair_when_enabled(self, client):
+    def test_lists_platform_jobs_plus_the_forward_window_and_its_phases_when_enabled(self, client):
         response = client.get("/api/v1/operations/jobs")
         assert response.status_code == 200
         job_ids = {j["job_id"] for j in response.json()["jobs"]}

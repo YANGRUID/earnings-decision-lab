@@ -32,6 +32,7 @@ from services.operations import (
     STATE_WAITING_DECISION,
     STATE_WAITING_SETTLEMENT,
     classify_event,
+    compute_forward_window,
     compute_research_readiness,
     compute_today_summary,
     detect_missed_job_alerts,
@@ -412,3 +413,66 @@ class TestJobsFailuresAndStaleness:
 @pytest.mark.parametrize("state", [STATE_WAITING_DECISION, STATE_SETTLED])
 def test_state_vocabulary_is_v4_only(state):
     assert "V3" not in state and "OFFICIAL" not in state
+
+
+class TestForwardWindow:
+    """The 15:30 ET forward window read model (settlement-priority hardening)."""
+
+    def test_previews_due_settlements_and_ready_decisions_for_the_next_window(self, db_session):
+        from models.v4_shadow import V4ForwardWindowTelemetry
+
+        # Job-level tests elsewhere commit real telemetry rows; this read model
+        # must be judged on this test's own rows only.
+        db_session.query(V4ForwardWindowTelemetry).delete()
+        # A decision-ready event for today's window and one that is not ready.
+        _event(db_session, "CPRT")
+        _company(db_session, "CPRT", thesis_age=timedelta(days=1))
+        _event(db_session, "SNOW")
+        pipeline = get_v4_pipeline(db_session, now=NOW)
+        fw = compute_forward_window(db_session, pipeline, now=NOW)
+        assert fw.window_time_et == "15:30"
+        assert fw.priority == ("Due settlements", "New decision observations")
+        assert fw.next_window_at is not None
+        assert fw.next_window_at.astimezone(ET).strftime("%H:%M") == "15:30"
+        assert fw.decisions_ready == ("CPRT",)
+        assert "SNOW" in fw.decisions_not_ready
+        assert fw.settlements_due == ()
+        assert fw.last_window_started_at is None and fw.last_settlements_due == 0
+
+    def test_last_window_telemetry_is_summarised_from_persisted_rows(self, db_session):
+        from models.v4_shadow import V4ForwardWindowTelemetry
+
+        db_session.query(V4ForwardWindowTelemetry).delete()
+        started = datetime(2026, 9, 8, 15, 30, 1, tzinfo=ET)
+        rows = [
+            V4ForwardWindowTelemetry(
+                phase="settlement",
+                symbol="AVGO",
+                shadow_decision_id=None,
+                job_started_at=started,
+                completed_at=started + timedelta(seconds=9),
+                lock_wait_ms=1200,
+                total_ms=9000,
+                outcome="completed",
+                detail="settled=1 failed=0 window_missed=0 not_due=0",
+            ),
+            V4ForwardWindowTelemetry(
+                phase="decision",
+                shadow_decision_id=None,
+                job_started_at=started,
+                completed_at=started + timedelta(seconds=400),
+                lock_wait_ms=350,
+                total_ms=400_000,
+                outcome="completed",
+                detail="ranked=4 no_action=1 failed=0 research_not_ready=0 deadline_skipped=1",
+            ),
+        ]
+        db_session.add_all(rows)
+        db_session.flush()
+        # A settlement attempt row needs a real decision; use the summary rows only
+        # for the phase-level figures, which is what Operations reports.
+        fw = compute_forward_window(db_session, [], now=NOW)
+        assert fw.last_window_started_at == started
+        assert fw.last_decisions_ready == 6 and fw.last_deadline_skipped == 1
+        assert fw.last_decision_lock_wait_ms == 350
+        assert fw.next_window_at is None and fw.settlements_due == ()

@@ -29,6 +29,7 @@ const summary = {
   preflight: { checks: [], ready: true, blockers: [] },
   market_clock: { utc_now: NOW, new_york_now: "2026-09-03T11:45:00-04:00", zurich_now: "2026-09-03T17:45:00+02:00", market_session: "regular", next_automatic_action_job_id: null, next_automatic_action_at: null, settlement_window_tolerance_minutes: 5 },
   staleness: [],
+  forward_window: { window_time_et: "15:30", priority: ["Due settlements", "New decision observations"], next_window_at: "2026-09-03T19:30:00Z", settlements_due: ["AVGO"], decisions_ready: ["CPRT", "DOCU", "GWRE", "IOT", "ZS"], decisions_not_ready: [], last_window_started_at: "2026-09-02T19:30:01Z", last_settlements_due: 0, last_settlements_settled: 0, last_settlements_failed: 0, last_settlements_window_missed: 0, last_settlement_lock_wait_ms_max: null, last_settlement_total_ms_max: null, last_decisions_ready: 1, last_deadline_skipped: 0, last_decision_lock_wait_ms: 0 },
 };
 
 const companies = Array.from({ length: 24 }, (_, i) => ({ id: i + 1, ticker: `T${String(i + 1).padStart(3, "0")}`, name: `Company ${i + 1}`, cik: null, sector: null, exchange: "NASDAQ", created_at: NOW, updated_at: NOW }));

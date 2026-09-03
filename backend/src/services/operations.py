@@ -53,6 +53,7 @@ from models.research_preparation_job import (
 )
 from models.scheduler_run import SchedulerRun
 from models.v4_shadow import (
+    V4ForwardWindowTelemetry,
     V4ShadowConfigEntry,
     V4ShadowConfigSettlement,
     V4ShadowDecision,
@@ -74,7 +75,11 @@ from services.scheduler import (
     SchedulerStatus,
 )
 from services.system_status import IbkrStatus, get_ibkr_status, get_tws_status
-from services.v4_shadow_scheduler import V4_SHADOW_DECISION_JOB_ID, V4_SHADOW_SETTLEMENT_JOB_ID
+from services.v4_shadow_scheduler import (
+    V4_FORWARD_WINDOW_JOB_ID,
+    V4_SHADOW_DECISION_JOB_ID,
+    V4_SHADOW_SETTLEMENT_JOB_ID,
+)
 
 log = logging.getLogger("services.operations")
 
@@ -978,9 +983,14 @@ ALL_JOB_IDS = (
     EARNINGS_RESEARCH_PREPARATION_JOB_ID,
     RESEARCH_READINESS_CATCHUP_JOB_ID,
     IBKR_GATEWAY_HEALTHCHECK_JOB_ID,
+    V4_FORWARD_WINDOW_JOB_ID,
     V4_SHADOW_DECISION_JOB_ID,
     V4_SHADOW_SETTLEMENT_JOB_ID,
 )
+
+#: Phases of the forward-window coordinator: they record their own runs but
+#: are never registered separately, so their schedule is the coordinator's.
+FORWARD_WINDOW_PHASE_JOB_IDS = (V4_SHADOW_SETTLEMENT_JOB_ID, V4_SHADOW_DECISION_JOB_ID)
 
 
 @dataclass(frozen=True)
@@ -1008,6 +1018,9 @@ def get_scheduler_jobs(db: Session, scheduler_status: SchedulerStatus) -> list[S
     views: list[SchedulerJobView] = []
     for job_id in job_ids:
         status = status_by_job_id.get(job_id)
+        if status is None and job_id in FORWARD_WINDOW_PHASE_JOB_IDS:
+            # A phase is scheduled exactly when its coordinator is.
+            status = status_by_job_id.get(V4_FORWARD_WINDOW_JOB_ID)
         latest_run = _latest_scheduler_run(db, job_id)
         views.append(
             SchedulerJobView(
@@ -1568,3 +1581,132 @@ def get_market_clock(
         next_automatic_action_job_id=next_job_id,
         next_automatic_action_at=next_at,
     )
+
+
+# ---------------------------------------------------------------------------
+# The 15:30 ET forward window (settlement-priority hardening, v4.0.0)
+# ---------------------------------------------------------------------------
+
+FORWARD_WINDOW_PRIORITY = ("Due settlements", "New decision observations")
+
+
+@dataclass(frozen=True)
+class ForwardWindowStatus:
+    """What the next 15:30 ET window will do, in execution order, and how the
+    last one went -- from the pipeline read model and the persisted
+    forward-window telemetry, never estimated."""
+
+    window_time_et: str
+    priority: tuple[str, ...]
+    next_window_at: datetime | None
+    settlements_due: tuple[str, ...]
+    decisions_ready: tuple[str, ...]
+    decisions_not_ready: tuple[str, ...]
+    last_window_started_at: datetime | None
+    last_settlements_due: int
+    last_settlements_settled: int
+    last_settlements_failed: int
+    last_settlements_window_missed: int
+    last_settlement_lock_wait_ms_max: int | None
+    last_settlement_total_ms_max: int | None
+    last_decisions_ready: int
+    last_deadline_skipped: int
+    last_decision_lock_wait_ms: int | None
+
+
+def compute_forward_window(
+    db: Session, pipeline: list[V4PipelineEvent], *, now: datetime | None = None
+) -> ForwardWindowStatus:
+    now = now or datetime.now(UTC)
+    candidates = [
+        (p.exit_timestamp, p)
+        for p in pipeline
+        if p.lifecycle_state == STATE_WAITING_SETTLEMENT and p.exit_timestamp >= now
+    ] + [
+        (p.entry_timestamp, p)
+        for p in pipeline
+        if p.lifecycle_state
+        in (
+            STATE_WAITING_DECISION,
+            STATE_RESEARCH_QUEUED,
+            STATE_RESEARCH_RUNNING,
+            STATE_RESEARCH_READY,
+            STATE_CALENDAR_DISCOVERED,
+        )
+        and p.entry_timestamp >= now - LATE_CUTOFF_GRACE
+    ]
+    next_at = min((t for t, _ in candidates), default=None)
+    window_date = next_at.astimezone(EASTERN).date() if next_at else None
+    settlements = tuple(
+        sorted(
+            p.symbol
+            for t, p in candidates
+            if p.lifecycle_state == STATE_WAITING_SETTLEMENT
+            and t.astimezone(EASTERN).date() == window_date
+        )
+    )
+    decision_rows = [
+        p
+        for t, p in candidates
+        if p.lifecycle_state != STATE_WAITING_SETTLEMENT
+        and t.astimezone(EASTERN).date() == window_date
+    ]
+    ready = tuple(sorted(p.symbol for p in decision_rows if p.research_ready))
+    not_ready = tuple(sorted(p.symbol for p in decision_rows if not p.research_ready))
+
+    latest_phase = (
+        db.query(V4ForwardWindowTelemetry)
+        .filter(V4ForwardWindowTelemetry.shadow_decision_id.is_(None))
+        .order_by(V4ForwardWindowTelemetry.job_started_at.desc().nullslast())
+        .first()
+    )
+    last_started = latest_phase.job_started_at if latest_phase else None
+    rows: list[V4ForwardWindowTelemetry] = []
+    if last_started is not None:
+        rows = (
+            db.query(V4ForwardWindowTelemetry)
+            .filter(V4ForwardWindowTelemetry.job_started_at == last_started)
+            .all()
+        )
+    settle_rows = [r for r in rows if r.phase == "settlement" and r.shadow_decision_id is not None]
+    decision_phase = next(
+        (r for r in rows if r.phase == "decision" and r.shadow_decision_id is None), None
+    )
+    decision_outcome = _parse_outcome(decision_phase.detail if decision_phase else "")
+    return ForwardWindowStatus(
+        window_time_et=V4_ACTIVE_TIMING_POLICY.entry_time.strftime("%H:%M"),
+        priority=FORWARD_WINDOW_PRIORITY,
+        next_window_at=next_at,
+        settlements_due=settlements,
+        decisions_ready=ready,
+        decisions_not_ready=not_ready,
+        last_window_started_at=last_started,
+        last_settlements_due=len(settle_rows),
+        last_settlements_settled=sum(1 for r in settle_rows if r.outcome == "settled"),
+        last_settlements_failed=sum(
+            1 for r in settle_rows if r.outcome in ("failed", "partially_failed", "error")
+        ),
+        last_settlements_window_missed=sum(1 for r in settle_rows if r.outcome == "window_missed"),
+        last_settlement_lock_wait_ms_max=max(
+            (r.lock_wait_ms for r in settle_rows if r.lock_wait_ms is not None), default=None
+        ),
+        last_settlement_total_ms_max=max(
+            (r.total_ms for r in settle_rows if r.total_ms is not None), default=None
+        ),
+        last_decisions_ready=decision_outcome.get("ranked", 0)
+        + decision_outcome.get("no_action", 0)
+        + decision_outcome.get("failed", 0)
+        + decision_outcome.get("deadline_skipped", 0),
+        last_deadline_skipped=decision_outcome.get("deadline_skipped", 0),
+        last_decision_lock_wait_ms=decision_phase.lock_wait_ms if decision_phase else None,
+    )
+
+
+def _parse_outcome(text: str | None) -> dict[str, int]:
+    out: dict[str, int] = {}
+    for token in (text or "").split():
+        if "=" in token:
+            key, _, value = token.partition("=")
+            if value.isdigit():
+                out[key] = int(value)
+    return out

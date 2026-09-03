@@ -8,6 +8,7 @@ from fastapi import APIRouter
 from api.deps import DbSession, Scheduler, TwsHealthProbeDep, TwsProviderDep
 from core.config import get_settings
 from schemas.api import (
+    ForwardWindowResponse,
     MarketClockResponse,
     OperationsEventsResponse,
     OperationsFailuresResponse,
@@ -20,6 +21,7 @@ from schemas.api import (
     V4TodaySummaryResponse,
 )
 from services.operations import (
+    compute_forward_window,
     compute_research_readiness,
     compute_today_summary,
     detect_missed_job_alerts,
@@ -59,6 +61,7 @@ def get_operations_summary(
         preflight=PreflightReadinessResponse.model_validate(preflight),
         market_clock=MarketClockResponse.model_validate(get_market_clock(scheduler_status)),
         staleness=staleness,  # type: ignore[arg-type]
+        forward_window=ForwardWindowResponse.model_validate(compute_forward_window(db, pipeline)),
     )
 
 

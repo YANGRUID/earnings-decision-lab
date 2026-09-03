@@ -1091,6 +1091,27 @@ export interface JobStaleness {
   detail: string;
 }
 
+// The 15:30 ET forward window (settlement-priority hardening, v4.0.0): what
+// the next window will do, in execution order, and how the last one went.
+export interface ForwardWindow {
+  window_time_et: string;
+  priority: string[];
+  next_window_at: string | null;
+  settlements_due: string[];
+  decisions_ready: string[];
+  decisions_not_ready: string[];
+  last_window_started_at: string | null;
+  last_settlements_due: number;
+  last_settlements_settled: number;
+  last_settlements_failed: number;
+  last_settlements_window_missed: number;
+  last_settlement_lock_wait_ms_max: number | null;
+  last_settlement_total_ms_max: number | null;
+  last_decisions_ready: number;
+  last_deadline_skipped: number;
+  last_decision_lock_wait_ms: number | null;
+}
+
 export interface OperationsSummary {
   health: SystemHealth;
   today: V4TodaySummary;
@@ -1098,6 +1119,7 @@ export interface OperationsSummary {
   preflight: PreflightReadiness;
   market_clock: MarketClock;
   staleness: JobStaleness[];
+  forward_window?: ForwardWindow | null;
 }
 
 export interface OperationsEvents {

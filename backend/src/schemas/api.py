@@ -42,16 +42,6 @@ class PriceReactionResponse(BaseModel):
     five_day_move_pct: Decimal | None
 
 
-
-
-
-
-
-
-
-
-
-
 class EarningsCalendarEventResponse(BaseModel):
     """Phase 4.2 -- one row from the forward-looking, Finnhub-sourced
     earnings_calendar_event table. Deliberately a distinct schema from
@@ -163,10 +153,6 @@ class ImpliedVsRealizedMoveResponse(BaseModel):
     near_term_expiration: date | None
     implied_move_pct: Decimal | None
     realized_next_day_move_pct: Decimal
-
-
-
-
 
 
 class EarningsEventDetail(EarningsEventSummary):
@@ -561,10 +547,6 @@ class SystemStatusResponse(BaseModel):
     providers: ProviderDashboardResponse
 
 
-
-
-
-
 class PreparationStepResponse(BaseModel):
     step: str
     status: str
@@ -659,7 +641,6 @@ class ResearchOverviewResponse(BaseModel):
     options_market: OptionsMarketStateResponse
 
 
-
 class ResearchOverviewListResponse(BaseModel):
     """Every researched company's overview in ONE response (Company Search).
     Built strictly from persisted state -- no provider call, no recompute --
@@ -667,6 +648,7 @@ class ResearchOverviewListResponse(BaseModel):
     2026-09-02: that fan-out was the SPA navigation stall)."""
 
     overviews: list[ResearchOverviewResponse]
+
 
 class OptionQuoteResponse(BaseModel):
     expiration_date: date
@@ -727,14 +709,6 @@ class EstimatedProbabilityResponse(BaseModel):
     wilson_upper: Decimal | None
 
 
-
-
-
-
-
-
-
-
 class ScenarioPnlResponse(BaseModel):
     down_price: Decimal
     down_pnl: Decimal
@@ -758,8 +732,6 @@ class RankedStrategyResponse(BaseModel):
     explanation: str
     scenario: ScenarioPnlResponse | None
     move_compatibility: MoveCompatibilityResponse | None
-
-
 
 
 class EarningsThesisResponse(BaseModel):
@@ -836,14 +808,6 @@ class DecisionGenerateRequest(BaseModel):
     expiration: date | None = None
 
 
-
-
-
-
-
-
-
-
 class RateResponse(BaseModel):
     correct: int
     total: int
@@ -857,8 +821,6 @@ class ConfidenceBucketResponse(BaseModel):
     rate: RateResponse
 
 
-
-
 class StandardizedCohortSummaryResponse(BaseModel):
     n: int
     wins: int
@@ -868,12 +830,6 @@ class StandardizedCohortSummaryResponse(BaseModel):
     total_realized_pnl: Decimal
     portfolio_drawdown_available: bool
     portfolio_drawdown_reason: str
-
-
-
-
-
-
 
 
 class ProviderSettingsUpdateRequest(BaseModel):
@@ -1019,10 +975,6 @@ class V4T1ScenarioValuationResponse(BaseModel):
     engine_version: str
 
 
-
-
-
-
 class AdminRunResearchPreparationResponse(BaseModel):
     """Pre-live hardening (2026-08-25) -- POST /admin/run-research-
     preparation. This endpoint only ENQUEUES durable ResearchPreparation
@@ -1119,14 +1071,6 @@ class DatabaseHealthResponse(BaseModel):
     migration_head: str | None
 
 
-
-
-
-
-
-
-
-
 class SchedulerJobViewResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -1142,26 +1086,8 @@ class SchedulerJobViewResponse(BaseModel):
     last_error: str | None
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 class OperationsJobsResponse(BaseModel):
     jobs: list[SchedulerJobViewResponse]
-
-
 
 
 class PreparationProgressResponse(BaseModel):
@@ -1188,14 +1114,6 @@ class PreparationProgressResponse(BaseModel):
     attempt: int | None
     heartbeat_seconds_ago: float | None
     elapsed_seconds: float | None
-
-
-
-
-
-
-
-
 
 
 class EntryLegRowResponse(BaseModel):
@@ -1433,6 +1351,27 @@ class MarketClockResponse(BaseModel):
     settlement_window_tolerance_minutes: int = 5
 
 
+class ForwardWindowResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    window_time_et: str
+    priority: list[str]
+    next_window_at: datetime | None
+    settlements_due: list[str]
+    decisions_ready: list[str]
+    decisions_not_ready: list[str]
+    last_window_started_at: datetime | None
+    last_settlements_due: int
+    last_settlements_settled: int
+    last_settlements_failed: int
+    last_settlements_window_missed: int
+    last_settlement_lock_wait_ms_max: int | None
+    last_settlement_total_ms_max: int | None
+    last_decisions_ready: int
+    last_deadline_skipped: int
+    last_decision_lock_wait_ms: int | None
+
+
 class OperationsSummaryResponse(BaseModel):
     """GET /operations/summary -- health, today's V4 summary, research
     readiness, pre-flight and the clock in one aggregated response."""
@@ -1443,6 +1382,7 @@ class OperationsSummaryResponse(BaseModel):
     preflight: PreflightReadinessResponse
     market_clock: MarketClockResponse
     staleness: list[JobStalenessResponse] = []
+    forward_window: ForwardWindowResponse | None = None
 
 
 class OperationsEventsResponse(BaseModel):

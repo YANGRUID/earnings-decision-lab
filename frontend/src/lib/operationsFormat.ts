@@ -8,8 +8,9 @@ export const JOB_LABELS: Record<string, string> = {
   research_readiness_catchup: "Research Readiness Catch-up (13:00 ET)",
   research_preparation_startup_catchup: "Research Preparation Startup Catch-up",
   ibkr_gateway_healthcheck: "IBKR Provider Healthcheck",
-  v4_shadow_decision: "V4 Decision (15:30 ET)",
-  v4_shadow_settlement: "V4 Settlement (15:30 ET, T+1)",
+  v4_forward_window: "V4 Forward Window (15:30 ET: settlements, then decisions)",
+  v4_shadow_decision: "V4 Decision phase (15:30 ET)",
+  v4_shadow_settlement: "V4 Settlement phase (15:30 ET, T+1)",
 };
 
 // Human labels for the backend's V4 pipeline states (services/operations.py).
@@ -54,3 +55,26 @@ export function countdown(targetIso: string | null, nowIso: string): string {
   if (days > 0) return `${days}d ${hours}h ${minutes}m`;
   return `${hours}h ${minutes}m`;
 }
+
+/** A timestamp rendered in Eastern time, the clock every V4 window is defined in. */
+export function formatEt(iso: string | null): string {
+  if (!iso) return "—";
+  return `${new Date(iso).toLocaleString("en-US", {
+    timeZone: "America/New_York",
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  })} ET`;
+}
+
+/** Human labels for failure-centre stage codes (the raw code stays in the table). */
+export const STAGE_LABELS: Record<string, string> = {
+  research_gate: "research not ready at the decision window",
+  deadline_guard: "deadline reached before evaluation",
+  settlement: "settlement observation",
+  research_preparation: "research preparation",
+  view: "DecisionView generation",
+  candidates: "candidate assembly",
+};

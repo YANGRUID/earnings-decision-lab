@@ -7,10 +7,11 @@ import { ListToolbar, PageOutline, Pager } from "../components/ListControls";
 import { useListControls } from "../hooks/useListControls";
 import { invalidateStatus } from "../lib/statusCache";
 import { providerLabel } from "../lib/format";
-import { JOB_LABELS, countdown, formatDateTime, stateLabel } from "../lib/operationsFormat";
+import { JOB_LABELS, STAGE_LABELS, countdown, formatDateTime, formatEt, stateLabel } from "../lib/operationsFormat";
 import type {
   AiProviderHealth,
   FailureEntry,
+  ForwardWindow,
   HealthState,
   JobStaleness,
   MarketClock,
@@ -32,6 +33,7 @@ const POLL_INTERVAL_MS = 30_000;
 
 const OPS_SECTIONS = [
   { id: "ops-system", label: "System" },
+  { id: "ops-window", label: "15:30 window" },
   { id: "ops-today", label: "Today" },
   { id: "ops-readiness", label: "Readiness" },
   { id: "ops-pipeline", label: "V4 pipeline" },
@@ -117,7 +119,7 @@ function CriticalAlertBanner({ health, staleness, failures, now }: { health: Sys
   }
   const windowMissed = failures.filter((f) => f.retryability === "WINDOW_MISSED");
   if (windowMissed.length > 0) {
-    const ids = windowMissed.map((f) => f.symbol ?? f.stage);
+    const ids = windowMissed.map((f) => f.symbol ?? STAGE_LABELS[f.stage] ?? f.stage);
     alerts.push({ level: "critical", text: `${windowMissed.length} window missed: ${ids.slice(0, 5).join(", ")}${ids.length > 5 ? `, and ${ids.length - 5} more` : ""}` });
   }
   if (health.ibkr.state === "red") alerts.push({ level: "critical", text: `IBKR market data unavailable${health.ibkr.last_error ? ` — ${health.ibkr.last_error}` : ""}.` });
@@ -526,6 +528,32 @@ function AttentionSection({ failures }: { failures: FailureEntry[] }) {
   );
 }
 
+function ForwardWindowCard({ fw, now }: { fw: ForwardWindow; now: string }) {
+  const ms = (v: number | null) => (v === null ? "—" : v < 1000 ? `${v} ms` : `${(v / 1000).toFixed(1)} s`);
+  return (
+    <div className="card" id="ops-window" data-testid="ops-forward-window">
+      <h2>V4 Forward Window — {fw.window_time_et} ET</h2>
+      <p className="text-sm text-muted" style={{ marginTop: 0 }}>
+        Execution priority: {fw.priority.map((p, i) => `${i + 1}. ${p}`).join(" · ")}. Due exits are
+        settled before any new decision observation starts; the market-data lock covers only quote
+        acquisition, never the DecisionView.
+      </p>
+      <div className="grid grid-4">
+        <Stat label="Next window" value={fw.next_window_at ? formatEt(fw.next_window_at) : "—"} sub={fw.next_window_at ? `${countdown(fw.next_window_at, now)} · ${formatDateTime(fw.next_window_at)} local` : "no window scheduled"} />
+        <Stat label="Settlements due" value={fw.settlements_due.length} sub={fw.settlements_due.length ? fw.settlements_due.join(", ") : "none due"} mono={false} />
+        <Stat label="New decisions ready" value={fw.decisions_ready.length} sub={fw.decisions_ready.length ? fw.decisions_ready.join(", ") : "none ready"} mono={false} />
+        <Stat label="Not research-ready" value={fw.decisions_not_ready.length} sub={fw.decisions_not_ready.length ? fw.decisions_not_ready.join(", ") : "—"} mono={false} />
+      </div>
+      <div className="grid grid-4" style={{ marginTop: 8 }} data-testid="ops-forward-window-last">
+        <Stat label="Last window" value={fw.last_window_started_at ? formatEt(fw.last_window_started_at) : "no window recorded yet"} sub={fw.last_window_started_at ? `${fw.last_settlements_due} settlement(s) due` : undefined} />
+        <Stat label="Settlements captured" value={`${fw.last_settlements_settled} / ${fw.last_settlements_due}`} sub={`${fw.last_settlements_failed} failed · ${fw.last_settlements_window_missed} window missed`} />
+        <Stat label="Settlement lock wait" value={ms(fw.last_settlement_lock_wait_ms_max)} sub={`longest settlement ${ms(fw.last_settlement_total_ms_max)}`} />
+        <Stat label="Decisions" value={fw.last_decisions_ready} sub={`${fw.last_deadline_skipped} deadline skipped · lock wait ${ms(fw.last_decision_lock_wait_ms)}`} />
+      </div>
+    </div>
+  );
+}
+
 function V4EngineCard({ v4, ai, jobs }: { v4: V4ForwardHealth | null; ai: AiProviderHealth; jobs: SchedulerJobView[] }) {
   const decision = jobs.find((j) => j.job_id === "v4_shadow_decision") ?? null;
   const settlement = jobs.find((j) => j.job_id === "v4_shadow_settlement") ?? null;
@@ -608,6 +636,7 @@ export function Operations() {
 
       <MarketClockRow clock={s.market_clock} />
       <SystemHealthSection health={s.health} />
+      {s.forward_window && <ForwardWindowCard fw={s.forward_window} now={now} />}
       <TodayCard today={s.today} v4={s.health.v4_shadow} />
       <ReadinessCard readiness={s.readiness} />
 
