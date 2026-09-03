@@ -161,7 +161,7 @@ def create_app() -> FastAPI:
         description=(
             "AI-assisted earnings intelligence, options analytics, and historical event research."
         ),
-        version="4.0.1",
+        version="4.0.2",
         lifespan=lifespan,
     )
 

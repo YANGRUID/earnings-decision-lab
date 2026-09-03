@@ -2,6 +2,18 @@
 
 All notable changes to Earnings Decision Lab. Dates are the real commit dates.
 
+## v4.0.2 — 2026-09-03 — Earnings estimates from the calendar first
+
+- **Earnings estimates: EarningsAPI calendar first, Alpha Vantage only as a fallback.** The
+  research preparation step used Alpha Vantage's EARNINGS_CALENDAR for every company; its free
+  tier allows 25 requests a day and, once exhausted, returns a JSON notice that the CSV parser
+  turned into a letter-by-letter "row" — Lululemon's preparation completed with that warning
+  although the calendar already carried its date and EPS / revenue consensus. The next report
+  date and consensus now come from the earnings calendar (`date_source = EARNINGS_CALENDAR`,
+  `source_provider = earningsapi`); Alpha Vantage is consulted only when the calendar has no
+  upcoming report. Migration `c9e1b3d5f7a9` adds the enum value; existing rows keep their
+  provenance. The Data Providers page shows the new order.
+
 ## v4.0.1 — 2026-09-03 — Post-release fixes
 
 - **Earnings calendar day table.** Clicking a ticker, a day number or the "+N more" overflow on
