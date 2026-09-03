@@ -8,7 +8,7 @@ import { EarningsCalendarGrid } from "../components/EarningsCalendarGrid";
 import { DashboardV4Header } from "../components/v4/DashboardV4Header";
 import { TickerSearchBar } from "../components/TickerSearchBar";
 import { fmtMarketCap } from "../components/v4/shared";
-import { countdown, formatDateTime, stateLabel } from "../lib/operationsFormat";
+import { countdown, formatEt, stateLabel } from "../lib/operationsFormat";
 import type { PipelineEvent } from "../types/api";
 
 // Dashboard -- V4-only reset (2026-09-02). The header reads today's window,
@@ -80,8 +80,8 @@ function UpcomingPipelineSection() {
                   <td>{e.company_name}</td>
                   <td className="mono">{fmtMarketCap(e.market_cap)}</td>
                   <td className="mono">{e.earnings_date} {TIMING_SHORT[e.earnings_timing] ?? e.earnings_timing}</td>
-                  <td className="mono text-sm">{formatDateTime(e.entry_timestamp)}</td>
-                  <td className="mono text-sm">{formatDateTime(e.exit_timestamp)}</td>
+                  <td className="mono text-sm">{formatEt(e.entry_timestamp)}</td>
+                  <td className="mono text-sm">{formatEt(e.exit_timestamp)}</td>
                   <td>
                     <span className={`pill pill-${pillFor(e.lifecycle_state)}`}>{stateLabel(e.lifecycle_state)}</span>
                     {e.shadow_decision_id && (
