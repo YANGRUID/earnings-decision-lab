@@ -1150,3 +1150,53 @@ label {
 :root[data-theme="dark"] .chip.active {
   color: var(--color-bg);
 }
+
+/* Earnings calendar: chips and the overflow are buttons that open the day
+   table below the grid; the selected day and the clicked ticker are marked. */
+button.calendar-ticker-chip,
+button.calendar-cell-more,
+button.calendar-cell-date-btn {
+  background: none;
+  border: 0;
+  font-family: inherit;
+  cursor: pointer;
+  text-align: left;
+  width: 100%;
+}
+button.calendar-ticker-chip {
+  font-family: var(--font-mono);
+}
+button.calendar-ticker-chip:hover,
+button.calendar-cell-more:hover,
+button.calendar-cell-date-btn:hover {
+  color: var(--color-accent);
+}
+button.calendar-cell-more {
+  text-decoration: underline dotted;
+}
+button.calendar-cell-date-btn {
+  align-self: flex-start;
+}
+.calendar-cell-selected {
+  outline: 2px solid var(--color-accent);
+  outline-offset: -2px;
+}
+.calendar-day {
+  margin-top: 12px;
+}
+.calendar-day-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+.calendar-day-row--active td {
+  background: color-mix(in srgb, var(--color-accent) 12%, var(--color-surface));
+}
+.eyebrow-label {
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--color-text-faint);
+}

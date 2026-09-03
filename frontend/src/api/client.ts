@@ -147,8 +147,10 @@ export const api = {
   // summary at the same moment, and a navigation must never fire duplicates.
   getOperationsSummary: () =>
     cachedStatus("operations/summary", STATUS_TTL_MS, () => request<OperationsSummary>("/operations/summary")),
-  getOperationsEvents: (opts: RequestOptions = {}) =>
-    request<OperationsEvents>("/operations/events", { signal: opts.signal }),
+  getOperationsEvents: (opts: RequestOptions & { includePast?: boolean } = {}) =>
+    request<OperationsEvents>(`/operations/events${opts.includePast ? "?include_past=true" : ""}`, {
+      signal: opts.signal,
+    }),
   getOperationsJobs: (opts: RequestOptions = {}) =>
     request<OperationsJobs>("/operations/jobs", { signal: opts.signal }),
   getOperationsFailures: (opts: RequestOptions = {}) =>
