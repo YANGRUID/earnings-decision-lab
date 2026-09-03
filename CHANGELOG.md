@@ -2,6 +2,24 @@
 
 All notable changes to Earnings Decision Lab. Dates are the real commit dates.
 
+## v4.0.1 — 2026-09-03 — Post-release fixes
+
+- **Earnings calendar day table.** Clicking a ticker, a day number or the "+N more" overflow on
+  the Dashboard calendar opens a table of every company reporting that day (timing, market cap,
+  estimates, source, V4 pipeline state and windows inside the 15:30 ET window), with each ticker
+  linking to its company workspace.
+- **Forward-only pipeline feed.** The Dashboard and Live Operations pipeline show the V4 era
+  only: windows still open or ahead plus every event with real V4 evidence;
+  `/operations/events?include_past=true` keeps the complete monitoring view.
+- **Brand mark.** White-background mark as the default (README, browser tab: classic BMP
+  `favicon.ico` plus PNG links, Safari-safe); sidebar shows the navy tile on the light theme and
+  the white mark on the dark theme.
+- **Eastern-time windows** on the Dashboard pipeline and the forward-window card; humanised
+  missed-window banner.
+- **CI.** Fetches the official IBKR TWS API client before installing the backend, migrates a
+  fresh database (retired-job cleanups tolerate a missing `apscheduler_jobs`), and runs the
+  backend tests against an isolated CI test database.
+
 ## v4.0.0 — 2026-09-03 — V4 Forward Engine
 
 The first V4-only software release. A software-architecture release, not a proof of
