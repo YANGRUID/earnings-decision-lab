@@ -16,9 +16,16 @@ All notable changes to Earnings Decision Lab. Dates are the real commit dates.
   the white mark on the dark theme.
 - **Eastern-time windows** on the Dashboard pipeline and the forward-window card; humanised
   missed-window banner.
+- **Eligibility: "US listed" is a listing fact.** A foreign-domiciled company listed on a US
+  exchange (Lululemon: Canada, Nasdaq) is eligible; the rule now consults SEC's own exchange
+  list (`company_tickers_exchange.json`, cached daily) instead of the calendar's country field.
+  A failed lookup is reported as unverified and retryable, never as "not listed".
+- **Pager.** The "Show all N" control shares the quiet bordered style of the other pager buttons
+  on both themes.
 - **CI.** Fetches the official IBKR TWS API client before installing the backend, migrates a
-  fresh database (retired-job cleanups tolerate a missing `apscheduler_jobs`), and runs the
-  backend tests against an isolated CI test database.
+  fresh database (retired-job cleanups tolerate a missing `apscheduler_jobs`), runs the backend
+  tests against an isolated CI test database, and makes the tests package importable under a
+  plain `pytest` invocation.
 
 ## v4.0.0 — 2026-09-03 — V4 Forward Engine
 
