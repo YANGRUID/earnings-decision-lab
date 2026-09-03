@@ -67,7 +67,7 @@ from rag.embeddings import EmbeddingProvider
 from services.llm.base import LLMProvider
 from services.llm.factory import get_llm_provider
 from services.market_expectations import (
-    collect_next_earnings_estimate,
+    collect_next_earnings_estimate_calendar_first,
     get_latest_earnings_estimate,
 )
 from services.options_analytics import (
@@ -171,8 +171,8 @@ def build_research_providers(
         estimates=estimates,
         options=options,
         embedder=embedder,
-    
-        llm=_build_thesis_llm(settings, db))
+        llm=_build_thesis_llm(settings, db),
+    )
 
 
 def get_latest_research_job(db: Session, ticker: str) -> ResearchPreparationJob | None:
@@ -394,17 +394,19 @@ def _prepare_earnings_estimates(
     as_of: datetime,
     force: bool = False,
 ) -> _StepResult:
-    if estimates is None:
-        return StepStatus.SKIPPED, "no earnings-estimates provider configured"
     status = assess_freshness(
         DataClass.EARNINGS_ESTIMATES, _earnings_estimates_last_updated(db, company.id), as_of
     )
     if not force and not needs_refresh(status):
         return StepStatus.DONE, "already fresh, reused existing data"
-    row = collect_next_earnings_estimate(db, estimates, company)
+    # Calendar first (v4.0.2): the earnings calendar's date and consensus are
+    # real data already on record; Alpha Vantage is only a fallback.
+    row, note = collect_next_earnings_estimate_calendar_first(
+        db, estimates, company, today=as_of.date()
+    )
     if row is None:
-        return StepStatus.SKIPPED, "provider has no upcoming earnings date"
-    return StepStatus.DONE, f"next report ~{row.estimated_report_date}"
+        return StepStatus.SKIPPED, note
+    return StepStatus.DONE, note
 
 
 def _prepare_sec_filings(

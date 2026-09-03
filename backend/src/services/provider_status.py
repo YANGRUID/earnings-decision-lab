@@ -30,7 +30,10 @@ from services.provider_settings import get_app_provider_settings
 from services.secret_store import credential_status
 
 PRICE_HISTORY_PROVIDERS = ("tiingo", "alpha_vantage")
-EARNINGS_ESTIMATES_PROVIDERS = ("alpha_vantage",)
+# v4.0.2: the earnings calendar's own date and consensus come first; Alpha Vantage
+# (25 requests/day on this plan) is consulted only when the calendar has no
+# upcoming report for the company.
+EARNINGS_ESTIMATES_PROVIDERS = ("earningsapi", "alpha_vantage")
 # Primary-then-fallback order, same as providers/factory.py::
 # KNOWN_EARNINGS_CALENDAR_PROVIDERS -- EarningsAPI.com primary, Finnhub
 # fallback (see EARNINGS_CALENDAR_PROVIDER_ARCHITECTURE_REVIEW.md).
@@ -60,7 +63,7 @@ PROVIDER_CAPABILITIES: dict[str, ProviderCapabilities] = {
     "alpha_vantage": ProviderCapabilities(
         prices=True, earnings_estimates=True, options=True, greeks=True
     ),
-    "earningsapi": ProviderCapabilities(earnings_calendar=True),
+    "earningsapi": ProviderCapabilities(earnings_calendar=True, earnings_estimates=True),
     "finnhub": ProviderCapabilities(earnings_calendar=True),
     "sec_edgar": ProviderCapabilities(filings=True),
     "ibkr": ProviderCapabilities(options=True, greeks=True),
@@ -284,7 +287,7 @@ def get_provider_dashboard(db: Session, settings: Settings) -> list[DomainStatus
         DomainStatus(
             domain="earnings_estimates",
             primary=EARNINGS_ESTIMATES_PROVIDERS[0],
-            fallback=None,
+            fallback=EARNINGS_ESTIMATES_PROVIDERS[1],
             primary_is_override=False,
             fallback_is_override=False,
             providers=[

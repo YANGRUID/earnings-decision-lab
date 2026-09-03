@@ -80,6 +80,9 @@ class UpcomingEarningsDateSource(enum.StrEnum):
     read this field too, not assume the date is provider-confirmed."""
 
     ALPHA_VANTAGE = "alpha_vantage"
+    #: The earnings-calendar provider's own date (EarningsAPI, Finnhub) with the
+    #: EPS / revenue consensus it carries -- the primary source since v4.0.2.
+    EARNINGS_CALENDAR = "earnings_calendar"
     MANUAL = "manual"
     ESTIMATED = "estimated"
     UNKNOWN = "unknown"

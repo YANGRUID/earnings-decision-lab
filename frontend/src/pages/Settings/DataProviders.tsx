@@ -193,6 +193,14 @@ function DomainCard({
           <strong>{providerLabel(domain.fallback)}</strong> (fallback) — not currently
           configurable from Settings.
         </p>
+      ) : domain.domain === "earnings_estimates" ? (
+        <p className="text-sm text-muted" style={{ marginTop: 0 }}>
+          The next report date and EPS / revenue consensus come from the{" "}
+          <strong>{providerLabel(domain.primary)}</strong> earnings calendar first;{" "}
+          <strong>{providerLabel(domain.fallback)}</strong> is consulted only when the calendar has no
+          upcoming report for a company (its free tier allows 25 requests a day). Not configurable
+          from Settings.
+        </p>
       ) : supportsFallback ? (
         <div className="grid grid-2" style={{ gap: 10, marginBottom: 14, maxWidth: 480 }}>
           <div className="field">

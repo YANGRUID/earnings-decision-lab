@@ -78,10 +78,19 @@ class TestGetProviderDashboard:
 
     def test_single_provider_domains_never_expose_a_fallback(self, db_session):
         domains = get_provider_dashboard(db_session, _settings())
-        for domain_name in ("earnings_estimates", "filings"):
+        for domain_name in ("filings",):
             domain = next(d for d in domains if d.domain == domain_name)
             assert domain.fallback is None
             assert len(domain.providers) == 1
+
+    def test_earnings_estimates_come_from_the_calendar_first_then_alpha_vantage(self, db_session):
+        """v4.0.2: the calendar's date and consensus are primary; Alpha Vantage
+        (25 requests a day on this plan) is only the fallback."""
+        domains = get_provider_dashboard(db_session, _settings())
+        estimates = next(d for d in domains if d.domain == "earnings_estimates")
+        assert estimates.primary == "earningsapi"
+        assert estimates.fallback == "alpha_vantage"
+        assert [p.provider for p in estimates.providers] == ["earningsapi", "alpha_vantage"]
 
     def test_masked_key_reflects_the_real_configured_key_never_the_full_value(self, db_session):
         domains = get_provider_dashboard(db_session, _settings())

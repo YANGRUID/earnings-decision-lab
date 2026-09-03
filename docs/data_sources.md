@@ -165,6 +165,15 @@ The Cross-Company Replay screen and `GET /api/v1/replay` were removed in the V4-
 remain test-only fixtures for exercising the interface shape — never wired into ingestion or
 the API.
 
+### Earnings estimates — calendar first (v4.0.2)
+
+The next report date and the EPS / revenue consensus used by research preparation come from the
+earnings calendar (EarningsAPI, Finnhub fallback) first — `EarningsEstimateSnapshot.date_source =
+EARNINGS_CALENDAR`, `source_provider = earningsapi`. Alpha Vantage's EARNINGS_CALENDAR /
+EARNINGS_ESTIMATES endpoints are consulted only when the calendar has no upcoming report for the
+company: the free tier allows 25 requests a day and, once exhausted, answers with a JSON notice
+that a CSV parser reads as a letter-by-letter row (detected and reported, never persisted).
+
 ### EarningsAPI.com (primary) / Finnhub (fallback) — the forward-looking earnings calendar
 
 Originally Finnhub alone (Phase 4): rejected as redundant with Alpha Vantage through Phase 12, then

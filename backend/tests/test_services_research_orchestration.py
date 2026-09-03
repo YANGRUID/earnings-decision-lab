@@ -773,3 +773,67 @@ def test_filing_embeddings_step_never_embeds_8k_rows_from_the_earnings_date_step
     )
     assert chunked_filing_ids == {ten_k.id}
     assert not chunked_filing_ids.intersection({f.id for f in eight_ks})
+
+
+def _calendar_row(db, ticker, *, days_ahead=7, eps="1.79", revenue="2460464710"):
+    from decimal import Decimal
+
+    from models.earnings_calendar_event import EarningsCalendarEvent
+
+    row = EarningsCalendarEvent(
+        symbol=ticker,
+        company_name=f"{ticker} Inc",
+        earnings_date=(NOW + timedelta(days=days_ahead)).date(),
+        earnings_time="AMC",
+        source="EARNINGSAPI",
+        status="UPCOMING",
+        market_cap=Decimal("14600000000"),
+        eps_estimate=Decimal(eps) if eps else None,
+        revenue_estimate=Decimal(revenue) if revenue else None,
+    )
+    db.add(row)
+    db.flush()
+    return row
+
+
+def test_calendar_consensus_is_used_first_and_alpha_vantage_is_not_called(db_session):
+    """v4.0.2 -- the Lululemon case: the calendar already carries the report
+    date and consensus, so a rate-limited Alpha Vantage cannot fail the step."""
+    from models.earnings_estimate_snapshot import EarningsEstimateSnapshot
+    from models.enums import UpcomingEarningsDateSource
+
+    calendar = _calendar_row(db_session, "ZZLULU")
+    providers = _providers(estimates=_RateLimitedEstimatesProvider())
+
+    job = prepare_company_research(db_session, "zzlulu", providers, now=NOW)
+
+    assert job.status == JobStatus.COMPLETED, job.steps
+    steps_by_name = {s["step"]: s for s in job.steps}
+    estimates_step = steps_by_name[PreparationStep.EARNINGS_ESTIMATES.value]
+    assert estimates_step["status"] == StepStatus.DONE.value
+    assert "earningsapi calendar" in estimates_step["detail"]
+    snapshot = (
+        db_session.query(EarningsEstimateSnapshot)
+        .join(EarningsEstimateSnapshot.company)
+        .filter_by(ticker="ZZLULU")
+        .order_by(EarningsEstimateSnapshot.snapshot_timestamp.desc())
+        .first()
+    )
+    assert snapshot is not None
+    assert snapshot.estimated_report_date == calendar.earnings_date
+    assert snapshot.date_source == UpcomingEarningsDateSource.EARNINGS_CALENDAR
+    assert snapshot.source_provider == "earningsapi"
+    assert str(snapshot.eps_estimate_average) == "1.790000"
+
+
+def test_without_a_calendar_row_alpha_vantage_is_still_the_fallback(db_session):
+    providers = _providers(
+        estimates=_FakeEstimatesProvider(next_report_date=(NOW + timedelta(days=10)).date())
+    )
+
+    job = prepare_company_research(db_session, "zzavo", providers, now=NOW)
+
+    steps_by_name = {s["step"]: s for s in job.steps}
+    estimates_step = steps_by_name[PreparationStep.EARNINGS_ESTIMATES.value]
+    assert estimates_step["status"] == StepStatus.DONE.value
+    assert "Alpha Vantage" in estimates_step["detail"]

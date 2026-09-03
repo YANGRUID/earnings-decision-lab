@@ -15,8 +15,13 @@ from analytics.earnings.estimate_revisions import (
     revenue_revision_direction,
 )
 from models.company import Company
+from models.earnings_calendar_event import EarningsCalendarEvent
 from models.earnings_estimate_snapshot import EarningsEstimateSnapshot
-from models.enums import RevisionDirection, UpcomingEarningsDateSource
+from models.enums import (
+    EarningsCalendarEventStatus,
+    RevisionDirection,
+    UpcomingEarningsDateSource,
+)
 from providers.base import EarningsEstimatesProvider
 from providers.types import EarningsEstimatePeriod, UpcomingEarningsCalendarEntry
 
@@ -118,6 +123,100 @@ def collect_next_earnings_estimate(
     db.add(row)
     db.commit()
     return row
+
+
+def next_calendar_event(db: Session, ticker: str, *, today: date) -> EarningsCalendarEvent | None:
+    """The earliest UPCOMING earnings-calendar row for ``ticker`` on or after
+    ``today`` -- the calendar provider's own date and consensus."""
+    return (
+        db.query(EarningsCalendarEvent)
+        .filter(
+            EarningsCalendarEvent.symbol == ticker,
+            EarningsCalendarEvent.earnings_date >= today,
+            EarningsCalendarEvent.status == EarningsCalendarEventStatus.UPCOMING,
+        )
+        .order_by(EarningsCalendarEvent.earnings_date.asc())
+        .first()
+    )
+
+
+def collect_estimate_from_calendar(
+    db: Session, company: Company, event: EarningsCalendarEvent
+) -> EarningsEstimateSnapshot:
+    """Persists one snapshot from the earnings calendar: its report date and
+    the EPS / revenue consensus it carries (null when it carries none), with
+    ``date_source=EARNINGS_CALENDAR`` and ``source_provider`` naming the
+    calendar provider. Never overwrites; always a new row."""
+    previous = (
+        db.query(EarningsEstimateSnapshot)
+        .filter(
+            EarningsEstimateSnapshot.company_id == company.id,
+            EarningsEstimateSnapshot.fiscal_period_end_date == event.earnings_date,
+        )
+        .order_by(EarningsEstimateSnapshot.snapshot_timestamp.desc())
+        .first()
+    )
+    snapshot_timestamp = datetime.now(UTC)
+    row = EarningsEstimateSnapshot(
+        company_id=company.id,
+        # The calendar states a report date, not a fiscal period end; the date
+        # itself is the honest, non-fabricated placeholder (as manual dates use).
+        fiscal_period_end_date=event.earnings_date,
+        horizon="calendar",
+        snapshot_timestamp=snapshot_timestamp,
+        eps_estimate_average=event.eps_estimate,
+        eps_revision_direction=RevisionDirection.UNKNOWN,
+        revenue_estimate_average=event.revenue_estimate,
+        revenue_revision_direction=revenue_revision_direction(
+            event.revenue_estimate, previous.revenue_estimate_average if previous else None
+        ),
+        estimated_report_date=event.earnings_date,
+        date_source=UpcomingEarningsDateSource.EARNINGS_CALENDAR,
+        source_provider=str(event.source.value).lower(),
+        retrieved_at=snapshot_timestamp,
+    )
+    db.add(row)
+    db.commit()
+    return row
+
+
+def collect_next_earnings_estimate_calendar_first(
+    db: Session,
+    provider: EarningsEstimatesProvider | None,
+    company: Company,
+    *,
+    today: date,
+) -> tuple[EarningsEstimateSnapshot | None, str]:
+    """v4.0.2 policy: the earnings calendar (EarningsAPI / Finnhub) is the
+    PRIMARY source of the next report date and consensus; Alpha Vantage is
+    consulted only when the calendar has no upcoming report for the company.
+    Returns ``(row, note)``; raises the provider's own error when Alpha
+    Vantage fails AND no calendar row exists to fall back to.
+
+    Why: Alpha Vantage's free tier allows 25 requests a day and returns a
+    JSON notice (CSV-parsed into a letter-by-letter row) once exhausted; the
+    research worker alone consumed it, so companies the calendar already
+    knew about failed their estimates step for nothing (Lululemon,
+    2026-09-02)."""
+    event = next_calendar_event(db, company.ticker, today=today)
+    if event is not None:
+        row = collect_estimate_from_calendar(db, company, event)
+        provider_name = str(event.source.value).lower()
+        consensus = (
+            f"EPS {row.eps_estimate_average}"
+            if row.eps_estimate_average is not None
+            else "no consensus carried"
+        )
+        return (
+            row,
+            f"next report {row.estimated_report_date} ({provider_name} calendar, {consensus})",
+        )
+    if provider is None:
+        return None, "no upcoming report on the calendar and no estimates provider configured"
+    av_row = collect_next_earnings_estimate(db, provider, company)
+    if av_row is None:
+        return None, "no upcoming report on the calendar; Alpha Vantage has none either"
+    return av_row, f"next report ~{av_row.estimated_report_date} (Alpha Vantage)"
 
 
 def set_manual_earnings_date(
