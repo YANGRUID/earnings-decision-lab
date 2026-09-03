@@ -25,6 +25,7 @@ from services.operations import (
     compute_research_readiness,
     compute_today_summary,
     detect_missed_job_alerts,
+    forward_pipeline,
     get_market_clock,
     get_preflight_readiness,
     get_preparation_progress,
@@ -66,8 +67,14 @@ def get_operations_summary(
 
 
 @router.get("/events", response_model=OperationsEventsResponse)
-def get_operations_events(db: DbSession) -> OperationsEventsResponse:
-    return OperationsEventsResponse(events=get_v4_pipeline(db))  # type: ignore[arg-type]
+def get_operations_events(db: DbSession, include_past: bool = False) -> OperationsEventsResponse:
+    """The V4 pipeline. By default forward-only: windows still open or ahead
+    plus every event with real V4 evidence; ``include_past=true`` returns the
+    complete monitoring view."""
+    pipeline = get_v4_pipeline(db)
+    if not include_past:
+        pipeline = forward_pipeline(pipeline)
+    return OperationsEventsResponse(events=pipeline)  # type: ignore[arg-type]
 
 
 @router.get("/jobs", response_model=OperationsJobsResponse)

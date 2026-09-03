@@ -36,6 +36,7 @@ from services.operations import (
     compute_research_readiness,
     compute_today_summary,
     detect_missed_job_alerts,
+    forward_pipeline,
     get_recent_failures,
     get_scheduler_jobs,
     get_v4_pipeline,
@@ -476,3 +477,29 @@ class TestForwardWindow:
         assert fw.last_decisions_ready == 6 and fw.last_deadline_skipped == 1
         assert fw.last_decision_lock_wait_ms == 350
         assert fw.next_window_at is None and fw.settlements_due == ()
+
+
+class TestForwardPipeline:
+    """The product shows the V4 era only: open/future windows plus V4 evidence."""
+
+    def test_past_windows_without_v4_evidence_are_hidden_but_future_and_evidence_rows_stay(
+        self, db_session
+    ):
+        # A window that passed before V4 could act (yesterday, AMC) with no decision.
+        _event(db_session, "DELL", earnings_date=date(2026, 9, 8))
+        # Tomorrow's window: shown even before research is ready.
+        _event(db_session, "CPRT", earnings_date=date(2026, 9, 10))
+        # Today's window, still ahead of NOW (noon): shown.
+        _event(db_session, "ZS")
+        pipeline = get_v4_pipeline(db_session, now=NOW)
+        symbols = {p.symbol for p in pipeline}
+        assert {"DELL", "CPRT", "ZS"} <= symbols
+        shown = {p.symbol for p in forward_pipeline(pipeline, now=NOW)}
+        assert "DELL" not in shown
+        assert {"CPRT", "ZS"} <= shown
+        # A row that carries V4 evidence is always shown, however old.
+        dell = next(p for p in pipeline if p.symbol == "DELL")
+        from dataclasses import replace
+
+        with_evidence = replace(dell, shadow_decision_id=5, lifecycle_state="SETTLED")
+        assert "DELL" in {p.symbol for p in forward_pipeline([with_evidence], now=NOW)}

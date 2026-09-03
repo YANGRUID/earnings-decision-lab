@@ -1710,3 +1710,27 @@ def _parse_outcome(text: str | None) -> dict[str, int]:
             if value.isdigit():
                 out[key] = int(value)
     return out
+
+
+# ---------------------------------------------------------------------------
+# Forward-only pipeline view (v4.0.0): the product shows the V4 era only
+# ---------------------------------------------------------------------------
+
+
+def forward_pipeline(
+    pipeline: list[V4PipelineEvent], *, now: datetime | None = None
+) -> list[V4PipelineEvent]:
+    """Rows a user should act on or learn from: every event whose decision
+    window is still open or ahead, plus every event that carries real V4
+    evidence (a frozen decision), whatever its state. Events whose window
+    passed before V4 could act -- pre-activation history such as a
+    "decision window missed" for a company V4 never evaluated -- are not
+    product rows; they remain in the database and in the run evidence, and
+    the monitoring paths (missed-run detection, today's counts) still read
+    the complete pipeline."""
+    now = now or datetime.now(UTC)
+    return [
+        p
+        for p in pipeline
+        if p.shadow_decision_id is not None or p.entry_timestamp + LATE_CUTOFF_GRACE >= now
+    ]

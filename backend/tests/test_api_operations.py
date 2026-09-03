@@ -91,6 +91,18 @@ class TestOperationsJobs:
         assert "decision_and_entry_capture" not in job_ids and "exit_capture" not in job_ids
 
 
+class TestOperationsEventsForwardOnly:
+    def test_default_view_hides_pre_v4_windows_and_include_past_shows_them(self, client):
+        default = client.get("/api/v1/operations/events").json()["events"]
+        complete = client.get("/api/v1/operations/events?include_past=true").json()["events"]
+        assert len(default) <= len(complete)
+        for row in default:
+            assert row["shadow_decision_id"] is not None or row["lifecycle_state"] not in (
+                "DECISION_WINDOW_MISSED",
+                "RESEARCH_NOT_READY",
+            )
+
+
 class TestOperationsFailures:
     def test_returns_a_real_list_shape(self, client):
         response = client.get("/api/v1/operations/failures")
