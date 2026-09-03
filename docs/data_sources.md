@@ -106,7 +106,12 @@ SEC-EDGAR-only pieces (actuals, 8-K-sourced earnings dates) were never affected 
   13, this is no longer the only path to real options data** — see the Interactive Brokers
   section below, which does return real data today.
 
-### Interactive Brokers Client Portal Gateway — options chain + portfolio (Phase 13)
+### Interactive Brokers — options chain (Phase 13 via the Client Portal Gateway; TWS API since Phase 3 of the TWS migration)
+
+> **Active transport today: the TWS socket API** (`IBKR_PROVIDER=tws`, see
+> [ibkr_architecture.md](ibkr_architecture.md)). The Client Portal path below is the original
+> integration, kept only as a manual rollback; the portfolio endpoints it mentions were removed
+> with the V3 product.
 
 - **What it provides:** real options-chain data (bid/ask/last/volume/Greeks/IV) and real,
   read-only portfolio positions, sourced from the user's own IBKR account via the local Client

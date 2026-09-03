@@ -1,5 +1,9 @@
 # Interactive Brokers integration (Phase 13) — LEGACY / ROLLBACK TRANSPORT
 
+> **Status (v4.0.0): historical / manual rollback only.** The active transport is the TWS socket API
+> (`IBKR_PROVIDER=tws`); see [ibkr_architecture.md](ibkr_architecture.md). Nothing in the V4 product
+> reads the Client Portal Gateway.
+
 > **⚠️ This is no longer the production path.**
 >
 > As of the **2026-09-01 cutover**, production uses the **IB Gateway / TWS socket API**

@@ -1,5 +1,9 @@
 # IBKR Gateway runtime automation (Phase 4.8A) — LEGACY / ROLLBACK TRANSPORT
 
+> **Status (v4.0.0): historical / manual rollback only.** The `ibkr-gateway` (IBeam) service is not
+> started in the V4 deployment; the active transport is the TWS socket API. See
+> [ibkr_architecture.md](ibkr_architecture.md).
+
 > **⚠️ This automates the rollback transport, not production.**
 >
 > As of the **2026-09-01 cutover**, production uses the **IB Gateway / TWS socket API**

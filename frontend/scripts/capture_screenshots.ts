@@ -10,7 +10,8 @@
  * services/secret_store/masking.py on the backend).
  *
  * Usage:
- *   npm run screenshots
+ *   npm run screenshots           # writes docs/screenshots/*.png
+ *   SCREENSHOT_TICKER=AVGO npm run screenshots
  *
  * Requires a running dev stack (`npm run dev` or the Docker frontend) and
  * a backend with at least one company already researched. Defaults to
@@ -29,34 +30,34 @@ const OUT_DIR = process.env.SCREENSHOT_OUT_DIR
   ? resolve(process.env.SCREENSHOT_OUT_DIR)
   : resolve(__dirname, "../../docs/screenshots");
 const BASE_URL = process.env.SCREENSHOT_BASE_URL ?? "http://localhost:5173";
-const TICKER = (process.env.SCREENSHOT_TICKER ?? "NVDA").toUpperCase();
+const TICKER = (process.env.SCREENSHOT_TICKER ?? "AVGO").toUpperCase();
 const VIEWPORT = { width: 1600, height: 1000 };
 
 interface Shot {
   name: string;
   path: string;
   tab?: string;
+  /** CSS selector to click after the page settles (e.g. open the latest decision). */
+  click?: string;
 }
 
 const SHOTS: Shot[] = [
-  // V4-first product (2026-09-02). Tab names must match the company
-  // workspace exactly; routes must exist in App.tsx.
-  { name: "home", path: "/" },
+  // V4-only product (v4.0.0). Tab names must match the company workspace
+  // exactly; routes must exist in App.tsx. Settings pages that show masked
+  // provider keys are deliberately NOT captured; the IBKR/TWS page shows no
+  // credential and is.
+  { name: "dashboard", path: "/" },
   { name: "company_overview", path: `/company/${TICKER}` },
-  { name: "earnings_setup", path: `/company/${TICKER}`, tab: "Earnings Setup" },
-  { name: "research", path: `/company/${TICKER}`, tab: "Research" },
-  { name: "market_view", path: `/company/${TICKER}`, tab: "Market View" },
-  { name: "v4_decision", path: `/company/${TICKER}`, tab: "V4 Decision" },
-  { name: "candidates", path: `/company/${TICKER}`, tab: "Candidates" },
-  { name: "forward_outcome", path: `/company/${TICKER}`, tab: "Forward Outcome" },
-  { name: "historical_control", path: `/company/${TICKER}`, tab: "Historical / Control" },
-  { name: "v4_decision_lab", path: "/v4-decision-lab" },
-  { name: "v4_track_record", path: "/v4-shadow-track-record" },
-  { name: "same_event_comparison", path: "/same-event-comparison" },
-  { name: "operations", path: "/operations" },
-  { name: "ai_research", path: `/research?ticker=${TICKER}` },
-  { name: "v3_historical_control", path: "/benchmark-track-record" },
-  { name: "system_status", path: "/system-status" },
+  { name: "company_earnings_setup", path: `/company/${TICKER}`, tab: "Earnings Setup" },
+  { name: "company_market_view", path: `/company/${TICKER}`, tab: "Market View" },
+  { name: "company_v4_decision", path: `/company/${TICKER}`, tab: "V4 Decision" },
+  { name: "company_forward_outcome", path: `/company/${TICKER}`, tab: "Forward Outcome" },
+  { name: "ai_research", path: "/research" },
+  { name: "v4_decision_lab", path: "/v4-decision-lab", click: "a[href^='/v4-decision-lab/'], button:has-text('Open')" },
+  { name: "candidate_explorer", path: "/candidate-explorer", click: "a[href^='/candidate-explorer/'], button:has-text('Open')" },
+  { name: "v4_forward_track_record", path: "/v4-shadow-track-record" },
+  { name: "live_operations", path: "/operations" },
+  { name: "ibkr_tws_settings", path: "/settings/ibkr" },
 ];
 
 /** Waits for the page to settle: no in-flight network requests, no visible
@@ -96,6 +97,15 @@ async function capture(page: Page, shot: Shot): Promise<void> {
   await disableAnimations(page);
   await waitForSettled(page);
 
+  if (shot.click) {
+    const target = page.locator(shot.click);
+    if ((await target.count()) === 0) {
+      console.warn(`  ⚠ nothing matches "${shot.click}" on ${shot.path} -- capturing the page as is`);
+    } else {
+      await target.first().click();
+      await waitForSettled(page);
+    }
+  }
   if (shot.tab) {
     const tabButton = page.locator(`button.tab-button:has-text("${shot.tab}")`);
     if ((await tabButton.count()) === 0) {

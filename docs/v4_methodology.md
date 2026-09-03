@@ -43,15 +43,14 @@ is the explicit, documented definition every future V4 stage must be designed ag
 | Field | Value |
 |---|---|
 | Exit policy | `ExitPolicy.FIRST_POST_EARNINGS_TRADING_DAY_CLOSE` (already real, `models/enums.py`) |
-| Entry time | ~15:55 ET, the trading day before the reaction is priced in |
-| Exit time | ~15:55 ET, the first real trading day after it |
+| Entry time | 15:30 ET, the last trading day before the announcement (policy `v4-1530-entry-1530-t1-settlement-v2`) |
+| Exit time | 15:30 ET, the first post-earnings trading day; due exits are settled before any new decision observation |
 | Open pricing | ASK (long legs) / BID (short legs) |
 | Close pricing | BID (long legs) / ASK (short legs) |
 | Holding period | ~1 trading session — **never** the option's own expiration |
-| Market data policy | `ALLOW_DELAYED_WITH_LABEL` (unchanged from V3) |
+| Market data policy | `ALLOW_DELAYED_WITH_LABEL` — delayed data is used and labelled delayed |
 
-**This is a definition, not an implementation.** V4.1 does not build a model that scores or
-predicts against this objective — that is V4.4.
+V4.4A values every candidate against this objective (T+1 scenario grids) and V4.4B ranks on it.
 
 ## Strategy semantics: what each structure actually pays off on
 
@@ -74,22 +73,21 @@ debit/credit sign.
 | **`long_call_butterfly`** | neutral/range | **small/pinning** | **short realized-move** | tent/pinning |
 | `iron_butterfly` | neutral/range | small/pinning | short realized-move | tent/pinning |
 
-The butterfly row is the whole point: it is a **net-debit** structure V3's own `_volatility_fit`
-scores as LONG_VOL, but its real payoff geometry is a narrow tent that pays off near its center
-strike and loses on either side — the same economic bet as a short-vol credit structure.
-Confirmed against real data: every one of V3's 5 real butterfly trades lost precisely because the
-underlying moved *more* than this tent could survive.
+The butterfly row is the whole point: it is a **net-debit** structure that a debit/credit sign
+heuristic would score as long-volatility, but its real payoff geometry is a narrow tent that pays
+off near its center strike and loses on either side — the same economic bet as a short-vol
+credit structure. Confirmed against real data: every one of the retired engine's 5 real butterfly
+trades lost precisely because the underlying moved *more* than this tent could survive.
 
-**V3 does not depend on this registry.** `strategy_scoring.py`'s own `_volatility_fit` is
-untouched; this registry only becomes load-bearing once a future V4.2 view-to-strategy
-compatibility model (not built in V4.1) is designed to consume it.
+The V4.2 semantic-compatibility layer consumes this registry to keep a view and a structure
+honest with each other.
 
 ## Capital semantics: standardized per-decision, not shared portfolio
 
 `analytics/decision/v4_capital.py`:
 
-- `PER_DECISION_CAPITAL = $2,000` — the same real dollar figure V3 already effectively uses per
-  trade, given an honest name: **not** a shared portfolio balance. Two concurrently-open
+- `PER_DECISION_CAPITAL = $2,000` — standardized per-decision capital, given an honest name:
+  **not** a shared portfolio balance. Two concurrently-open
   decisions each independently use the full $2,000, by design, so strategy quality can be
   compared consistently regardless of how many other decisions happen to be open.
 - `portfolio_simulation_available()` returns `False`, always — no code path in this backend
@@ -97,15 +95,9 @@ compatibility model (not built in V4.1) is designed to consume it.
   equity curve. Any future caller that wants a real portfolio drawdown must check this first.
 - `StandardizedCohortSummary` aggregates many independent decisions (win/loss counts, mean/
   median return-on-standardized-capital) and **deliberately never computes a drawdown or equity
-  curve** — exactly the computation whose absence produced V3's misleading 460.8% figure.
-- V3's historical `max_drawdown`/`max_drawdown_pct` are **never altered**. The Track Record API
-  and UI now show them labeled "V3 Legacy Aggregate Loss" with an explicit caveat
-  (`LEGACY_CAPITAL_CAVEAT`, `benchmark_track_record.py`) explaining why they aren't a real
-  portfolio statistic, with the new standardized metrics shown alongside, never replacing them.
-- V3's existing `R` (realized P&L / theoretical expiration max-risk) is likewise never replaced.
-  `R_LEGACY_CAVEAT` documents why it can validly fall past −1.00 (settlement occurs at T+1 real
-  bid/ask, not at the theoretical expiration payoff the denominator assumes). No new R formula
-  is defined in V4.1 — there is no unambiguous replacement yet.
+  curve** — exactly the computation whose absence produced the retired engine's misleading
+  460.8% figure. The six-configuration track record reports counts and standardized returns
+  only, and shows `INSUFFICIENT SAMPLE` below 30 settled observations.
 
 ## Probability-calibration terminology (read-side only)
 
