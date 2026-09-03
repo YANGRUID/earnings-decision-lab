@@ -135,7 +135,7 @@ _migrate_test_database()
 # `SessionLocal()` against the live database and committed to it.
 #
 # That is not hypothetical: tests/test_v4_5_shadow_scheduler.py invokes
-# run_v4_shadow_decision_job()/run_v4_shadow_settlement_job() directly, and
+# run_v4_forward_window_job() directly, and
 # wrote 44 rows into the production scheduler_run table (24 SKIPPED plus 20
 # with error_summary "boom") before this was noticed. The tests still
 # "passed" -- one of them even asserted on the test-database session while

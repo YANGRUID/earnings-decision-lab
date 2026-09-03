@@ -19,6 +19,7 @@ from models.provider_usage_event import ProviderUsageEvent
 from models.research_preparation_job import ResearchPreparationJob
 from models.scheduler_run import SchedulerRun, SchedulerRunEvent
 from models.v4_shadow import (
+    V4ForwardWindowTelemetry,
     V4ShadowCandidate,
     V4ShadowCandidateLeg,
     V4ShadowDecision,
@@ -50,6 +51,7 @@ __all__ = [
     "ResearchPreparationJob",
     "SchedulerRun",
     "SchedulerRunEvent",
+    "V4ForwardWindowTelemetry",
     "V4ShadowCandidate",
     "V4ShadowCandidateLeg",
     "V4ShadowDecision",

@@ -57,7 +57,7 @@ def _expected_registered_ids() -> set[str]:
         IBKR_GATEWAY_HEALTHCHECK_JOB_ID,
     }
     if get_settings().v4_shadow_enabled:
-        ids |= {"v4_shadow_decision", "v4_shadow_settlement"}
+        ids |= {"v4_forward_window"}
     return ids
 
 

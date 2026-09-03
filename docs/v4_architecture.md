@@ -41,7 +41,7 @@ six different timestamps — and six results that were no longer comparable to e
 | Timing policy | `analytics/decision_timing_policy.py`, `analytics/forward_windows.py` | 15:30 ET entry, 15:30 ET T+1 settlement (`v4-1530-entry-1530-t1-settlement-v2`); window tolerances and the 15:50 ET deadline |
 | Shadow evidence | `models/v4_shadow.py`, `services/v4_shadow.py` | append-only, DB trigger enforced |
 | Settlement | `services/v4_shadow_cohort.py` | re-quotes frozen conIds per configuration; never a reconstruction |
-| Scheduler | `services/v4_shadow_scheduler.py` | dedicated scheduler DB pool; registered only when enabled |
+| Forward window | `services/v4_shadow_scheduler.py` | one 15:30 ET job: due settlements first, then decisions; lock scoped to quote acquisition; telemetry in `v4_forward_window_telemetry` |
 | Read models | `api/routers/v4_shadow.py`, `api/routers/operations.py` | six-config, track record by configuration, V4 pipeline states and readiness |
 
 ## Evidence tables
@@ -55,6 +55,7 @@ six different timestamps — and six results that were no longer comparable to e
 | `v4_shadow_observation` | 1 per decision per phase | ENTRY / EXIT executable observation |
 | `v4_shadow_settlement` | 1 per decision | T+1 outcome |
 | `v4_shadow_run_event` | any | failures and notices, by category |
+| `v4_forward_window_telemetry` | per settlement attempt + per phase | timing evidence for the 15:30 window (operational, not decision evidence) |
 
 All seven are append-only: a `BEFORE UPDATE` trigger rejects edits.
 

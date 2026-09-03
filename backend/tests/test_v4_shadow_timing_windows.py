@@ -232,5 +232,5 @@ class TestJobWiring:
             patch("providers.factory.get_options_provider", return_value=_RaisingProvider()),
             patch.object(orch, "run_shadow_decisions_for_due_events", recorder),
         ):
-            jobs.run_v4_shadow_decision_job(now=datetime(2026, 9, 10, 19, 30, tzinfo=UTC))
+            jobs.run_v4_forward_window_job(now=datetime(2026, 9, 10, 19, 30, tzinfo=UTC))
         assert captured.get("due_predicate") is jobs.due_for_v4_decision_now

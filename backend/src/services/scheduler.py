@@ -69,10 +69,13 @@ from services.scheduler_run_tracking import (
 )
 from services.system_status import IbkrStatus, TwsStatus, get_ibkr_status, get_tws_status
 from services.v4_shadow_scheduler import (
-    V4_SHADOW_DECISION_JOB_ID,
-    V4_SHADOW_SETTLEMENT_JOB_ID,
-    run_v4_shadow_decision_job,
-    run_v4_shadow_settlement_job,
+    RETIRED_V4_JOB_IDS,
+    V4_FORWARD_WINDOW_JOB_ID,
+    run_v4_forward_window_job,
+)
+from services.v4_shadow_scheduler import V4_SHADOW_DECISION_JOB_ID as V4_SHADOW_DECISION_JOB_ID
+from services.v4_shadow_scheduler import (
+    V4_SHADOW_SETTLEMENT_JOB_ID as V4_SHADOW_SETTLEMENT_JOB_ID,
 )
 
 # Error summaries are for a human glancing at the Operations page, never
@@ -183,8 +186,6 @@ _STARTUP_CATCHUP_DELAY_SECONDS = 90
 # for each candidate is still made by the identical, unchanged
 # compute_entry_exit_schedule() + LATE_CUTOFF_GRACE window
 # run_decision_pipeline_for_event already enforces.
-
-
 
 
 # NOT passed as a job argument on purpose: SQLAlchemyJobStore pickles a
@@ -389,10 +390,6 @@ def run_earnings_research_preparation_job(*, now: datetime | None = None) -> lis
         db.close()
 
 
-
-
-
-
 def run_research_readiness_catchup_job(*, now: datetime | None = None) -> list[EnqueueResult]:
     """Same-day readiness pass (V4-only reset, 2026-09-02): (re)queues every
     upcoming event in the next few days that is not yet V4-ready -- no
@@ -523,8 +520,6 @@ def run_ibkr_gateway_healthcheck_job() -> None:
         db.close()
 
 
-
-
 def build_scheduler(
     embedder: EmbeddingProvider | None = None,
     tws_health_probe: TwsHealthProbe | None = None,
@@ -605,31 +600,52 @@ def build_scheduler(
     )
     try:
         if get_settings().v4_shadow_enabled:
+            # ONE 15:30 ET job (settlement-priority hardening, v4.0.0): it
+            # settles every due position first, then begins new decision
+            # observations -- see services/v4_shadow_scheduler.py. The two
+            # historical ids stay in use as its recorded PHASES only.
             scheduler.add_job(
-                run_v4_shadow_decision_job,
+                run_v4_forward_window_job,
                 trigger="cron",
                 hour=_V4_DECISION_HOUR_ET,
                 minute=_V4_DECISION_MINUTE_ET,
                 timezone="America/New_York",
-                id=V4_SHADOW_DECISION_JOB_ID,
+                id=V4_FORWARD_WINDOW_JOB_ID,
                 replace_existing=True,
                 misfire_grace_time=int(LATE_CUTOFF_GRACE.total_seconds()),
+                coalesce=True,
+                max_instances=1,
             )
-            # Settlement stays at 15:55 ET on purpose -- the T+1 exit
-            # benchmark is unchanged from V3. Only ENTRY timing moved.
-            scheduler.add_job(
-                run_v4_shadow_settlement_job,
-                trigger="cron",
-                hour=_V4_SETTLEMENT_HOUR_ET,
-                minute=_V4_SETTLEMENT_MINUTE_ET,
-                timezone="America/New_York",
-                id=V4_SHADOW_SETTLEMENT_JOB_ID,
-                replace_existing=True,
-                misfire_grace_time=int(LATE_CUTOFF_GRACE.total_seconds()),
-            )
-    except Exception:  # noqa: BLE001 -- V4 must never break V3's scheduler
+    except Exception:  # noqa: BLE001 -- a V4 registration failure must never take the platform jobs down
         log.error(
-            "V4 shadow job registration failed; official V3 jobs remain registered",
+            "V4 forward-window job registration failed; platform jobs remain registered",
             exc_info=True,
         )
     return scheduler
+
+
+#: Job ids that must never fire again. They are deleted from the persistent
+#: store by migration (V3: e3a5c7d9b1f2; the split V4 pair: b7d9f1a3c5e7) and,
+#: defensively, removed here once the scheduler has loaded its store.
+RETIRED_JOB_IDS: tuple[str, ...] = (
+    "decision_and_entry_capture",
+    "exit_capture",
+    *RETIRED_V4_JOB_IDS,
+)
+
+
+def retire_stale_jobs(scheduler: AsyncIOScheduler) -> list[str]:
+    """Removes retired job ids that are still present in the loaded job store
+    (a stale persistent row would otherwise fire alongside its replacement).
+    Returns the ids actually removed."""
+    removed: list[str] = []
+    for job_id in RETIRED_JOB_IDS:
+        try:
+            if scheduler.get_job(job_id) is not None:
+                scheduler.remove_job(job_id)
+                removed.append(job_id)
+        except Exception:  # noqa: BLE001 -- best effort; the migration is the guarantee
+            log.warning("could not remove retired job %s", job_id, exc_info=True)
+    if removed:
+        log.warning("removed retired scheduler jobs from the store: %s", ", ".join(removed))
+    return removed

@@ -547,7 +547,6 @@ class V4ShadowConfigResult(Base):
     )
 
 
-
 # ---------------------------------------------------------------------------
 # Six-cohort forward evidence (V4 activation phase, Sections 4-16).
 #
@@ -595,7 +594,9 @@ class V4ShadowCandidateObservation(Base):
 
     __table_args__ = (
         UniqueConstraint(
-            "shadow_decision_id", "candidate_id", "phase",
+            "shadow_decision_id",
+            "candidate_id",
+            "phase",
             name="uq_v4_shadow_candidate_observation_one_per_candidate_phase",
         ),
     )
@@ -680,6 +681,39 @@ class V4ShadowConfigSettlement(Base):
     #: settlement) settled prospectively under v2 (15:30) records v2 here and keeps
     #: v1 on the immutable decision/entry rows.
     timing_policy_version: Mapped[str | None] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class V4ForwardWindowTelemetry(Base):
+    """Timing evidence for the 15:30 ET forward window (settlement-priority
+    hardening, v4.0.0). One row per settlement attempt (``phase =
+    "settlement"``, with the position) and one summary row per phase
+    (``shadow_decision_id`` NULL). Operational telemetry, append-only by
+    convention; it is not decision evidence and is never read by the engine."""
+
+    __tablename__ = "v4_forward_window_telemetry"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    phase: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
+    scheduler_run_id: Mapped[int | None] = mapped_column(ForeignKey("scheduler_run.id"), index=True)
+    shadow_decision_id: Mapped[int | None] = mapped_column(
+        ForeignKey("v4_shadow_decision.id"), index=True
+    )
+    symbol: Mapped[str | None] = mapped_column(String(16), index=True)
+    scheduled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    job_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    due_detected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    market_data_requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    market_data_acquired_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    first_contract_request_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    required_side_ready_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    lock_wait_ms: Mapped[int | None] = mapped_column(Integer)
+    total_ms: Mapped[int | None] = mapped_column(Integer)
+    outcome: Mapped[str] = mapped_column(String(32), nullable=False)
+    detail: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

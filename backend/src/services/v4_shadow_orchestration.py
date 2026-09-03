@@ -39,6 +39,7 @@ connection is opened, and no client id is chosen.
 from __future__ import annotations
 
 import logging
+from contextlib import nullcontext
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -98,6 +99,9 @@ class ShadowRunSummary:
     #: Due, research-ready events whose full evaluation was NOT started
     #: because the run reached its deadline (Section 16, deadline guard).
     deadline_skipped: int = 0
+    #: Total time this run spent WAITING for the shared market-data lock
+    #: before its TWS chain sweeps (settlement-priority telemetry).
+    market_data_lock_wait_ms: int = 0
     outcomes: tuple[ShadowEventOutcome, ...] = ()
 
 
@@ -160,8 +164,19 @@ def run_shadow_decisions_for_due_events(
     candidate_events: list[EarningsCalendarEvent],
     deadline: datetime | None = None,
     clock=None,
+    market_data_lock=None,
+    before_evaluation=None,
 ) -> ShadowRunSummary:
     """Processes every genuinely due event. Never raises.
+
+    ``market_data_lock`` (settlement-priority hardening, v4.0.0) is held ONLY
+    around the TWS chain sweep of each event -- never around DecisionView
+    generation, valuation, ranking or persistence -- so a due settlement
+    waiting for the same lock is delayed by at most one sweep, never by a
+    DeepSeek call. ``before_evaluation`` runs before EACH full evaluation
+    starts; the forward-window coordinator uses it to settle any position
+    whose window opened meanwhile, so a new decision never outranks a due
+    settlement.
 
     ``deadline`` (deadline guard, 2026-09-02): once the wall clock reaches it,
     no further FULL evaluation (DecisionView + assembly + quote sweep) is
@@ -172,7 +187,9 @@ def run_shadow_decisions_for_due_events(
     """
     outcomes: list[ShadowEventOutcome] = []
     ranked = no_action = already = not_ready = failed = deadline_skipped = 0
+    lock_wait_ms = 0
     clock = clock or (lambda: datetime.now(UTC))
+    lock = market_data_lock if market_data_lock is not None else nullcontext()
 
     for event in candidate_events:
         ticker = event.symbol
@@ -195,9 +212,13 @@ def run_shadow_decisions_for_due_events(
             if existing is not None:
                 already += 1
                 outcomes.append(
-                    ShadowEventOutcome(event.id, ticker, "ALREADY_GENERATED",
-                                       "a shadow decision is already frozen for this event",
-                                       existing.id)
+                    ShadowEventOutcome(
+                        event.id,
+                        ticker,
+                        "ALREADY_GENERATED",
+                        "a shadow decision is already frozen for this event",
+                        existing.id,
+                    )
                 )
                 continue
 
@@ -205,12 +226,15 @@ def run_shadow_decisions_for_due_events(
             if not ready:
                 not_ready += 1
                 _record_event(
-                    db, event_id=event.id, ticker=ticker, stage="research_gate",
-                    category="RESEARCH_NOT_READY", message=why, retryable=True,
+                    db,
+                    event_id=event.id,
+                    ticker=ticker,
+                    stage="research_gate",
+                    category="RESEARCH_NOT_READY",
+                    message=why,
+                    retryable=True,
                 )
-                outcomes.append(
-                    ShadowEventOutcome(event.id, ticker, "RESEARCH_NOT_READY", why)
-                )
+                outcomes.append(ShadowEventOutcome(event.id, ticker, "RESEARCH_NOT_READY", why))
                 continue
 
             assert company is not None  # guaranteed by _research_is_ready
@@ -221,39 +245,59 @@ def run_shadow_decisions_for_due_events(
                     "evaluation could start; no late evaluation is attempted"
                 )
                 _record_event(
-                    db, event_id=event.id, ticker=ticker, stage="deadline_guard",
-                    category="DEADLINE_SKIPPED", message=why, retryable=False,
+                    db,
+                    event_id=event.id,
+                    ticker=ticker,
+                    stage="deadline_guard",
+                    category="DEADLINE_SKIPPED",
+                    message=why,
+                    retryable=False,
                 )
                 outcomes.append(ShadowEventOutcome(event.id, ticker, "DEADLINE_SKIPPED", why))
                 continue
+
+            if before_evaluation is not None:
+                before_evaluation()
 
             view = view_generator(db, company, event, now)
             if view is None:
                 failed += 1
                 _record_event(
-                    db, event_id=event.id, ticker=ticker, stage="view",
+                    db,
+                    event_id=event.id,
+                    ticker=ticker,
+                    stage="view",
                     category="VIEW_GENERATION_FAILED",
-                    message="decision view generation returned nothing", retryable=True,
+                    message="decision view generation returned nothing",
+                    retryable=True,
                 )
                 outcomes.append(
                     ShadowEventOutcome(event.id, ticker, "FAILED", "view generation failed")
                 )
                 continue
 
-            assembly = assemble_shadow_candidates(
-                provider=provider,
-                ticker=ticker,
-                as_of=now,
-                direction=view.direction or "neutral",
-                volatility_view=view.volatility_view,
-                earnings_date=event.earnings_date,
-            )
+            requested_at = clock()
+            with lock:
+                acquired_at = clock()
+                lock_wait_ms += max(0, int((acquired_at - requested_at).total_seconds() * 1000))
+                assembly = assemble_shadow_candidates(
+                    provider=provider,
+                    ticker=ticker,
+                    as_of=now,
+                    direction=view.direction or "neutral",
+                    volatility_view=view.volatility_view,
+                    earnings_date=event.earnings_date,
+                )
             if assembly.failure_category is not None:
                 failed += 1
                 _record_event(
-                    db, event_id=event.id, ticker=ticker, stage="candidates",
+                    db,
+                    event_id=event.id,
+                    ticker=ticker,
+                    stage="candidates",
                     category=assembly.failure_category,
-                    message=assembly.failure_detail or "", retryable=True,
+                    message=assembly.failure_detail or "",
+                    retryable=True,
                 )
                 outcomes.append(
                     ShadowEventOutcome(event.id, ticker, "FAILED", assembly.failure_detail)
@@ -295,8 +339,12 @@ def run_shadow_decisions_for_due_events(
 
             outcomes.append(
                 ShadowEventOutcome(
-                    event.id, ticker, result.status, result.reason,
-                    result.decision_id, result.candidate_count,
+                    event.id,
+                    ticker,
+                    result.status,
+                    result.reason,
+                    result.decision_id,
+                    result.candidate_count,
                 )
             )
 
@@ -305,9 +353,13 @@ def run_shadow_decisions_for_due_events(
             log.error("v4 shadow decision failed for %s", ticker, exc_info=True)
             try:
                 _record_event(
-                    db, event_id=getattr(event, "id", None), ticker=ticker,
-                    stage="shadow_decision", category="INTERNAL_ERROR",
-                    message=f"{type(exc).__name__}: {exc}", retryable=True,
+                    db,
+                    event_id=getattr(event, "id", None),
+                    ticker=ticker,
+                    stage="shadow_decision",
+                    category="INTERNAL_ERROR",
+                    message=f"{type(exc).__name__}: {exc}",
+                    retryable=True,
                 )
             except Exception:  # noqa: BLE001 -- never let logging failure escape
                 log.error("could not record v4 shadow failure event", exc_info=True)
@@ -325,6 +377,7 @@ def run_shadow_decisions_for_due_events(
         research_not_ready=not_ready,
         failed=failed,
         deadline_skipped=deadline_skipped,
+        market_data_lock_wait_ms=lock_wait_ms,
         outcomes=tuple(outcomes),
     )
 

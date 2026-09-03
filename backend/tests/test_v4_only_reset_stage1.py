@@ -298,12 +298,15 @@ class TestSchedulerRegistration:
         from services.scheduler import (
             RESEARCH_PREPARATION_STARTUP_CATCHUP_JOB_ID,
             RESEARCH_READINESS_CATCHUP_JOB_ID,
+            V4_FORWARD_WINDOW_JOB_ID,
             V4_SHADOW_DECISION_JOB_ID,
             V4_SHADOW_SETTLEMENT_JOB_ID,
         )
 
         jobs = self._jobs(enabled=True)
         assert "decision_and_entry_capture" not in jobs and "exit_capture" not in jobs
+        # v4.0.0: one 15:30 registration; the phase ids are never separate jobs.
+        assert V4_SHADOW_DECISION_JOB_ID not in jobs and V4_SHADOW_SETTLEMENT_JOB_ID not in jobs
 
         def hhmm(job_id):
             f = jobs[job_id].trigger.fields
@@ -311,8 +314,9 @@ class TestSchedulerRegistration:
                 str(x) for x in f if x.name == "minute"
             )
 
-        assert hhmm(V4_SHADOW_DECISION_JOB_ID) == ("15", "30")
-        assert hhmm(V4_SHADOW_SETTLEMENT_JOB_ID) == ("15", "30")
+        assert hhmm(V4_FORWARD_WINDOW_JOB_ID) == ("15", "30")
+        assert jobs[V4_FORWARD_WINDOW_JOB_ID].max_instances == 1
+        assert jobs[V4_FORWARD_WINDOW_JOB_ID].coalesce is True
         assert hhmm(RESEARCH_READINESS_CATCHUP_JOB_ID) == ("13", "0")
         assert RESEARCH_PREPARATION_STARTUP_CATCHUP_JOB_ID in jobs
 

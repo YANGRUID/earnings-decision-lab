@@ -27,12 +27,35 @@ therefore never settled the same afternoon.
 
 | Job | Window | Outside the window |
 |---|---|---|
-| `v4_shadow_decision` (15:30 ET cron) | `entry ≤ now ≤ entry + 5 min` on the legal pre-earnings trading day; a per-event deadline guard at 15:50 ET records `DEADLINE_SKIPPED` for events that could not be evaluated in time | event not selected |
-| `v4_shadow_settlement` (15:30 ET cron) | `exit − 5 min ≤ now ≤ exit + 5 min`, exit = 15:30 ET on the first post-earnings trading day | `NOT_DUE` before; `SETTLEMENT_WINDOW_MISSED` recorded after |
+| `v4_forward_window` decision phase (15:30 ET, after settlements) | `entry ≤ now ≤ entry + 5 min` on the legal pre-earnings trading day; a per-event deadline guard at 15:50 ET records `DEADLINE_SKIPPED` for events that could not be evaluated in time | event not selected |
+| `v4_forward_window` settlement phase (15:30 ET, first) | `exit − 5 min ≤ now ≤ exit + 5 min`, exit = 15:30 ET on the first post-earnings trading day | `NOT_DUE` before; `SETTLEMENT_WINDOW_MISSED` recorded after |
 
-Both crons share one in-process market-data lock so the decision and settlement passes never
-run their TWS sweeps concurrently. Windows are pinned by `tests/test_v4_shadow_timing_windows.py`
-and `tests/test_v4_only_reset_stage1.py`.
+### Settlement priority (v4.0.0)
+
+The window is **one job**, `v4_forward_window`, with a structural order:
+
+1. **Settle every position whose legal settlement window is open.** Settlement evidence is
+   expiring; a new decision still has time until the 15:50 ET deadline. The market-data lock is
+   taken per position and only around quote acquisition; the window is re-checked with the real
+   clock at the moment market data is acquired (a position whose window closed while waiting is
+   closed as `SETTLEMENT_WINDOW_MISSED`, never quoted late and stamped early). The recorded
+   settlement instant is the acquisition instant.
+2. **Begin new decision observations.** Before each full evaluation the coordinator settles
+   anything that became due meanwhile; each evaluation holds the lock only around its own TWS
+   chain sweep — never around the DeepSeek DecisionView, valuation, ranking or persistence.
+
+Consequences, all pinned by `tests/test_v4_forward_window_priority.py`: an 80-second DecisionView
+cannot delay a due settlement; three due settlements all precede five ready decisions; one failed
+settlement blocks neither the others nor the decisions; the lock is released on every exception
+and provider timeout; a missed window is closed without a late quote; running the window twice
+settles and decides exactly once. Every settlement attempt writes a `v4_forward_window_telemetry`
+row (scheduled, started, due detected, market data requested/acquired, first contract request,
+required side ready, completed, lock wait, total) and Live Operations shows the last window's
+figures next to the next window's preview.
+
+The two historical job ids (`v4_shadow_settlement`, `v4_shadow_decision`) live on as the
+coordinator's recorded phases in `scheduler_run`. Windows are pinned by
+`tests/test_v4_shadow_timing_windows.py` and `tests/test_v4_only_reset_stage1.py`.
 
 ## DecisionView model provenance
 

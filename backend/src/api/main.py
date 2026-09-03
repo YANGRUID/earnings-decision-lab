@@ -35,7 +35,7 @@ from providers.factory import set_shared_tws_provider
 from providers.ibkr_tws_health import HEALTHCHECK_CLIENT_ID_OFFSET, TwsHealthProbe
 from providers.ibkr_tws_options import IBKRTWSProvider
 from rag.embeddings import FastEmbedProvider
-from services.scheduler import build_scheduler
+from services.scheduler import build_scheduler, retire_stale_jobs
 
 RESEARCH_QUERY_RATE_LIMIT = 10  # per window — real LLM cost per call, see api/rate_limit.py
 RESEARCH_QUERY_RATE_WINDOW_SECONDS = 60.0
@@ -138,6 +138,7 @@ async def lifespan(app: FastAPI):
             tws_health_probe=app.state.tws_health_probe,
         )
         app.state.scheduler.start()
+        retire_stale_jobs(app.state.scheduler)
     except Exception:
         log.warning("Scheduler failed to start; earnings calendar sync disabled", exc_info=True)
         app.state.scheduler = None
@@ -160,7 +161,7 @@ def create_app() -> FastAPI:
         description=(
             "AI-assisted earnings intelligence, options analytics, and historical event research."
         ),
-        version="0.1.0",
+        version="4.0.0",
         lifespan=lifespan,
     )
 
