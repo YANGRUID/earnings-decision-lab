@@ -1,7 +1,7 @@
 {
   "name": "frontend",
   "private": true,
-  "version": "0.0.0",
+  "version": "4.0.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -9,7 +9,6 @@
     "lint": "eslint .",
     "preview": "vite preview",
     "screenshots": "tsx scripts/capture_screenshots.ts",
-    "screenshots:v3": "tsx scripts/capture_v3_screenshots.ts",
     "test:e2e": "playwright test --project=chromium",
     "test:e2e:live": "playwright test --project=chromium e2e/avgo-live.spec.ts",
     "test:e2e:ibkr": "playwright test --config=playwright.ibkr.config.ts --project=chromium",
