@@ -34,6 +34,7 @@ happens at the existing legal decision/entry window
 (services/decision_pipeline.py, unchanged).
 """
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Literal
@@ -148,6 +149,7 @@ def enqueue_readiness_catchup(
     *,
     now: datetime | None = None,
     lookahead_days: int = 3,
+    us_listing: Callable[[str], str | None] | None = None,
 ) -> list[EnqueueResult]:
     """Same-day / startup catch-up: the nightly enqueue for a shorter
     horizon, with the V4 readiness rule applied to already-prepared
@@ -155,7 +157,11 @@ def enqueue_readiness_catchup(
     the worker's data steps are freshness-gated, only the thesis is new
     work)."""
     return enqueue_preparation_candidates(
-        db, options_provider, now=now, lookahead_days=lookahead_days
+        db,
+        options_provider,
+        now=now,
+        lookahead_days=lookahead_days,
+        us_listing=us_listing,
     )
 
 
@@ -165,6 +171,7 @@ def enqueue_preparation_candidates(
     *,
     now: datetime | None = None,
     lookahead_days: int = PREPARATION_LOOKAHEAD_DAYS,
+    us_listing: Callable[[str], str | None] | None = None,
 ) -> list[EnqueueResult]:
     """Cheap filter first, a durable queue row only for what survives it
     -- exactly Section 4's own diagram: calendar universe -> cheap
@@ -182,7 +189,7 @@ def enqueue_preparation_candidates(
     results: list[EnqueueResult] = []
 
     for event in candidate_events_for_preparation(db, now=now, lookahead_days=lookahead_days):
-        eligibility = check_eligibility(event, options_provider)
+        eligibility = check_eligibility(event, options_provider, us_listing=us_listing)
         if not eligibility.eligible:
             # Post-live correction (2026-08-25): a retryable (transient
             # provider-call) failure is honestly represented as a

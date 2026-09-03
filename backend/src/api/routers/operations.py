@@ -35,6 +35,7 @@ from services.operations import (
     get_v4_pipeline,
 )
 from services.scheduler import get_scheduler_status
+from services.us_listing import default_us_listing
 
 router = APIRouter(prefix="/operations", tags=["operations"])
 
@@ -49,7 +50,7 @@ def get_operations_summary(
     settings = get_settings()
     scheduler_status = get_scheduler_status(scheduler)
     health = get_system_health(db, settings, scheduler_status, tws_health_probe, tws_provider)
-    pipeline = get_v4_pipeline(db)
+    pipeline = get_v4_pipeline(db, us_listing=default_us_listing())
     readiness = compute_research_readiness(pipeline)
     today = compute_today_summary(db, pipeline)
     jobs = get_scheduler_jobs(db, scheduler_status)
@@ -71,7 +72,7 @@ def get_operations_events(db: DbSession, include_past: bool = False) -> Operatio
     """The V4 pipeline. By default forward-only: windows still open or ahead
     plus every event with real V4 evidence; ``include_past=true`` returns the
     complete monitoring view."""
-    pipeline = get_v4_pipeline(db)
+    pipeline = get_v4_pipeline(db, us_listing=default_us_listing())
     if not include_past:
         pipeline = forward_pipeline(pipeline)
     return OperationsEventsResponse(events=pipeline)  # type: ignore[arg-type]
@@ -86,7 +87,7 @@ def get_operations_jobs(db: DbSession, scheduler: Scheduler) -> OperationsJobsRe
 @router.get("/failures", response_model=OperationsFailuresResponse)
 def get_operations_failures(db: DbSession, scheduler: Scheduler) -> OperationsFailuresResponse:
     scheduler_status = get_scheduler_status(scheduler)
-    pipeline = get_v4_pipeline(db)
+    pipeline = get_v4_pipeline(db, us_listing=default_us_listing())
     jobs = get_scheduler_jobs(db, scheduler_status)
     failures = get_recent_failures(db)
     alerts, _ = detect_missed_job_alerts(db, jobs, pipeline)

@@ -21,6 +21,7 @@ Domains reported:
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
@@ -62,7 +63,7 @@ from models.v4_shadow import (
 from providers.ibkr_client import IBKRClient
 from providers.ibkr_tws_health import TwsHealthProbe
 from providers.ibkr_tws_options import IBKRTWSProvider
-from services.earnings_eligibility import MIN_MARKET_CAP, US_COUNTRY_CODE
+from services.earnings_eligibility import MIN_MARKET_CAP, check_us_listing
 from services.provider_status import get_provider_dashboard
 from services.research_orchestration import THESIS_FRESHNESS_DAYS
 from services.research_preparation_queue import count_queue_depth
@@ -518,7 +519,9 @@ def get_system_health(  # noqa: PLR0912, PLR0915 -- one aggregation, kept in one
 # ---------------------------------------------------------------------------
 
 
-def _passes_business_filters(event: EarningsCalendarEvent) -> tuple[bool, str | None]:
+def _passes_business_filters(
+    event: EarningsCalendarEvent, us_listing: Callable[[str], str | None] | None = None
+) -> tuple[bool, str | None]:
     if event.market_cap is None:
         return False, "market cap unknown"
     try:
@@ -527,10 +530,11 @@ def _passes_business_filters(event: EarningsCalendarEvent) -> tuple[bool, str | 
         return False, "market cap unreadable"
     if cap < MIN_MARKET_CAP:
         return False, f"market cap below ${MIN_MARKET_CAP:,.0f}"
-    if event.country is None:
-        return False, "listing country unknown"
-    if event.country.upper() != US_COUNTRY_CODE:
-        return False, f"not US listed (country={event.country})"
+    # The same listing rule the preparation queue applies (exchange listing,
+    # not domicile -- v4.0.1); a lookup failure is shown as unverified.
+    listed, why_not, _retryable = check_us_listing(event, us_listing)
+    if not listed:
+        return False, why_not
     return True, None
 
 
@@ -872,10 +876,15 @@ def _pending_row(f: _Facts) -> V4PipelineEvent:
     return f.row(STATE_RESEARCH_READY, None, action, f.schedule.entry_timestamp)
 
 
-def classify_event(db: Session, event: EarningsCalendarEvent, now: datetime) -> V4PipelineEvent:
+def classify_event(
+    db: Session,
+    event: EarningsCalendarEvent,
+    now: datetime,
+    us_listing: Callable[[str], str | None] | None = None,
+) -> V4PipelineEvent:
     """The V4 lifecycle of one calendar event, derived only from persisted rows."""
     f = _gather(db, event, now)
-    eligible, why_not = _passes_business_filters(event)
+    eligible, why_not = _passes_business_filters(event, us_listing)
     if not eligible:
         f.timeline.append(TimelineStep("Business eligibility", None, "failed", why_not))
         return f.row(STATE_BUSINESS_INELIGIBLE, why_not)
@@ -888,7 +897,12 @@ def classify_event(db: Session, event: EarningsCalendarEvent, now: datetime) -> 
     return _pending_row(f)
 
 
-def get_v4_pipeline(db: Session, *, now: datetime | None = None) -> list[V4PipelineEvent]:
+def get_v4_pipeline(
+    db: Session,
+    *,
+    now: datetime | None = None,
+    us_listing: Callable[[str], str | None] | None = None,
+) -> list[V4PipelineEvent]:
     """One row per real calendar event whose earnings date falls inside
     [today - 2 days, today + 7 days] (Eastern), with the V4 lifecycle state."""
     now = now or datetime.now(UTC)
@@ -908,7 +922,7 @@ def get_v4_pipeline(db: Session, *, now: datetime | None = None) -> list[V4Pipel
     rows = []
     for event in events:
         try:
-            rows.append(classify_event(db, event, now))
+            rows.append(classify_event(db, event, now, us_listing))
         except Exception:  # noqa: BLE001 -- one event must never blank the monitor
             log.exception("operations: could not classify event %s", event.id)
     return rows

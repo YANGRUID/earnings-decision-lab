@@ -27,6 +27,9 @@ from providers.base import FilingsProvider
 from providers.types import CompanyFacts, CompanyFactValue, FilingMetadata
 
 _TICKERS_URL = "https://www.sec.gov/files/company_tickers.json"
+#: Same registrants with their listing exchange ("Nasdaq", "NYSE", "NYSE American",
+#: "CBOE", ...): ``{"fields": ["cik","name","ticker","exchange"], "data": [[...], ...]}``.
+_TICKERS_EXCHANGE_URL = "https://www.sec.gov/files/company_tickers_exchange.json"
 _SUBMISSIONS_URL = "https://data.sec.gov/submissions/CIK{cik}.json"
 _COMPANYFACTS_URL = "https://data.sec.gov/api/xbrl/companyfacts/CIK{cik}.json"
 
@@ -90,6 +93,25 @@ class SECEdgarProvider(FilingsProvider):
             if entry["ticker"].upper() == ticker_upper:
                 return str(entry["cik_str"]).zfill(10)
         return None
+
+    def list_exchange_listings(self) -> dict[str, str]:
+        """Every SEC-registered ticker with its US listing exchange, from
+        SEC's own ``company_tickers_exchange.json``. Keys are upper-case
+        tickers exactly as SEC writes them (class shares as ``BRK-B``)."""
+        data = self._get_json(_TICKERS_EXCHANGE_URL)
+        fields = data.get("fields") or []
+        try:
+            ticker_index = fields.index("ticker")
+            exchange_index = fields.index("exchange")
+        except ValueError as exc:  # pragma: no cover -- SEC changed the file shape
+            raise ValueError("unexpected company_tickers_exchange.json shape") from exc
+        listings: dict[str, str] = {}
+        for row in data.get("data") or []:
+            ticker = row[ticker_index]
+            exchange = row[exchange_index]
+            if ticker and exchange:
+                listings[str(ticker).upper()] = str(exchange)
+        return listings
 
     # --- FilingsProvider ----------------------------------------------------
 

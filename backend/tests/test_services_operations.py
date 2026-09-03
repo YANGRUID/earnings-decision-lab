@@ -503,3 +503,17 @@ class TestForwardPipeline:
 
         with_evidence = replace(dell, shadow_decision_id=5, lifecycle_state="SETTLED")
         assert "DELL" in {p.symbol for p in forward_pipeline([with_evidence], now=NOW)}
+
+
+class TestListingRuleInThePipeline:
+    def test_a_us_listed_foreign_company_is_not_business_ineligible(self, db_session):
+        _event(db_session, "LULU", country="CA")
+        _event(db_session, "SHOP", country="CA")
+        lookup = lambda symbol: "Nasdaq" if symbol == "LULU" else None  # noqa: E731
+        by_symbol = {p.symbol: p for p in get_v4_pipeline(db_session, now=NOW, us_listing=lookup)}
+        assert by_symbol["LULU"].lifecycle_state != "BUSINESS_INELIGIBLE"
+        assert by_symbol["SHOP"].lifecycle_state == "BUSINESS_INELIGIBLE"
+        assert "no SEC-registered US exchange listing" in (by_symbol["SHOP"].lifecycle_reason or "")
+        # Without a lookup the domicile rule stands (deterministic, no network).
+        old = {p.symbol: p for p in get_v4_pipeline(db_session, now=NOW)}
+        assert old["LULU"].lifecycle_state == "BUSINESS_INELIGIBLE"

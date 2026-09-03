@@ -117,3 +117,56 @@ def test_options_chain_lookup_failure_skipped_not_raised():
     assert result.eligible is False
     assert result.reason is not None and "options chain lookup failed" in result.reason
     assert result.retryable is True
+
+
+# --- v4.0.1: "US listed" is a listing fact, not a domicile fact ------------
+
+
+def test_foreign_domiciled_company_listed_on_a_us_exchange_is_eligible():
+    """Lululemon: Canadian company, Nasdaq listing -- the case that exposed the
+    country-only rule as wrong."""
+    event = _event(symbol="LULU", country="CA")
+    result = check_eligibility(
+        event,
+        _FakeOptionsProvider(),
+        us_listing=lambda symbol: "Nasdaq" if symbol == "LULU" else None,
+    )
+    assert result.eligible is True
+
+
+def test_foreign_company_without_a_us_listing_is_rejected_for_listing_not_domicile():
+    event = _event(symbol="SHOP", country="CA")
+    result = check_eligibility(event, _FakeOptionsProvider(), us_listing=lambda _symbol: None)
+    assert result.eligible is False
+    assert result.reason is not None and "no SEC-registered US exchange listing" in result.reason
+    assert result.retryable is False
+
+
+def test_listing_lookup_failure_is_unverified_and_retryable_never_not_listed():
+    def _boom(_symbol: str) -> str | None:
+        raise TimeoutError("sec.gov timed out")
+
+    event = _event(symbol="LULU", country="CA")
+    result = check_eligibility(event, _FakeOptionsProvider(), us_listing=_boom)
+    assert result.eligible is False
+    assert result.retryable is True
+    assert result.reason is not None and "unavailable" in result.reason
+    assert "not US listed" not in result.reason
+
+
+def test_us_domiciled_company_never_needs_the_lookup():
+    calls: list[str] = []
+
+    def _lookup(symbol: str) -> str | None:
+        calls.append(symbol)
+        return None
+
+    assert check_eligibility(
+        _event(country="US"), _FakeOptionsProvider(), us_listing=_lookup
+    ).eligible
+    assert calls == []
+
+
+def test_without_a_lookup_the_country_rule_still_applies():
+    result = check_eligibility(_event(country="CA"), _FakeOptionsProvider())
+    assert result.eligible is False and "not US listed" in (result.reason or "")

@@ -68,6 +68,7 @@ from services.scheduler_run_tracking import (
     start_scheduler_run,
 )
 from services.system_status import IbkrStatus, TwsStatus, get_ibkr_status, get_tws_status
+from services.us_listing import default_us_listing
 from services.v4_shadow_scheduler import (
     RETIRED_V4_JOB_IDS,
     V4_FORWARD_WINDOW_JOB_ID,
@@ -356,7 +357,9 @@ def run_earnings_research_preparation_job(*, now: datetime | None = None) -> lis
     try:
         settings = get_settings()
         options_provider = build_options_provider_chain(settings, db=db)
-        results = enqueue_preparation_candidates(db, options_provider, now=now)
+        results = enqueue_preparation_candidates(
+            db, options_provider, now=now, us_listing=default_us_listing()
+        )
         for result in results:
             record_scheduler_run_event(
                 db,
@@ -401,7 +404,9 @@ def run_research_readiness_catchup_job(*, now: datetime | None = None) -> list[E
     try:
         settings = get_settings()
         options_provider = build_options_provider_chain(settings, db=db)
-        results = enqueue_readiness_catchup(db, options_provider, now=now)
+        results = enqueue_readiness_catchup(
+            db, options_provider, now=now, us_listing=default_us_listing()
+        )
         for result in results:
             record_scheduler_run_event(
                 db,

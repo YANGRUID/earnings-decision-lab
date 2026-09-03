@@ -50,7 +50,6 @@ def _event(db_session, *, symbol, market_cap="50000000000", country="US", earnin
     return event
 
 
-
 def _make_v4_ready(db, symbol, now):
     """V4-only reset (2026-09-02): a completed preparation job counts as
     'nothing more to do' only when the company is actually V4-ready --
@@ -79,6 +78,7 @@ def _make_v4_ready(db, symbol, now):
         )
     )
     db.flush()
+
 
 class _FakeOptionsProvider:
     """A real options-chain check_eligibility can call cheaply -- always
@@ -125,6 +125,22 @@ class TestCheapFilterFirst:
         assert "US listed" in results[0].reason
         assert db_session.query(ResearchPreparationJob).filter_by(ticker="TESTINTL").count() == 0
 
+    def test_a_foreign_company_listed_on_a_us_exchange_is_enqueued(
+        self, db_session, options_provider
+    ):
+        """v4.0.1 -- Lululemon (CA, Nasdaq) must not be filtered as 'not US listed'."""
+        _event(db_session, symbol="TESTLULU", country="CA")
+
+        results = enqueue_preparation_candidates(
+            db_session,
+            options_provider,
+            now=FAR_FUTURE_NOW,
+            us_listing=lambda symbol: "Nasdaq" if symbol == "TESTLULU" else None,
+        )
+
+        assert results[0].outcome == "queued", results[0]
+        assert db_session.query(ResearchPreparationJob).filter_by(ticker="TESTLULU").count() == 1
+
     def test_events_outside_the_lookahead_window_are_not_even_candidates(
         self, db_session, options_provider
     ):
@@ -154,7 +170,3 @@ class TestCheapFilterFirst:
         # nothing here is sticky: the next scan (no job row exists to
         # dedupe against) will call check_eligibility fresh again.
         assert db_session.query(ResearchPreparationJob).filter_by(ticker="TESTWARN").count() == 0
-
-
-
-
