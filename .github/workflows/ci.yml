@@ -35,7 +35,9 @@ jobs:
       # in CI both variables point at this job's own disposable, already-
       # isolated `postgres` service above, so this is a same-value
       # aliasing, not a second database.
-      TEST_DATABASE_URL: postgresql+psycopg://postgres:change_me@localhost:5432/earnings_decision_lab
+      # A SEPARATE database on the same isolated service: backend/tests/conftest.py
+      # refuses to run against the application's own database identity.
+      TEST_DATABASE_URL: postgresql+psycopg://postgres:change_me@localhost:5432/earnings_decision_lab_test
       SEC_EDGAR_USER_AGENT: "Earnings Decision Lab CI ci@example.com"
 
     steps:
@@ -72,6 +74,15 @@ jobs:
       - name: Apply migrations
         working-directory: backend
         run: uv run alembic upgrade head
+
+      - name: Create the isolated test database
+        working-directory: backend
+        run: |
+          uv run python - <<'PY'
+          import psycopg
+          with psycopg.connect("postgresql://postgres:change_me@localhost:5432/earnings_decision_lab", autocommit=True) as conn:
+              conn.execute("CREATE DATABASE earnings_decision_lab_test")
+          PY
 
       - name: Run tests
         working-directory: backend
