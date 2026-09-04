@@ -11,6 +11,7 @@ export const JOB_LABELS: Record<string, string> = {
   v4_forward_window: "V4 Forward Window (15:30 ET: settlements, then decisions)",
   v4_shadow_decision: "V4 Decision phase (15:30 ET)",
   v4_shadow_settlement: "V4 Settlement phase (15:30 ET, T+1)",
+  v4_eod_settlement_fallback: "V4 End-of-Day Settlement Fallback (16:30 ET)",
 };
 
 // Human labels for the backend's V4 pipeline states (services/operations.py).

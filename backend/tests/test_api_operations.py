@@ -32,7 +32,12 @@ PLATFORM_JOB_IDS = {
     "research_preparation_startup_catchup",
     "ibkr_gateway_healthcheck",
 }
-SHADOW_JOB_IDS = {"v4_forward_window", "v4_shadow_decision", "v4_shadow_settlement"}
+SHADOW_JOB_IDS = {
+    "v4_forward_window",
+    "v4_shadow_decision",
+    "v4_shadow_settlement",
+    "v4_eod_settlement_fallback",
+}
 
 
 class TestOperationsSummary:

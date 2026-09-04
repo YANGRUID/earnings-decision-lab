@@ -71,7 +71,9 @@ from services.system_status import IbkrStatus, TwsStatus, get_ibkr_status, get_t
 from services.us_listing import default_us_listing
 from services.v4_shadow_scheduler import (
     RETIRED_V4_JOB_IDS,
+    V4_EOD_SETTLEMENT_FALLBACK_JOB_ID,
     V4_FORWARD_WINDOW_JOB_ID,
+    run_v4_eod_settlement_fallback_job,
     run_v4_forward_window_job,
 )
 from services.v4_shadow_scheduler import V4_SHADOW_DECISION_JOB_ID as V4_SHADOW_DECISION_JOB_ID
@@ -155,6 +157,14 @@ _V4_SETTLEMENT_MINUTE_ET = V4_ACTIVE_TIMING_POLICY.exit_time.minute
 #   * a one-shot catch-up shortly after every startup;
 #   * a same-day readiness pass at 13:00 ET, well before the 15:30 window,
 #     that (re)queues any event in the next few days that is not V4-ready.
+# The end-of-day settlement fallback runs after the 16:00 ET close, late
+# enough that IBKR has that session's own closing bars (confirmed live on
+# 2026-09-04: the last regular-hours trade bar was available within minutes
+# of the close), and far enough from 15:30 that it can never contend with
+# the forward window itself.
+_V4_EOD_FALLBACK_HOUR_ET = 16
+_V4_EOD_FALLBACK_MINUTE_ET = 30
+_V4_EOD_FALLBACK_MISFIRE_GRACE_SECONDS = 3600
 RESEARCH_READINESS_CATCHUP_JOB_ID = "research_readiness_catchup"
 RESEARCH_PREPARATION_STARTUP_CATCHUP_JOB_ID = "research_preparation_startup_catchup"
 _READINESS_CATCHUP_HOUR_ET = 13
@@ -618,6 +628,24 @@ def build_scheduler(
                 id=V4_FORWARD_WINDOW_JOB_ID,
                 replace_existing=True,
                 misfire_grace_time=int(LATE_CUTOFF_GRACE.total_seconds()),
+                coalesce=True,
+                max_instances=1,
+            )
+            # After the close, settle anything the 15:30 window could not
+            # price, under the explicit end-of-day fallback hierarchy. A
+            # position is never left open purely because its executable
+            # side was empty at 15:30. Idempotent: a configuration that
+            # already settled is skipped, so this is a no-op on a normal day.
+            scheduler.add_job(
+                run_v4_eod_settlement_fallback_job,
+                trigger="cron",
+                day_of_week="mon-fri",
+                hour=_V4_EOD_FALLBACK_HOUR_ET,
+                minute=_V4_EOD_FALLBACK_MINUTE_ET,
+                timezone="America/New_York",
+                id=V4_EOD_SETTLEMENT_FALLBACK_JOB_ID,
+                replace_existing=True,
+                misfire_grace_time=_V4_EOD_FALLBACK_MISFIRE_GRACE_SECONDS,
                 coalesce=True,
                 max_instances=1,
             )

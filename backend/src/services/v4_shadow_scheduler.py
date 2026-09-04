@@ -43,6 +43,7 @@ and the decision phase writes one summary row with its total lock wait.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import threading
 from collections.abc import Callable
@@ -745,3 +746,71 @@ def _decision_phase_row(
         outcome=outcome,
         detail=detail,
     )
+
+
+V4_EOD_SETTLEMENT_FALLBACK_JOB_ID = "v4_eod_settlement_fallback"
+
+
+def run_v4_eod_settlement_fallback_job(*, now: datetime | None = None) -> None:
+    """The post-close job that stops a position being stranded by an empty
+    book (authorized 2026-09-04).
+
+    The 15:30 window settles at real executable prices and is unchanged.
+    This runs after the close, over the SAME session's still-unsettled due
+    configurations only, and applies the explicit end-of-day hierarchy in
+    services/v4_settlement_fallback.py: a captured executable side first,
+    then that contract's own same-session closing mark, then -- only for a
+    contract expiring that day -- expiration intrinsic against the official
+    underlying close.
+
+    Append-only and idempotent: a configuration that already has a settled
+    row is skipped, so a repeat run is a no-op. Never raises; every outcome
+    is recorded as run evidence.
+    """
+    from services.v4_emergency_settlement import recover_due_settlements  # noqa: PLC0415
+
+    resolved_now = now or datetime.now(UTC)
+    db = SessionLocal()
+    run = None
+    try:
+        settings = get_settings()
+        run = start_scheduler_run(db, V4_EOD_SETTLEMENT_FALLBACK_JOB_ID)
+        if not settings.v4_shadow_enabled:
+            finish_scheduler_run(db, run, status=RUN_STATUS_SKIPPED)
+            return
+        from providers.factory import get_options_provider  # noqa: PLC0415
+
+        provider = get_options_provider(settings, override="ibkr", db=db)
+        from analytics.earnings_timing import EASTERN  # noqa: PLC0415
+
+        session_date = resolved_now.astimezone(EASTERN).date()
+        # The market-data lock covers the quote/closing-mark sweep, exactly
+        # as the 15:30 window's own settlement phase does.
+        with V4_MARKET_DATA_LOCK:
+            summary = recover_due_settlements(
+                db,
+                provider=provider,
+                session_date=session_date,
+                now=resolved_now,
+                dry_run=False,
+            )
+        finish_scheduler_run(
+            db,
+            run,
+            status=RUN_STATUS_SUCCESS,
+            items_evaluated=summary.candidates_considered,
+            items_succeeded=summary.settled,
+            items_failed=summary.unresolved,
+        )
+    except Exception as exc:  # noqa: BLE001 -- a fallback failure must never take the scheduler down
+        log.exception("v4 end-of-day settlement fallback failed")
+        if run is not None:
+            with contextlib.suppress(Exception):
+                finish_scheduler_run(
+                    db,
+                    run,
+                    status=RUN_STATUS_ERROR,
+                    error_summary=f"{type(exc).__name__}: {exc}",
+                )
+    finally:
+        db.close()

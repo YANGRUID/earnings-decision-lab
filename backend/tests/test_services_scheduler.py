@@ -40,9 +40,10 @@ _TIMING_TO_ANNOUNCEMENT = {
 
 
 def _expected_registered_ids() -> set[str]:
-    """The official five, plus the V4 shadow pair exactly when the running
-    environment has activated the cohort (production, 2026-09-02). The
-    scheduler registers the pair only while V4_SHADOW_ENABLED is on."""
+    """The official five, plus the V4 forward window and its post-close
+    settlement fallback exactly when the running environment has activated
+    the cohort (production, 2026-09-02). Both are registered only while
+    V4_SHADOW_ENABLED is on."""
     from core.config import get_settings
     from services.scheduler import (
         RESEARCH_PREPARATION_STARTUP_CATCHUP_JOB_ID,
@@ -57,7 +58,7 @@ def _expected_registered_ids() -> set[str]:
         IBKR_GATEWAY_HEALTHCHECK_JOB_ID,
     }
     if get_settings().v4_shadow_enabled:
-        ids |= {"v4_forward_window"}
+        ids |= {"v4_forward_window", "v4_eod_settlement_fallback"}
     return ids
 
 
