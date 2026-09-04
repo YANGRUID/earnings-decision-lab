@@ -111,6 +111,7 @@ _CODES_INFORMATIONAL = _CODES_FARM_RECONNECTED | {2100, 2101, 2102, 2137}
 # providers/ibkr_options.py's own _SNAPSHOT_WARMUP_MAX_ATTEMPTS/_DELAY
 # constants exactly, so both real IBKR adapters share one documented
 # warm-up posture rather than two independently-tuned ones.
+_OPTION_PROBE_GENERIC_TICKS = "100,101,106"
 SNAPSHOT_WARMUP_MAX_ATTEMPTS = 5
 SNAPSHOT_WARMUP_RETRY_DELAY_SECONDS = 1.5
 
@@ -677,15 +678,38 @@ class TWSConnectionManager(EWrapper, EClient):
         if pending is not None and isinstance(pending.result, dict):
             pending.result["market_data_quality"] = quality
 
+    def _trace_raw_tick(self, req_id: int, kind: str, tick_type: int, value: object) -> None:
+        """Opt-in forensic capture of the RAW wire tick, before any
+        normalization drops or rewrites it (V4 required-side incident,
+        2026-09-04). Inert unless a caller pre-seeded ``_raw_ticks`` on
+        the pending result -- the production quote path never does, so
+        this adds one list lookup per tick and nothing else."""
+        pending = self._peek(req_id)
+        if pending is None or not isinstance(pending.result, dict):
+            return
+        trace = pending.result.get("_raw_ticks")
+        if isinstance(trace, list):
+            trace.append(
+                {
+                    "kind": kind,
+                    "tick_type": int(tick_type),
+                    "value": value,
+                    "at": datetime.now(UTC).isoformat(),
+                }
+            )
+
     def tickPrice(  # noqa: N802
         self, reqId: int, tickType: int, price: float, attrib
     ) -> None:
+        self._trace_raw_tick(reqId, "price", tickType, price)
         self._write_tick(reqId, _PRICE_TICK_FIELDS.get(tickType), price)
 
     def tickSize(self, reqId: int, tickType: int, size: int) -> None:  # noqa: N802
+        self._trace_raw_tick(reqId, "size", tickType, size)
         self._write_tick(reqId, _SIZE_TICK_FIELDS.get(tickType), size)
 
     def tickGeneric(self, reqId: int, tickType: int, value: float) -> None:  # noqa: N802
+        self._trace_raw_tick(reqId, "generic", tickType, value)
         self._write_tick(reqId, _GENERIC_TICK_FIELDS.get(tickType), value)
 
     def tickOptionComputation(  # noqa: N802
@@ -762,7 +786,24 @@ class TWSConnectionManager(EWrapper, EClient):
             pending.result = {}
         if isinstance(pending.result, dict) and value is not None and value == value:  # NaN-safe
             if value < 0 and field_name in ("bid", "ask", "last", "close"):
-                return  # IB sends -1 for "no data" on price ticks -- never a real price
+                # IB sends -1 for "no data" on price ticks -- never a real
+                # price, so it is still never written as one. But -1 is NOT
+                # silence: on the BID/ASK sides it is IBKR's own explicit
+                # statement that the book has no order on that side at all,
+                # and it arrives paired with a size tick of 0. Proven live
+                # on 2026-09-04 (V4 required-side settlement incident):
+                # five deep-OTM legs each delivered tickPrice(66)=-1 with
+                # tickSize(69)=0 while the ask side quoted normally, and
+                # control contracts on the same delayed feed delivered real
+                # bids of 0.65 and 0.01 with real sizes. Collapsing that
+                # explicit "no bid exists" into "no tick arrived" made an
+                # answered request look unanswered, so the bounded warm-up
+                # burned all five attempts and the failure was mislabelled
+                # as a missing quote. Record the sentinel as the real
+                # observation it is; the price itself stays unwritten.
+                if field_name in ("bid", "ask"):
+                    pending.result[f"{field_name}_no_data_sentinel"] = True
+                return
             if value == UNSET_DECIMAL:
                 # IBKR TWS Migration Phase 1.1, Section 4 -- the official
                 # client's real Decimal-typed size fields (volume, open
@@ -815,6 +856,33 @@ class TWSConnectionManager(EWrapper, EClient):
                 self._pop(req_id)
         return pending.result or {}
 
+    def probe_market_data_ticks(self, contract: Contract, seconds: float) -> dict:
+        """READ-ONLY forensic probe (V4 required-side incident): one real
+        streaming subscription on the shared production connection, held
+        for ``seconds``, returning every RAW tick seen alongside the
+        normalized accumulator. Writes nothing, places nothing, and is
+        cancelled exactly once in ``finally`` like every other streaming
+        request here."""
+        self.ensure_connected()
+        req_id = self.next_request_id()
+        pending = self._register(req_id, "market_data_streaming")
+        pending.result = {"_raw_ticks": []}
+        started = time.monotonic()
+        self.reqMktData(req_id, contract, _OPTION_PROBE_GENERIC_TICKS, False, False, [])
+        try:
+            deadline = started + max(0.5, min(seconds, 45.0))
+            while time.monotonic() < deadline:
+                time.sleep(0.25)
+                if pending.error is not None:
+                    break
+            result = dict(pending.result) if isinstance(pending.result, dict) else {}
+            result["_probe_error"] = None if pending.error is None else str(pending.error)
+            result["_probe_seconds"] = round(time.monotonic() - started, 3)
+            return result
+        finally:
+            self.cancelMktData(req_id)
+            self._pop(req_id)
+
     def request_market_data_with_requirement(
         self,
         contract: Contract,
@@ -824,6 +892,7 @@ class TWSConnectionManager(EWrapper, EClient):
         retry_delay: float = SNAPSHOT_WARMUP_RETRY_DELAY_SECONDS,
         on_attempt: Callable[[int, dict], None] | None = None,
         timeout: float | None = None,
+        requirement_terminal: Callable[[dict], bool] | None = None,
     ) -> dict:
         """Bounded, validating retry (Section 17) -- mirrors providers/
         ibkr_options.py's own ``_snapshot_with_warmup`` exactly: never
@@ -847,6 +916,8 @@ class TWSConnectionManager(EWrapper, EClient):
                     on_attempt(attempt, result)
                 if requirement_satisfied(result):
                     break
+                if requirement_terminal is not None and requirement_terminal(result):
+                    break  # IBKR has answered definitively -- retrying cannot change it
                 if attempt < max_attempts:
                     time.sleep(retry_delay)
             return result
@@ -866,6 +937,8 @@ class TWSConnectionManager(EWrapper, EClient):
                     on_attempt(attempt, result)
                 if requirement_satisfied(result):
                     break
+                if requirement_terminal is not None and requirement_terminal(result):
+                    break  # IBKR has answered definitively -- retrying cannot change it
             return result
         finally:
             self.cancelMktData(req_id)
@@ -952,6 +1025,15 @@ _PRICE_TICK_FIELDS: dict[int, str] = {
     75: "close",  # DELAYED_CLOSE
 }
 _SIZE_TICK_FIELDS: dict[int, str] = {
+    # Bid/ask depth-of-one sizes: the corroborating half of the empty-book
+    # signal above (a -1 price with a 0 size is IBKR saying "nothing is
+    # bid", not "nothing arrived"). Both the live and delayed tick type for
+    # the same real concept map to the identical canonical field, exactly
+    # as _PRICE_TICK_FIELDS already does.
+    0: "bid_size",
+    69: "bid_size",  # DELAYED_BID_SIZE
+    3: "ask_size",
+    70: "ask_size",  # DELAYED_ASK_SIZE
     8: "volume",
     74: "volume",  # DELAYED_VOLUME -- confirmed live: a real Decimal (e.g. 21,276,399 shares)
     22: "open_interest",  # no distinct delayed variant exists for open interest

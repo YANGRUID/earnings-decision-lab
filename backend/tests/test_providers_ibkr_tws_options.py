@@ -43,6 +43,7 @@ class _FakeConnection:
         self.snapshot_by_conid: dict[int, dict] = {}
         self.ensure_connected_calls = 0
         self.market_data_requests: list = []
+        self.requirement_terminals: list = []
         # Real TWS behavior (confirmed live, Phase 3 market-hours
         # validation, 2026-09-01): reqContractDetails raises error 200
         # ("no security definition found") for a strike/right that isn't
@@ -90,8 +91,10 @@ class _FakeConnection:
         retry_delay=0.0,
         on_attempt=None,
         timeout=None,
+        requirement_terminal=None,
     ):
         self.market_data_requests.append(contract)
+        self.requirement_terminals.append(requirement_terminal)
         result = self.snapshot_by_conid.get(getattr(contract, "conId", None), {})
         if on_attempt is not None:
             on_attempt(1, result)

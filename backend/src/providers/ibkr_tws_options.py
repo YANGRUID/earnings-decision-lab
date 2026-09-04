@@ -111,6 +111,31 @@ def _parse_ibkr_date(value: str) -> date | None:
         return None
 
 
+def _book_empty(result: dict, side: str) -> bool | None:
+    """True only when IBKR explicitly reported that ``side`` of the book
+    holds no order (a -1 price sentinel corroborated by a 0/absent size),
+    None when it said nothing about that side at all. Never inferred from
+    a merely absent price -- that is a real acquisition failure, and the
+    whole point of this distinction is to stop conflating the two."""
+    if not result.get(f"{side}_no_data_sentinel"):
+        return None
+    return _to_int(result.get(f"{side}_size")) in (0, None)
+
+
+def _requirement_terminal(result: dict, requirement: QuoteRequirement) -> bool:
+    """Whether IBKR has answered the requirement definitively, satisfied or
+    not. An explicitly empty book cannot be waited out, so the bounded
+    warm-up stops immediately instead of spending every remaining attempt
+    (7.5s per leg, measured) re-asking a question already answered."""
+    if requirement == QuoteRequirement.ASK:
+        return bool(_book_empty(result, "ask"))
+    if requirement == QuoteRequirement.BID:
+        return bool(_book_empty(result, "bid"))
+    if requirement == QuoteRequirement.BID_ASK:
+        return bool(_book_empty(result, "bid")) or bool(_book_empty(result, "ask"))
+    return False
+
+
 def _requirement_satisfied(result: dict, requirement: QuoteRequirement) -> bool:
     """Identical rule to providers/ibkr_options.py's own
     ``_quote_requirement_satisfied`` -- the real readiness test a bounded
@@ -656,6 +681,7 @@ class IBKRTWSProvider(OptionsDataProvider):
             requirement_satisfied=lambda result: _requirement_satisfied(result, requirement),
             generic_ticks=_OPTION_GENERIC_TICKS,
             on_attempt=_emit,
+            requirement_terminal=lambda result: _requirement_terminal(result, requirement),
         )
 
     def _to_option_quote(
@@ -680,6 +706,10 @@ class IBKRTWSProvider(OptionsDataProvider):
             last_price=_to_decimal(result.get("last")),
             volume=_to_int(result.get("volume")),
             open_interest=_to_int(result.get("open_interest")),
+            bid_size=_to_int(result.get("bid_size")),
+            ask_size=_to_int(result.get("ask_size")),
+            bid_book_empty=_book_empty(result, "bid"),
+            ask_book_empty=_book_empty(result, "ask"),
             implied_volatility=_to_decimal(
                 result.get("implied_volatility", result.get("implied_volatility_generic"))
             ),

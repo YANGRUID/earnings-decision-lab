@@ -137,6 +137,16 @@ class OptionQuote(ProvenancedModel):
     last_price: Decimal | None = None
     volume: int | None = None
     open_interest: int | None = None
+    # Depth-of-one sizes and IBKR's explicit empty-book statement for each
+    # executable side (V4 required-side settlement incident, 2026-09-04).
+    # ``*_book_empty`` is True only when the provider actually reported "no
+    # order on this side" (IBKR: a -1 price tick paired with a 0 size tick)
+    # -- never inferred from a merely absent price. None means the provider
+    # said nothing either way, which is a genuinely missing quote.
+    bid_size: int | None = None
+    ask_size: int | None = None
+    bid_book_empty: bool | None = None
+    ask_book_empty: bool | None = None
     implied_volatility: Decimal | None = None
     delta: Decimal | None = None
     gamma: Decimal | None = None

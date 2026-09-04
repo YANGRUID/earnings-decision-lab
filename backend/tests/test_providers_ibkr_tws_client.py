@@ -656,10 +656,13 @@ class TestDelayedTickNormalization:
 
     def test_delayed_bid_ask_last_sizes_are_real_decimal_and_preserved(self):
         """Confirmed live: DELAYED_BID_SIZE/DELAYED_ASK_SIZE/DELAYED_
-        LAST_SIZE (69/70/71) arrive as real Decimal instances. This
-        project tracks only aggregate volume, not per-side size, so
-        these are expected to have no canonical field -- must not
-        crash, must not be silently coerced to int."""
+        LAST_SIZE (69/70/71) arrive as real Decimal instances -- must not
+        crash, must not be silently coerced to int.
+
+        Bid/ask size gained a canonical field in the 2026-09-04 required-
+        side settlement fix: it is the corroborating half of IBKR's
+        empty-book statement (a -1 price with a 0 size). Last size still
+        has no canonical field and stays honestly absent."""
         from decimal import Decimal
 
         manager = _manager()
@@ -667,7 +670,8 @@ class TestDelayedTickNormalization:
         self._pending_result(manager)
         for tick_type in (69, 70, 71):
             manager.tickSize(5, tick_type, Decimal("380"))  # must not raise
-        assert manager._pending[5].result == {}  # noqa: SLF001 -- no canonical field, honestly empty
+        result = manager._pending[5].result  # noqa: SLF001
+        assert result == {"bid_size": Decimal("380"), "ask_size": Decimal("380")}
 
     def test_market_data_quality_stays_delayed_never_relabeled_live(self):
         manager = _manager()

@@ -68,6 +68,62 @@ class CohortEntrySummary:
     by_configuration: dict[str, str] = field(default_factory=dict)
 
 
+# V4 required-side settlement incident (2026-09-04). "required exit side
+# missing" was one bucket for two genuinely different worlds: a quote that
+# never arrived, and a quote that arrived saying the book is empty. Only the
+# first is worth retrying, and only the second is a real market fact. These
+# helpers keep them apart in the persisted evidence and in Operations.
+EXIT_NO_BID = "NO_BID"
+EXIT_NO_ASK = "NO_ASK"
+EXIT_NO_EXECUTABLE_SIDE = "NO_EXECUTABLE_SIDE"
+EXIT_REQUIRED_SIDE_TIMEOUT = "REQUIRED_SIDE_TIMEOUT"
+EXIT_REQUIRED_SIDE_MISSING = "REQUIRED_SIDE_QUOTE_MISSING"
+
+
+def _required_side_state(quote, side: str) -> str:
+    """present | book_empty | unavailable -- what the provider actually said
+    about the ONE side this leg must be closed on."""
+    if quote is None:
+        return "unavailable"
+    if (getattr(quote, side, None)) is not None:
+        return "present"
+    empty = getattr(quote, f"{side}_book_empty", None)
+    return "book_empty" if empty else "unavailable"
+
+
+def _exit_failure_category(missing_rows: list[dict]) -> str:
+    states = {r["required_side_state"] for r in missing_rows}
+    sides = {r["required_side"] for r in missing_rows}
+    if states == {"book_empty"}:
+        if sides == {"bid"}:
+            return EXIT_NO_BID
+        if sides == {"ask"}:
+            return EXIT_NO_ASK
+        return EXIT_NO_EXECUTABLE_SIDE
+    if states == {"unavailable"}:
+        return EXIT_REQUIRED_SIDE_TIMEOUT
+    return EXIT_REQUIRED_SIDE_MISSING
+
+
+def _exit_failure_detail(missing_rows: list[dict]) -> str:
+    """Section 25 -- say what was actually observed, per leg, instead of only
+    naming the leg indices."""
+    parts = []
+    for r in missing_rows:
+        parts.append(
+            f"leg {r['leg_index']} ({r['action']} {r['right']} {r['strike']}, "
+            f"conId {r['external_contract_id']}) needs {r['required_side'].upper()}: "
+            f"{r['required_side_state']}; bid={r['bid']} ask={r['ask']} last={r['last']} "
+            f"bid_size={r['bid_size']} ask_size={r['ask_size']} "
+            f"quality={r['market_data_quality']}"
+        )
+    return (
+        "required exit side missing on leg(s) "
+        f"{[r['leg_index'] for r in missing_rows]} -- no midpoint, last-price, "
+        "historical or intrinsic substitution is permitted. " + " | ".join(parts)
+    )
+
+
 def _executable_entry_legs(legs) -> tuple[Decimal | None, list[int], list[dict], list[datetime]]:
     """ENTRY sides from the frozen leg inputs (V4T1LegInput) for ONE unit."""
     net = Decimal(0)
@@ -349,6 +405,7 @@ def settle_shadow_decision_cohorts(
             )
             side = "bid" if leg.action == "buy" else "ask"
             price = (q.bid if leg.action == "buy" else q.ask) if q is not None else None
+            leg_last = getattr(q, "last_price", None)
             if price is None:
                 missing.append(leg.leg_index)
             else:
@@ -367,9 +424,15 @@ def settle_shadow_decision_cohorts(
                     "strike": str(leg.strike),
                     "external_contract_id": leg.external_contract_id,
                     "required_side": side,
+                    "required_side_state": _required_side_state(q, side),
                     "price": None if price is None else str(price),
                     "bid": None if q is None or q.bid is None else str(q.bid),
                     "ask": None if q is None or q.ask is None else str(q.ask),
+                    "last": None if leg_last is None else str(leg_last),
+                    "bid_size": getattr(q, "bid_size", None),
+                    "ask_size": getattr(q, "ask_size", None),
+                    "bid_book_empty": getattr(q, "bid_book_empty", None),
+                    "ask_book_empty": getattr(q, "ask_book_empty", None),
                     "market_data_quality": q.market_data_quality if q else None,
                     "retrieved_at": q.retrieved_at.isoformat()
                     if q and getattr(q, "retrieved_at", None)
@@ -377,21 +440,19 @@ def settle_shadow_decision_cohorts(
                 }
             )
         expiration = candidates[cid].expiration
-        detail = (
-            f"required exit side missing on leg(s) {missing} -- no midpoint, last-price, "
-            "historical or intrinsic substitution is permitted"
-            if missing
-            else None
-        )
+        missing_rows = [r for r in rows if r["leg_index"] in missing]
+        category = _exit_failure_category(missing_rows) if missing else None
+        detail = _exit_failure_detail(missing_rows) if missing else None
         if expiration in quote_errors and missing:
             detail = f"exit quote acquisition failed: {quote_errors[expiration]}"
+            category = EXIT_REQUIRED_SIDE_MISSING
         obs = V4ShadowCandidateObservation(
             shadow_decision_id=decision.id,
             candidate_id=cid,
             phase="EXIT",
             observed_at=observed_at,
             status="NOT_EXECUTABLE" if missing else "OBSERVED",
-            failure_category="REQUIRED_SIDE_QUOTE_MISSING" if missing else None,
+            failure_category=category,
             failure_detail=detail,
             net_executable_value=None if missing else net,
             market_data_quality=(

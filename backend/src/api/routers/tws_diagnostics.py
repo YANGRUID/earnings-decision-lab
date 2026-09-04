@@ -537,3 +537,45 @@ def contract_resolution_check(tws_provider: TwsProviderDep, symbol: str = "BF.B"
         out["expirations_error"] = f"{type(exc).__name__}: {exc}"
     out["secdef_ms"] = round((time.monotonic() - t) * 1000, 1)
     return out
+
+
+@router.get("/option-tick-probe", response_model=None)
+def option_tick_probe(
+    tws_provider: TwsProviderDep, conids: str, seconds: float = 12.0
+) -> dict:
+    """READ-ONLY forensic probe for the 2026-09-04 V4 required-side
+    settlement incident: hold one real streaming subscription per frozen
+    conId on the SHARED production connection and report every RAW tick
+    the wire actually delivered, so "bid missing" can be told apart from
+    "IB sent a -1 no-bid sentinel that normalization dropped".
+
+    Persists nothing, resolves nothing, places nothing."""
+    from providers.ibkr_tws_options import _bare_option_contract  # noqa: PLC0415
+
+    if tws_provider is None:
+        raise InvalidRequestError("no shared TWS provider on this process")
+    out: dict = {"probed_at": datetime.now(UTC).isoformat(), "contracts": []}
+    for raw in conids.split(","):
+        text = raw.strip()
+        if not text.isdigit():
+            continue
+        conid = int(text)
+        started = time.monotonic()
+        entry: dict = {"conid": conid}
+        try:
+            result = tws_provider._connection.probe_market_data_ticks(
+                _bare_option_contract(conid), seconds
+            )
+            ticks = result.pop("_raw_ticks", [])
+            entry["raw_ticks"] = ticks
+            entry["raw_tick_count"] = len(ticks)
+            entry["normalized"] = {
+                k: (str(v) if isinstance(v, Decimal) else v) for k, v in result.items()
+            }
+        except IBKRError as exc:
+            entry["error"] = f"{type(exc).__name__}: {exc}"
+        except Exception as exc:  # noqa: BLE001
+            entry["error"] = f"{type(exc).__name__}: {exc}"
+        entry["elapsed_ms"] = round((time.monotonic() - started) * 1000, 1)
+        out["contracts"].append(entry)
+    return out
