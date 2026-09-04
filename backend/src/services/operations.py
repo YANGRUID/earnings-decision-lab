@@ -76,6 +76,7 @@ from services.scheduler import (
     SchedulerStatus,
 )
 from services.system_status import IbkrStatus, get_ibkr_status, get_tws_status
+from services.v4_settlement_history import effective_settlements
 from services.v4_shadow_scheduler import (
     V4_FORWARD_WINDOW_JOB_ID,
     V4_SHADOW_DECISION_JOB_ID,
@@ -662,7 +663,7 @@ def _gather(db: Session, event: EarningsCalendarEvent, now: datetime) -> _Facts:
     settlements: list[V4ShadowConfigSettlement] = []
     if decision is not None:
         entries = db.query(V4ShadowConfigEntry).filter_by(shadow_decision_id=decision.id).all()
-        settlements = (
+        settlements = effective_settlements(
             db.query(V4ShadowConfigSettlement).filter_by(shadow_decision_id=decision.id).all()
         )
     return _Facts(
@@ -1532,7 +1533,7 @@ def compute_today_summary(
     entries = (
         db.query(V4ShadowConfigEntry).filter(V4ShadowConfigEntry.observed_at >= day_start).all()
     )
-    settlements = (
+    settlements = effective_settlements(
         db.query(V4ShadowConfigSettlement)
         .filter(V4ShadowConfigSettlement.settled_at >= day_start)
         .all()

@@ -28,6 +28,7 @@ from models.v4_shadow import (
     V4ShadowObservation,
     V4ShadowSettlement,
 )
+from services.v4_settlement_history import effective_settlements
 
 router = APIRouter(prefix="/v4/shadow", tags=["v4-shadow"])
 
@@ -418,7 +419,12 @@ def get_shadow_decision_configurations(decision_id: int, db: DbSession) -> dict:
     }
     settlements_by_result = {
         x.shadow_config_result_id: x
-        for x in db.query(V4ShadowConfigSettlement).filter_by(shadow_decision_id=decision_id)
+        for x in effective_settlements(
+            db.query(V4ShadowConfigSettlement)
+            .filter_by(shadow_decision_id=decision_id)
+            .order_by(V4ShadowConfigSettlement.id)
+            .all()
+        )
     }
     cand_obs = {
         (o.candidate_id, o.phase): o
@@ -577,14 +583,18 @@ def get_shadow_track_record_by_configuration(db: DbSession) -> dict:
     entries = counts(
         V4ShadowConfigEntry, V4ShadowConfigEntry.status, V4ShadowConfigEntry.configuration_key
     )
-    settlements = counts(
-        V4ShadowConfigSettlement,
-        V4ShadowConfigSettlement.status,
-        V4ShadowConfigSettlement.configuration_key,
-    )
+    # Counted over the settlement of record only -- a configuration whose
+    # failed attempt was later superseded by a recovery must not appear in
+    # both buckets.
+    settlements: dict[str, dict[str, int]] = {}
+    for row in effective_settlements(db.query(V4ShadowConfigSettlement).all()):
+        bucket = settlements.setdefault(row.configuration_key, {})
+        bucket[row.status] = bucket.get(row.status, 0) + 1
     # Per-cohort realized outcomes (only this cohort's own settlements).
     realized: dict[str, list] = {}
     for x in db.query(V4ShadowConfigSettlement).filter_by(status="SETTLED"):
+        # At most one SETTLED row per configuration exists by construction
+        # (partial unique index), so this needs no superseding pass.
         realized.setdefault(x.configuration_key, []).append(x)
 
     rows = []

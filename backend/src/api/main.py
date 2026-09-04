@@ -27,6 +27,7 @@ from api.routers import (
     tws_diagnostics,
     usage,
     v4_experimental,
+    v4_settlement_recovery,
     v4_shadow,
 )
 from core.config import get_settings
@@ -205,6 +206,11 @@ def create_app() -> FastAPI:
     # production API surface neither exposes nor documents it.
     if settings.enable_internal_diagnostics:
         app.include_router(tws_diagnostics.router, prefix="/api/v1")
+        # The one write-capable operator route (end-of-day settlement
+        # recovery), kept in its own module so tws_diagnostics stays
+        # read-only by construction. Still a dry run unless the caller
+        # passes confirm=APPEND.
+        app.include_router(v4_settlement_recovery.router, prefix="/api/v1")
     # Phase 4.9 -- developer-only, on-demand triggers for the real
     # earnings pipeline jobs (see api/routers/admin.py). Registered at
     # all only outside production, so a production deployment doesn't

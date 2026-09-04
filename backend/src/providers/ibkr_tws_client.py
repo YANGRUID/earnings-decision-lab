@@ -101,7 +101,15 @@ _CODES_MARKET_DATA_PERMISSION = {354, 10168, 10197}
 # request, 10091 for a partial field group (e.g. BID_ASK specifically)
 # -- the same real, honest "no live data" condition as 10167, just
 # different real codes for it.
-_CODES_MARKET_DATA_UNAVAILABLE = {10089, 10091, 10167, 10182, 2119}
+# 2188 confirmed live (2026-09-04, this account's real delayed-only
+# entitlement): "Up-to-the-second historical data requires additional
+# subscription for the API" is IBKR's own PRE-COMPLETION notice on a
+# historical request -- it sits in IBKR's 2100-2200 warning band, and the
+# real bars still arrive behind it. Classifying it as a SYSTEM_ERROR (the
+# default for an unmapped code) raised on every historical request whose
+# window reached near the present, which is exactly the request an
+# end-of-day settlement close has to make.
+_CODES_MARKET_DATA_UNAVAILABLE = {10089, 10091, 10167, 10182, 2119, 2188}
 _CODES_RATE_LIMIT = {100, 509, 420}
 _CODES_CONTRACT_NOT_FOUND = {200, 300}
 _CODES_CLIENT_ID_IN_USE = {326}
@@ -545,7 +553,13 @@ class TWSConnectionManager(EWrapper, EClient):
                 # loop's own timer for streaming mode, which never
                 # waited on ``done`` in the first place) decide when the
                 # request is actually finished.
-                pending.result = pending.result or {}
+                # Only a market-data request accumulates into a dict. A
+                # historical request accumulates into a LIST of bars, and
+                # coercing that to {} here would make the very next
+                # historicalData callback raise on .append -- so the
+                # accumulator's own shape is left strictly alone.
+                if pending.result is None and pending.request_type.startswith("market_data"):
+                    pending.result = {}
                 if isinstance(pending.result, dict):
                     pending.result["_market_data_unavailable"] = True
         elif reqId in (-1, 0) and exc is not None:

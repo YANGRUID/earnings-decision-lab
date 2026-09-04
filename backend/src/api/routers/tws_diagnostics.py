@@ -579,3 +579,41 @@ def option_tick_probe(
         entry["elapsed_ms"] = round((time.monotonic() - started) * 1000, 1)
         out["contracts"].append(entry)
     return out
+
+
+@router.get("/session-close-probe", response_model=None)
+def session_close_probe(
+    tws_provider: TwsProviderDep, conids: str = "", symbols: str = "", session: str = ""
+) -> dict:
+    """READ-ONLY: what IBKR historical actually returns for a given session,
+    per option conId and per underlying symbol. Used to establish whether a
+    same-session closing mark is obtainable at all on this entitlement."""
+    from datetime import date as _date  # noqa: PLC0415
+
+
+    if tws_provider is None:
+        raise InvalidRequestError("no shared TWS provider on this process")
+    target = _date.fromisoformat(session) if session else _date.today()
+    out: dict = {"session": target.isoformat(), "options": [], "underlyings": []}
+    conn = tws_provider._connection  # noqa: SLF001
+    conn.ensure_connected()
+    for raw in [c.strip() for c in conids.split(",") if c.strip().isdigit()]:
+        entry: dict = {"conid": int(raw)}
+        try:
+            close, source = tws_provider.get_session_close_with_source(int(raw), target)
+            entry["close"] = None if close is None else str(close)
+            entry["source"] = source
+        except Exception as exc:  # noqa: BLE001
+            entry["error"] = f"{type(exc).__name__}: {exc}"
+        entry["last_error"] = conn._last_error  # noqa: SLF001
+        out["options"].append(entry)
+
+    for symbol in [s.strip().upper() for s in symbols.split(",") if s.strip()]:
+        entry = {"symbol": symbol}
+        try:
+            entry["close"] = str(tws_provider.get_underlying_session_close(symbol, target))
+        except Exception as exc:  # noqa: BLE001
+            entry["error"] = f"{type(exc).__name__}: {exc}"
+        entry["last_error"] = conn._last_error  # noqa: SLF001
+        out["underlyings"].append(entry)
+    return out

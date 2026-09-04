@@ -35,13 +35,16 @@ from __future__ import annotations
 import time
 from collections.abc import Callable
 from datetime import UTC, date, datetime
+from datetime import time as _clock_time
 from decimal import Decimal, InvalidOperation
 
 from ibapi.contract import Contract
 
+from analytics.market_session import EASTERN as _EASTERN
 from analytics.options.implied_move import select_expiration_after, select_nearest_listed_expiration
 from models.enums import QuoteRequirement
 from providers.base import OptionsDataProvider
+from providers.ibkr_client import IBKRError
 from providers.ibkr_historical import HistoricalBar
 from providers.ibkr_options import IBKRContractNotFoundError
 from providers.ibkr_tws_client import TWSConnectionManager
@@ -69,6 +72,10 @@ STRIKES_AROUND_ATM = 5
 # tickOptionComputation for any option contract's market-data
 # subscription, independent of this generic-tick list.
 _OPTION_GENERIC_TICKS = "100,101,106"
+# Bounded per-attempt wait for one closing-mark bar series -- a settlement
+# recovery walks several series across many contracts and must not inherit
+# the full default request timeout on each one.
+_SESSION_CLOSE_TIMEOUT_SECONDS = 8.0
 
 _RIGHT_BY_OPTION_TYPE = {"call": "C", "put": "P"}
 _OPTION_TYPE_BY_RIGHT = {"C": "call", "P": "put"}
@@ -423,6 +430,105 @@ class IBKRTWSProvider(OptionsDataProvider):
             end_time=end_time,
             outside_rth=outside_rth,
         )
+
+    # ------------------------------------------------------------------
+    # Same-session closing marks (V4 end-of-day settlement fallback)
+    # ------------------------------------------------------------------
+
+    def get_session_close(self, conid: int, session_date: date) -> Decimal | None:
+        """That contract's OWN final verifiable close for ``session_date``.
+
+        Deliberately not the CLOSE market-data tick (9/75): IBKR defines
+        that as the PREVIOUS session's close, which is exactly the
+        prior-day price the settlement methodology forbids. Proven on
+        2026-09-04: LULU's 127 call carried tick 75 = 3.79 while its own
+        ask that afternoon was 0.01 -- yesterday's value, not today's.
+
+        Returns None rather than the nearest available bar when the
+        requested session has no bar: a close that is not this session's
+        close is not a substitute for one.
+        """
+        self._connection.ensure_connected()
+        return self._session_close(_bare_option_contract(conid), session_date)[0]
+
+    def get_session_close_with_source(
+        self, conid: int, session_date: date
+    ) -> tuple[Decimal | None, str | None]:
+        """As ``get_session_close``, plus which bar series actually produced
+        the mark -- persisted as provenance alongside the settled leg."""
+        self._connection.ensure_connected()
+        return self._session_close(_bare_option_contract(conid), session_date)
+
+    def get_underlying_session_close(self, ticker: str, session_date: date) -> Decimal | None:
+        """The official underlying close for ``session_date`` -- the input
+        to expiration intrinsic value, and only ever that."""
+        self._connection.ensure_connected()
+        conid = self._resolve_underlying_conid(ticker)
+        if conid is None:
+            return None
+        return self._session_close(_bare_stock_contract(conid), session_date)[0]
+
+    def _session_close(
+        self, contract: Contract, session_date: date
+    ) -> tuple[Decimal | None, str | None]:
+        """Real, confirmed IBKR behaviour on this entitlement (2026-09-04):
+
+          * daily bars are the authoritative close where they exist, but
+            IBKR answers error 162 "No data of type EODChart is available"
+            for OPTION contracts routed through SMART/BEST -- so options
+            have no daily series to read at all;
+          * an end time later than the data actually available draws error
+            2188 ("up-to-the-second historical data requires additional
+            subscription"), so the request ends at the session's own
+            16:00 ET close rather than at midnight.
+
+        Both series are real same-session RTH trades. The intraday path
+        takes the LAST regular-hours trade bar of the session, which is
+        that contract's closing trade -- never a bar from another session,
+        and never a synthesised value.
+        """
+        session_end = datetime.combine(
+            session_date, _clock_time(16, 0, 0), tzinfo=_EASTERN
+        ).astimezone(UTC)
+        end_str = session_end.strftime("%Y%m%d-%H:%M:%S")
+        for duration, bar_size, label in (
+            ("2 D", "1 day", "daily_trades_bar"),
+            ("1 D", "30 mins", "last_rth_30min_trade_bar"),
+            ("1 D", "5 mins", "last_rth_5min_trade_bar"),
+        ):
+            try:
+                raw_bars = self._connection.request_historical_bars(
+                    contract,
+                    end_datetime=end_str,
+                    duration=duration,
+                    bar_size=bar_size,
+                    what_to_show="TRADES",
+                    use_rth=True,
+                    timeout=_SESSION_CLOSE_TIMEOUT_SECONDS,
+                )
+            except IBKRError:
+                continue
+            close = self._close_for_session(raw_bars, session_date)
+            if close is not None:
+                return close, label
+        return None, None
+
+    @staticmethod
+    def _close_for_session(raw_bars, session_date: date) -> Decimal | None:
+        """The last bar that genuinely belongs to ``session_date``."""
+        best: Decimal | None = None
+        for raw in raw_bars:
+            close = _to_decimal(getattr(raw, "close", None))
+            raw_date = getattr(raw, "date", None)
+            if close is None or raw_date is None:
+                continue
+            try:
+                stamp = datetime.fromtimestamp(int(raw_date), tz=UTC)
+            except (TypeError, ValueError):
+                continue
+            if stamp.astimezone(_EASTERN).date() == session_date:
+                best = close
+        return best
 
     # ------------------------------------------------------------------
     # Narrow acquisition (already-identified contracts/legs)

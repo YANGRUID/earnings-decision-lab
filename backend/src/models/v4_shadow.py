@@ -40,6 +40,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     func,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -645,14 +646,27 @@ class V4ShadowConfigEntry(Base):
 class V4ShadowConfigSettlement(Base):
     """A configuration's realized T+1 result for its frozen position, at the
     shared EXIT candidate observation's executable prices, times its own
-    quantity. One per configuration result; only configurations with an
-    OBSERVED entry are ever settled."""
+    quantity. Only configurations with an OBSERVED entry are ever settled.
+
+    A configuration may carry more than one settlement ATTEMPT -- a failed
+    attempt is immutable and is never rewritten, so a later end-of-day
+    recovery is appended as a new row that supersedes it. At most one of a
+    configuration's attempts may be SETTLED, which the partial unique index
+    below enforces in the database rather than by convention."""
 
     __tablename__ = "v4_shadow_config_settlement"
+    __table_args__ = (
+        Index(
+            "uq_v4_shadow_config_settlement_one_settled_per_config",
+            "shadow_config_result_id",
+            unique=True,
+            postgresql_where=text("status = 'SETTLED'"),
+        ),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     shadow_config_result_id: Mapped[int] = mapped_column(
-        ForeignKey("v4_shadow_config_result.id"), nullable=False, unique=True
+        ForeignKey("v4_shadow_config_result.id"), nullable=False, index=True
     )
     shadow_decision_id: Mapped[int] = mapped_column(
         ForeignKey("v4_shadow_decision.id"), nullable=False, index=True
@@ -681,6 +695,17 @@ class V4ShadowConfigSettlement(Base):
     #: settlement) settled prospectively under v2 (15:30) records v2 here and keeps
     #: v1 on the immutable decision/entry rows.
     timing_policy_version: Mapped[str | None] = mapped_column(String(64))
+    # Explicit end-of-day settlement provenance (2026-09-04). pricing_method
+    # carries the real pricing-source labels this settlement used
+    # (EXECUTABLE_BID/EXECUTABLE_ASK/MARKET_CLOSE_FALLBACK/
+    # EXPIRATION_INTRINSIC_AT_CLOSE); supersedes_settlement_id points a
+    # recovery attempt back at the failed attempt it replaces, which is
+    # retained unaltered.
+    pricing_method: Mapped[str | None] = mapped_column(String(96))
+    recovery_provenance: Mapped[str | None] = mapped_column(String(48))
+    supersedes_settlement_id: Mapped[int | None] = mapped_column(
+        ForeignKey("v4_shadow_config_settlement.id")
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
