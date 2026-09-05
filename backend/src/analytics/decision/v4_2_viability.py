@@ -70,6 +70,8 @@ SEMANTIC_UNACCEPTABLE = "SEMANTIC_COMPATIBILITY_UNACCEPTABLE"
 INSUFFICIENT_MOVE_EVIDENCE = "INSUFFICIENT_MOVE_EVIDENCE"
 NO_MOVE_EDGE = "NO_MOVE_EDGE_VS_IMPLIED"
 MISSING_ECONOMICS = "MISSING_ECONOMICS"
+CAPITAL_INCOMPATIBLE = "CAPITAL_INCOMPATIBLE"
+RISK_CAP_EXCEEDED = "RISK_CAP_EXCEEDED"
 
 
 @dataclass(frozen=True)
@@ -467,6 +469,130 @@ def choose_v4_2_candidate(
             status="NO_ACTION",
             no_action_reason=(
                 f"no candidate cleared the absolute economic viability gate: {summary}"
+                if summary
+                else "no candidate could be assessed"
+            ),
+            verdicts=verdicts,
+        )
+
+    def sort_key(v: ViabilityVerdict):
+        econ = by_id[v.candidate_id]
+        return (
+            econ.median_return or Decimal(0),
+            econ.worst_return or Decimal(0),
+            econ.positive_scenario_fraction or Decimal(0),
+            -(econ.mean_relative_spread or Decimal(0)),
+        )
+
+    winner = max(accepted, key=sort_key)
+    return ChallengerDecision(
+        status="RANKED", selected_candidate_id=winner.candidate_id, verdicts=verdicts
+    )
+
+
+# ---------------------------------------------------------------------------
+# Per-configuration outcomes (Sections 40-42).
+#
+# The six configurations share one evidence package and one market-data
+# acquisition -- nothing here re-quotes anything. What differs per
+# configuration is capital and risk tolerance, so a candidate that is
+# economically viable can still be incompatible with one configuration's
+# capital base or defined-risk cap while remaining right for another.
+#
+# It is therefore a correct outcome for $2K Conservative to return NO_ACTION
+# while $10K Moderate actions the same evidence. The six are not slots to be
+# filled.
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class ConfigurationConstraints:
+    """The per-configuration limits, passed in rather than imported, so this
+    module never grows its own copy of the cohort definitions."""
+
+    key: str
+    capital_base: Decimal
+    max_risk_dollars: Decimal
+
+
+def assess_configuration_fit(
+    economics: CandidateEconomics,
+    constraints: ConfigurationConstraints,
+    *,
+    entry_cash_required: Decimal | None,
+    max_loss_dollars: Decimal | None,
+) -> tuple[bool, tuple[str, ...], tuple[str, ...]]:
+    """Whether a candidate that already cleared the absolute economic gate
+    also fits THIS configuration's capital and risk limits."""
+    reasons: list[str] = []
+    detail: list[str] = []
+
+    if entry_cash_required is not None and entry_cash_required > constraints.capital_base:
+        reasons.append(CAPITAL_INCOMPATIBLE)
+        detail.append(
+            f"entry cash {entry_cash_required} exceeds {constraints.key}'s capital base "
+            f"{constraints.capital_base}"
+        )
+
+    if max_loss_dollars is not None and max_loss_dollars > constraints.max_risk_dollars:
+        reasons.append(RISK_CAP_EXCEEDED)
+        detail.append(
+            f"defined risk {max_loss_dollars} exceeds {constraints.key}'s cap "
+            f"{constraints.max_risk_dollars}"
+        )
+
+    return not reasons, tuple(reasons), tuple(detail)
+
+
+def choose_v4_2_candidate_for_configuration(
+    candidates: list[CandidateEconomics],
+    evidence: MoveEvidence,
+    constraints: ConfigurationConstraints,
+    *,
+    entry_cash_by_candidate: dict[str, Decimal] | None = None,
+    max_loss_by_candidate: dict[str, Decimal] | None = None,
+    policy: ViabilityPolicy | None = None,
+) -> ChallengerDecision:
+    """One configuration's own decision over the SHARED candidate set.
+
+    The absolute economic gate is identical across configurations -- an
+    economically bad trade is bad at every size -- and only the capital and
+    risk fit differs.
+    """
+    policy = policy or DEFAULT_POLICY
+    entry_cash_by_candidate = entry_cash_by_candidate or {}
+    max_loss_by_candidate = max_loss_by_candidate or {}
+
+    verdicts: list[ViabilityVerdict] = []
+    for candidate in candidates:
+        verdict = assess_viability(candidate, evidence, policy)
+        if verdict.acceptable:
+            fits, reasons, detail = assess_configuration_fit(
+                candidate,
+                constraints,
+                entry_cash_required=entry_cash_by_candidate.get(candidate.candidate_id),
+                max_loss_dollars=max_loss_by_candidate.get(candidate.candidate_id),
+            )
+            if not fits:
+                verdict = ViabilityVerdict(
+                    candidate.candidate_id, False, reasons, detail
+                )
+        verdicts.append(verdict)
+
+    accepted = [v for v in verdicts if v.acceptable]
+    by_id = {c.candidate_id: c for c in candidates}
+    if not accepted:
+        counts: dict[str, int] = {}
+        for v in verdicts:
+            for code in v.reason_codes:
+                counts[code] = counts.get(code, 0) + 1
+        summary = ", ".join(
+            f"{code} ({n})" for code, n in sorted(counts.items(), key=lambda kv: -kv[1])
+        )
+        return ChallengerDecision(
+            status="NO_ACTION",
+            no_action_reason=(
+                f"no candidate was viable and compatible with {constraints.key}: {summary}"
                 if summary
                 else "no candidate could be assessed"
             ),
