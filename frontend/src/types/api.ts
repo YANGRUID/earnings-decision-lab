@@ -1512,3 +1512,56 @@ export interface V4TrackRecordByConfiguration {
   configurations: V4ConfigTrackRecordRow[];
 }
 
+
+
+// V4.1 CONTROL vs V4.2 CHALLENGER (research surface). Neutral by design:
+// no field here asserts that either methodology is better.
+export interface V4MethodologySide {
+  methodology: string;
+  status: string | null;
+  selected_candidate_id: string | null;
+  strategy: string | null;
+  expiration: string | null;
+  median_return: number | null;
+  worst_return: number | null;
+  positive_scenario_fraction: number | null;
+  no_action_reason: string | null;
+  candidates_evaluated: number | null;
+  candidates_accepted: number | null;
+}
+
+export interface V4ChallengerEvidence {
+  historical_move: string;
+  historical_sample_n: number | null;
+  historical_timing_quality: string | null;
+  historical_source: string;
+  multi_expiry_metadata: string;
+  multi_expiry_replay: string;
+  overall: string;
+}
+
+export interface V4MethodologyConfigRow {
+  configuration_key: string;
+  control_status: string | null;
+  control_candidate_id: string | null;
+  challenger_status: string | null;
+  challenger_candidate_id: string | null;
+  challenger_no_action_reason: string | null;
+}
+
+export interface V4MethodologyComparisonEvent {
+  ticker: string;
+  earnings_calendar_event_id: number;
+  observed_at: string | null;
+  control: V4MethodologySide;
+  challenger: V4MethodologySide;
+  challenger_evidence: V4ChallengerEvidence;
+  configurations: V4MethodologyConfigRow[];
+  differs: boolean;
+}
+
+export interface V4MethodologyComparison {
+  notice: string;
+  events: V4MethodologyComparisonEvent[];
+  counts: { events: number; challenger_evaluated: number; differs: number };
+}

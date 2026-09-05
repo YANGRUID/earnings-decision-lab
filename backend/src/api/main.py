@@ -26,6 +26,7 @@ from api.routers import (
     system_status,
     tws_diagnostics,
     usage,
+    v4_2_challenger,
     v4_experimental,
     v4_settlement_recovery,
     v4_shadow,
@@ -229,6 +230,10 @@ def create_app() -> FastAPI:
         # registration guard as admin.router immediately above: not
         # even listed in /docs for a production deployment.
         app.include_router(v4_experimental.router, prefix="/api/v1")
+        # V4.2 challenger diagnostics -- read-only, research only, and
+        # registered on the same non-production gate as the other V4
+        # experimental surfaces so the official product never carries it.
+        app.include_router(v4_2_challenger.router, prefix="/api/v1")
 
     return app
 

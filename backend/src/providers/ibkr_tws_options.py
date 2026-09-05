@@ -675,6 +675,43 @@ class IBKRTWSProvider(OptionsDataProvider):
         smart = next((r for r in candidates if r["exchange"] == "SMART"), None)
         return smart or candidates[0]
 
+    def get_chain_metadata(self, ticker: str) -> dict | None:
+        """The COMPLETE listed option metadata for ``ticker``, from the one
+        ``reqSecDefOptParams`` call the provider already makes.
+
+        Metadata only: expirations and listed strikes. No contract is
+        resolved and no market-data subscription is opened, so freezing this
+        costs nothing beyond a security-definition request. That distinction
+        matters -- it is what makes a point-in-time chain freeze affordable
+        on every event, and it is the evidence without which a multi-expiry
+        replay is impossible.
+
+        Reuses ``_option_params``' own SMART / trading-class filtering
+        verbatim rather than re-deriving it, so adjusted and "2"-prefixed
+        contract series are excluded here exactly as they are everywhere
+        else.
+        """
+        self._connection.ensure_connected()
+        underlying_conid = self._resolve_underlying_conid(ticker)
+        params = self._option_params(ticker, underlying_conid)
+        if params is None:
+            return None
+        expirations = sorted(
+            d for d in (_parse_ibkr_date(e) for e in params["expirations"]) if d is not None
+        )
+        strikes = sorted(
+            d for d in (_to_decimal(k) for k in params.get("strikes") or ()) if d is not None
+        )
+        return {
+            "underlying_conid": str(underlying_conid) if underlying_conid else None,
+            "trading_class": params.get("trading_class"),
+            "exchange": params.get("exchange"),
+            "multiplier": params.get("multiplier"),
+            "expirations": expirations,
+            "strikes": strikes,
+            "source_provider": "ibkr_tws",
+        }
+
     def _strikes_near_atm(self, strikes: set, underlying_price: Decimal) -> list[Decimal]:
         all_strikes = sorted(d for d in (_to_decimal(s) for s in strikes) if d is not None)
         if not all_strikes:

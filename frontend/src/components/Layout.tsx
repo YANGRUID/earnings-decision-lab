@@ -34,6 +34,9 @@ const DECISION_NAV_ITEMS: NavItem[] = [
 // The V4 forward test is the only evidence the product keeps.
 const PERFORMANCE_NAV_ITEMS: NavItem[] = [
   { to: "/v4-shadow-track-record", label: "V4 Forward Track Record" },
+  // Research: V4.2 is a challenger, not a second product, so it sits beside
+  // the forward record rather than in the primary decision flow.
+  { to: "/methodology-comparison", label: "Methodology Comparison" },
 ];
 
 const OPERATIONS_NAV_ITEMS: NavItem[] = [{ to: "/operations", label: "Live Operations" }];

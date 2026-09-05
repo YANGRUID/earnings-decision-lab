@@ -1,4 +1,4 @@
-# V4.2 Challenger — Phase 1
+# V4.2 Challenger — Phases 1–2
 
 **Not production.** v4.1.0 remains the control methodology and the official recommendation path.
 Nothing in this document is registered, scheduled, or reachable from a running service.
@@ -179,17 +179,94 @@ profitable event, which V4.2 also declines. A methodology that avoids the losers
 nearly everything has not been shown to be better; it has been shown to be more conservative.
 Seven events cannot distinguish those.
 
+## Phase 2 — evidence capture and parallel foundation
+
+Phase 1 built the methodology. Phase 2 built the evidence architecture it needs to run beside the
+control on future events, and closed three of the six promotion gates.
+
+### Versioned AMC/BMO anchoring
+
+`price_reaction_moves()` never sees the announcement time, so for a **BMO** report it uses the
+*post-release* close as the "before" price and measures the day after the reaction. That is a
+shared-code defect, reported and **not** silently fixed: released V4.1 evidence references those
+values.
+
+`v4_2_reaction_anchoring_v2` re-derives the move from immutable price bars, additively:
+
+| Classification | Pre-event | Post-event |
+|---|---|---|
+| `KNOWN_AMC` | last session ≤ earnings date | first session after |
+| `KNOWN_BMO` | last session **<** earnings date | earnings-day session |
+| `UNKNOWN_TIMING` | AMC convention, stamped **UNVERIFIED** | — |
+
+Timing is never inferred — not from filing times, not from how violently the stock gapped.
+`timing_quality` is carried as its own dimension, orthogonal to sample size, and a set is only
+timing-verified when *every* contributing observation is.
+
+**Coverage audit:** `announcement_time` is `UNKNOWN` for all 1,831 historical events and all 1,201
+with a usable reaction. Zero known AMC, zero known BMO. So every historical observation is
+UNVERIFIED today, and the dimension improves only prospectively. Re-deriving under that convention
+reproduces the existing corpus exactly — the expected result, and an independent check that the
+derivation is right.
+
+### Challenger persistence
+
+`v4_2_challenger_decision` / `_candidate` / `_config_result`, all append-only with the project's
+own `reject_snapshot_update()` trigger. Separate tables throughout: a challenger that could
+rewrite the control's record would make the comparison worthless.
+
+The challenger reads the **control's own frozen candidate rows** for its economics. Both
+methodologies then see identical modeled valuations, strikes and observed spreads, so any
+difference is attributable to the gate and the ranking — and a parallel evaluation issues **zero**
+additional market-data requests, which the decision row records rather than asserts.
+
+Every versioned component is frozen on the decision, along with the historical move context used
+and a digest of the events behind it. The complete candidate set is kept, refusals included.
+
+### Chain metadata freeze
+
+`v4_chain_metadata_snapshot` records the listed expirations and strikes that existed at a decision
+instant, from the one security-definition call the provider already makes — **metadata only**, no
+contract resolution and no subscription. This is what makes multi-expiry answerable prospectively;
+the seven historical events have none, which is exactly why their multi-expiry behaviour remains
+`CANNOT_REPLAY_HONESTLY`.
+
+### Liquidity collection
+
+The provider already requested the generic ticks carrying volume and open interest, but the leg
+persistence dropped them — 0 of 211 stored legs had either. Now captured with depth-of-one sizes,
+additively and nullable. **NULL means the provider supplied no figure**, which stays
+distinguishable from a market reporting zero. Nothing reads them: `v4_strike_resolver`'s liquidity
+tie-break uses the live quote, not the persisted leg, so collection changes no decision.
+
+### Live zero-write dry-run
+
+Run 2026-09-05 against the shared production provider, market closed (metadata is static
+reference data, so the measurement holds):
+
+| Ticker | Listed expirations | Listed strikes | Considered | Metadata requests | Market-data requests |
+|---|---|---|---|---|---|
+| AAPL | 22 | 123 | 3 | 1 | 0 |
+| LULU | 16 | 119 | 3 | 1 | 0 |
+| CPRT | 10 | 29 | 3 | 1 | 0 |
+| GWRE | 7 | 48 | 3 | 1 | 0 |
+
+**4 metadata requests, 0 market-data requests, 465 ms total, 0 writes.** No chain sweep, no
+sixfold configuration multiplier, no duplicate DeepSeek call.
+
 ## Promotion gates — what must be true before parallel production
 
-1. **Chain metadata must be frozen on the decision.** Only one expiration is persisted per
-   decision today, so a point-in-time multi-expiry replay is `CANNOT_REPLAY_HONESTLY`.
-2. **Multi-expiry candidate generation** must be built and evaluated on the same T+1 objective.
-3. **A challenger evidence table and read model** — Phase 1 replays offline; there is no persisted
-   V4.1-vs-V4.2 comparison record.
-4. **Volume/open-interest persistence** for exit-liquidity diagnostics.
-5. **A decision on the `announcement_time` and `price_reaction_moves` BMO defects**, which affect
-   the historical corpus this gate depends on.
-6. **More events.** The gate's behaviour at N = 7 is a description, not a validation.
+| # | Gate | Phase 2 status |
+|---|---|---|
+| 1 | Chain metadata frozen on the decision | **CLOSED** — `v4_chain_metadata_snapshot`, proven live |
+| 2 | Challenger evidence table and read model | **CLOSED** — immutable tables + comparison API/UI |
+| 3 | Volume / open-interest persistence | **CLOSED** — captured, zero-vs-missing preserved |
+| 4 | Multi-expiry candidate generation | **OPEN** — ladder and metadata exist; per-expiry candidate construction does not |
+| 5 | BMO / `announcement_time` defects | **OPEN** — anchoring versioned; the shared fix and any timing enrichment are your decision |
+| 6 | More events | **OPEN** — N = 7 remains a description, not a validation |
 
-Not built in Phase 1, and not half-wired: parallel scheduler activation, challenger persistence,
-multi-expiry candidate generation, frontend comparison surface.
+Gate 4 is the substantive remaining engineering. Gates 5 and 6 are decisions and time, not code.
+
+**Not built, and deliberately not half-wired:** parallel scheduler activation (no challenger job
+exists), per-expiry candidate construction, and challenger settlement observation. V4.2 has never
+run in production, has frozen no production evidence, and places nothing.

@@ -26,6 +26,7 @@ import type {
   V4ShadowDecisionsResponse,
   V4ShadowTrackRecord,
   V4ShadowConfigurationsResponse,
+  V4MethodologyComparison,
   V4TrackRecordByConfiguration,
   V4TrackRecordView,
 } from "../types/api";
@@ -141,6 +142,9 @@ export const api = {
   // V4 consolidation -- six-configuration read models. All read-only.
   getV4ShadowConfigurations: (id: number) =>
     request<V4ShadowConfigurationsResponse>(`/v4/shadow/decisions/${id}/configurations`),
+  // V4.2 challenger research surface (read-only).
+  getV4MethodologyComparison: () =>
+    request<V4MethodologyComparison>("/v4-2/challenger/comparison"),
   getV4TrackRecordByConfiguration: (view: V4TrackRecordView = "all") =>
     request<V4TrackRecordByConfiguration>(
       `/v4/shadow/track-record/by-configuration?view=${view}`,

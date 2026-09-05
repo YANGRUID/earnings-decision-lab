@@ -16,14 +16,14 @@ from analytics.decision.v4_2_earnings_friction import (
     FrictionObservation,
     build_earnings_friction_cohort,
 )
+from analytics.decision_timing_policy import V4_TIMING_POLICY
+from models.earnings_calendar_event import EarningsCalendarEvent
 from models.v4_shadow import (
     SHADOW_SCHEMA_VERSION,
     V4ShadowCandidate,
     V4ShadowCandidateLeg,
     V4ShadowDecision,
 )
-from models.earnings_calendar_event import EarningsCalendarEvent
-from analytics.decision_timing_policy import V4_TIMING_POLICY
 
 D = Decimal
 

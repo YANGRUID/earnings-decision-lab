@@ -7,6 +7,7 @@ import { Research } from "./pages/Research";
 import { DataStatus } from "./pages/DataStatus";
 import { V4DecisionLab } from "./pages/V4DecisionLab";
 import { V4ShadowTrackRecord } from "./pages/V4ShadowTrackRecord";
+import { V4MethodologyComparison } from "./pages/V4MethodologyComparison";
 import { Operations } from "./pages/Operations";
 import { DataProviders } from "./pages/Settings/DataProviders";
 import { AiProvider } from "./pages/Settings/AiProvider";
@@ -40,6 +41,7 @@ export default function App() {
           <Route path="candidate-explorer" element={<V4DecisionLab mode="explorer" />} />
           <Route path="candidate-explorer/:id" element={<V4DecisionLab mode="explorer" />} />
           <Route path="v4-shadow-track-record" element={<V4ShadowTrackRecord />} />
+          <Route path="methodology-comparison" element={<V4MethodologyComparison />} />
           <Route path="settings/providers" element={<DataProviders />} />
           <Route path="settings/ai-provider" element={<AiProvider />} />
           <Route path="settings/ibkr" element={<Ibkr />} />
