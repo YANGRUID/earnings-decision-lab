@@ -2,6 +2,44 @@
 
 All notable changes to Earnings Decision Lab. Dates are the real commit dates.
 
+## v4.1.0 — 2026-09-05 — Resilient forward settlement
+
+Settlement stopped being all-or-nothing. A position whose executable side is empty at the
+scheduled window is now settled honestly after the close instead of being stranded, and the
+Track Record says exactly which settlements were executable and which were not.
+
+- **An empty book is no longer read as a missing quote.** IBKR answers a deep-OTM leg with
+  `tickPrice(66 DELAYED_BID) = -1` and `tickSize(69) = 0` — an explicit "no order is bid on this
+  side". Normalization discarded the sentinel along with the price, so an answered request looked
+  unanswered: the bounded warm-up spent all five attempts (7.54 s per leg, against 1.51 s for a
+  leg that quotes) and the failure was recorded as a missing quote. The sentinel and the bid/ask
+  sizes are now recorded, `OptionQuote` carries `bid_size` / `ask_size` / `bid_book_empty` /
+  `ask_book_empty`, the warm-up stops immediately on a definitive answer, and settlement evidence
+  distinguishes `NO_BID` / `NO_ASK` from `REQUIRED_SIDE_TIMEOUT`. The price itself is still never
+  written from a sentinel.
+- **End-of-day settlement fallback.** Per leg, in strict order: a real executable side captured at
+  or before the close (`EXECUTABLE_BID` / `EXECUTABLE_ASK`), then that contract's own same-session
+  closing mark (`MARKET_CLOSE_FALLBACK`), then — only for a contract expiring that day with no
+  usable mark — intrinsic against the official underlying close
+  (`EXPIRATION_INTRINSIC_AT_CLOSE`). A living option is never written down to zero because its
+  book was empty. No model price, prior-day close, midpoint or last-trade substitution exists in
+  the path. A weekday 16:30 ET job (`v4_eod_settlement_fallback`) applies it automatically.
+- **Two real IBKR constraints, both confirmed live.** Daily (EODChart) bars are unavailable for
+  option contracts on this entitlement (error 162), so option closing marks come from the last
+  regular-hours intraday trade bar of the session. Error 2188 is a warning in IBKR's 2100–2200
+  band that arrives *before* the real bars; treating it as a system error failed every historical
+  request reaching near the present. Fixing it also removed a latent bug that would have made a
+  historical response's next callback raise.
+- **Settlement history is append-only.** A failed attempt is immutable and is never rewritten; a
+  recovery is appended as a new row carrying `pricing_method`, `recovery_provenance` and
+  `supersedes_settlement_id`. Migration `d1f3a5c7e9b2` replaces the one-row-per-configuration
+  constraint with a partial unique index on `status = 'SETTLED'`, so "never settled twice" is a
+  database guarantee. Read models resolve a configuration to its settlement of record.
+- **Settlement quality is first-class in the Track Record.** Executable / EOD close / expiration
+  value / unresolved counts and rates, plus an **All forward outcomes** vs **Executable-only
+  outcomes** view. The second is an analytics filter: nothing is deleted, and both views read the
+  same immutable rows. A closing mark is never presented as a fill.
+
 ## v4.0.2 — 2026-09-03 — Earnings estimates from the calendar first
 
 - **Earnings estimates: EarningsAPI calendar first, Alpha Vantage only as a fallback.** The

@@ -1464,6 +1464,20 @@ export interface V4ScenarioGrid {
   stress: V4ScenarioCell[];
 }
 
+export interface V4SettlementQuality {
+  total: number;
+  counts: {
+    EXECUTABLE_BID_ASK: number;
+    MARKET_CLOSE_FALLBACK: number;
+    EXPIRATION_INTRINSIC_AT_CLOSE: number;
+    UNRESOLVED: number;
+  };
+  executable_settlement_rate: number;
+  eod_fallback_rate: number;
+  expiration_intrinsic_rate: number;
+  unresolved_rate: number;
+}
+
 export interface V4ConfigTrackRecordRow {
   configuration_key: string;
   events: number;
@@ -1482,11 +1496,18 @@ export interface V4ConfigTrackRecordRow {
   average_realized_pnl: number | null;
   average_capital_used: number | null;
   sample_sufficiency: string;
+  settlement_quality: V4SettlementQuality;
+  scored_settlements: number;
 }
+
+export type V4TrackRecordView = "all" | "executable_only";
 
 export interface V4TrackRecordByConfiguration {
   notice: string;
   sample_floor: number;
+  view: V4TrackRecordView;
+  view_note: string;
+  settlement_quality: V4SettlementQuality;
   metrics_note: string;
   configurations: V4ConfigTrackRecordRow[];
 }

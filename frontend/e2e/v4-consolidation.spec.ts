@@ -110,14 +110,43 @@ async function mockCommon(page: Page, { v4Decisions = [decisionSummary()] as unk
   await page.route("**/operations/failures", json({ failures: [] }));
   await page.route("**/v4/shadow/decisions", json({ notice: "EXPERIMENTAL", decisions: v4Decisions }));
   await page.route("**/v4/shadow/track-record", json({ notice: "EXPERIMENTAL", cohort: "v4", counts: { shadow_decisions: v4Decisions.length, ranked: v4Decisions.length, no_action: 0, failed: 0, entry_observed: 0, entry_not_executable: 0, settled: 0, settlement_failed: 0 }, sample_sufficiency: "INSUFFICIENT SAMPLE" }));
-  await page.route("**/v4/shadow/track-record/by-configuration", json({
-    notice: "EXPERIMENTAL", sample_floor: 30,
-    metrics_note: "Counts only. No portfolio drawdown or Sharpe is computed: there is no real capital ledger yet.",
-    configurations: ["v4_2k_conservative", "v4_2k_moderate", "v4_2k_aggressive", "v4_10k_conservative", "v4_10k_moderate", "v4_10k_aggressive"].map((k) => ({
-      configuration_key: k, events: v4Decisions.length, actionable: k.includes("conservative") && k.includes("2k") ? 0 : v4Decisions.length, no_action: k.includes("conservative") && k.includes("2k") ? v4Decisions.length : 0, failed: 0,
-      entry_observed: null, entry_failed: null, settled: null, settlement_failed: null, sample_sufficiency: "INSUFFICIENT SAMPLE",
-    })),
-  }));
+  await page.route("**/v4/shadow/track-record/by-configuration**", (route) => {
+    const executable = route.request().url().includes("view=executable_only");
+    // Settlement quality always describes the FULL set, so the two views
+    // reconcile: 4 executable + 2 closing-mark = 6 settled either way.
+    const quality = {
+      total: 6,
+      counts: {
+        EXECUTABLE_BID_ASK: 4,
+        MARKET_CLOSE_FALLBACK: 2,
+        EXPIRATION_INTRINSIC_AT_CLOSE: 0,
+        UNRESOLVED: 0,
+      },
+      executable_settlement_rate: 4 / 6,
+      eod_fallback_rate: 2 / 6,
+      expiration_intrinsic_rate: 0,
+      unresolved_rate: 0,
+    };
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        notice: "EXPERIMENTAL",
+        sample_floor: 30,
+        view: executable ? "executable_only" : "all",
+        view_note: executable
+          ? "Realized metrics cover ONLY settlements priced on a real executable side on every leg."
+          : "Realized metrics cover every settlement of record, including those priced on an end-of-day closing mark.",
+        settlement_quality: quality,
+        metrics_note: "Counts only. No portfolio drawdown or Sharpe is computed: there is no real capital ledger yet.",
+        configurations: ["v4_2k_conservative", "v4_2k_moderate", "v4_2k_aggressive", "v4_10k_conservative", "v4_10k_moderate", "v4_10k_aggressive"].map((k) => ({
+          configuration_key: k, events: v4Decisions.length, actionable: k.includes("conservative") && k.includes("2k") ? 0 : v4Decisions.length, no_action: k.includes("conservative") && k.includes("2k") ? v4Decisions.length : 0, failed: 0,
+          entry_observed: null, entry_failed: null, settled: 6, settlement_failed: null, sample_sufficiency: "INSUFFICIENT SAMPLE",
+          settlement_quality: quality, scored_settlements: executable ? 4 : 6,
+        })),
+      }),
+    });
+  });
   await page.route("**/v4/shadow/decisions/1/configurations", json(configurationsResponse()));
   await page.route("**/v4/shadow/decisions/1/candidates", json({ notice: "EXPERIMENTAL", candidates: [
     fullCandidate("spread", "bull_call_spread", [{ action: "buy", right: "call", strike: "340", bid: "3.00", ask: "3.20" }, { action: "sell", right: "call", strike: "350", bid: "1.20", ask: "1.40" }]),
@@ -201,6 +230,32 @@ test.describe("Performance", () => {
     await page.getByRole("button", { name: "$2,000 Conservative" }).click();
     await expect(page.getByText("$2,000 Conservative").nth(1)).toBeVisible();
     await expect(page.locator("body")).not.toContainText(/Sharpe ratio/i);
+  });
+
+  test("settlement quality is reported apart from realized performance", async ({ page }) => {
+    await mockCommon(page);
+    await page.goto("/v4-shadow-track-record");
+    const quality = page.getByTestId("settlement-quality");
+    await expect(quality).toBeVisible();
+    // A closing mark is real market data but is never presented as a fill.
+    await expect(quality.getByTestId("quality-EXECUTABLE_BID_ASK")).toContainText("4");
+    await expect(quality.getByTestId("quality-MARKET_CLOSE_FALLBACK")).toContainText("2");
+    await expect(quality).toContainText("not a fill");
+  });
+
+  test("the two outcome views reconcile and neither deletes an observation", async ({ page }) => {
+    await mockCommon(page);
+    await page.goto("/v4-shadow-track-record");
+    const quality = page.getByTestId("settlement-quality");
+    // All outcomes: every settlement of record is scored.
+    await expect(page.getByTestId("cohort-selector")).toBeVisible();
+    await expect(quality.getByTestId("quality-EXECUTABLE_BID_ASK")).toContainText("4");
+
+    await page.getByRole("button", { name: "Executable-only outcomes" }).click();
+    // The filter narrows what is SCORED, never what is recorded: the
+    // quality breakdown still describes all six settlements.
+    await expect(quality.getByTestId("quality-MARKET_CLOSE_FALLBACK")).toContainText("2");
+    await expect(page.getByTestId("outcome-view-selector")).toContainText("Executable-only outcomes");
   });
 
 });

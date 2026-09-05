@@ -151,6 +151,16 @@ market-data lock only for its own chain sweep — never during the DecisionView 
 bounded to ±5 minutes (`SETTLEMENT_WINDOW_MISSED` otherwise); new evaluations stop at the 15:50
 ET deadline (`DEADLINE_SKIPPED`). Policy `v4-1530-entry-1530-t1-settlement-v2`.
 
+**Settlement pricing (v4.1.0).** A long leg closes at the BID, a short leg at the ASK — unchanged
+and always first. When a required side genuinely does not exist (IBKR reports an empty book: a
+`-1` price tick with a `0` size), a weekday 16:30 ET job settles the position from that
+contract's own same-session closing mark, or — only for a contract expiring that day with no
+usable mark — from expiration intrinsic against the official underlying close. No model price,
+prior-day close, midpoint or last-trade substitution is ever used, a living option is never
+written down to zero, and every settlement records which of the three it used. The Track Record
+reports executable / closing-mark / intrinsic / unresolved counts separately and offers an
+executable-only view: a closing mark is real market data, but it is never presented as a fill.
+
 <p align="center"><img src="docs/screenshots/live_operations.png" width="900" alt="Live Operations"></p>
 
 ## Forward testing

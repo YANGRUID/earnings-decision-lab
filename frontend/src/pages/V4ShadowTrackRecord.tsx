@@ -4,6 +4,66 @@ import { useAsync } from "../hooks/useAsync";
 import { ErrorState, LoadingState } from "../components/StatusStates";
 import { CONFIG_ORDER, configLabel } from "../components/v4/shared";
 import { ForwardTestNotice } from "../components/v4/sharedComponents";
+import type { V4SettlementQuality, V4TrackRecordView } from "../types/api";
+
+// Settlement evidence is graded, not assumed (v4.1.0). The end-of-day
+// fallback can settle a position whose executable side was empty, so
+// "settled" no longer implies "closed at a transactable price" -- these are
+// reported apart rather than blended into one realized-performance number.
+const QUALITY_ROWS: [keyof V4SettlementQuality["counts"], string, string][] = [
+  ["EXECUTABLE_BID_ASK", "Executable", "Every leg priced on its own required bid/ask"],
+  ["MARKET_CLOSE_FALLBACK", "EOD close", "At least one leg priced at that session's closing mark"],
+  ["EXPIRATION_INTRINSIC_AT_CLOSE", "Expiration value", "Intrinsic at the official underlying close"],
+  ["UNRESOLVED", "Unresolved", "No permitted price could be established"],
+];
+
+function pct(v: number): string {
+  return `${(v * 100).toFixed(v > 0 && v < 0.01 ? 1 : 0)}%`;
+}
+
+function SettlementQualityCard({ quality }: { quality: V4SettlementQuality }) {
+  const rate: Record<string, number> = {
+    EXECUTABLE_BID_ASK: quality.executable_settlement_rate,
+    MARKET_CLOSE_FALLBACK: quality.eod_fallback_rate,
+    EXPIRATION_INTRINSIC_AT_CLOSE: quality.expiration_intrinsic_rate,
+    UNRESOLVED: quality.unresolved_rate,
+  };
+  return (
+    <div className="card" data-testid="settlement-quality">
+      <h2>Settlement quality</h2>
+      <p className="text-faint text-sm" style={{ marginTop: -4 }}>
+        How the exit price of each settled position was actually established. A closing mark is
+        real market data, but it is not a fill — it is never reported as executable evidence.
+      </p>
+      {quality.total === 0 ? (
+        <div className="empty-state"><strong>No settlements yet.</strong></div>
+      ) : (
+        <div style={{ overflowX: "auto" }}>
+          <table style={{ fontVariantNumeric: "tabular-nums" }}>
+            <thead>
+              <tr>
+                <th>Pricing evidence</th>
+                <th style={{ textAlign: "right" }}>Count</th>
+                <th style={{ textAlign: "right" }}>Rate</th>
+                <th>Meaning</th>
+              </tr>
+            </thead>
+            <tbody>
+              {QUALITY_ROWS.map(([key, label, meaning]) => (
+                <tr key={key} data-testid={`quality-${key}`}>
+                  <td><strong>{label}</strong></td>
+                  <td className="mono" style={{ textAlign: "right" }}>{quality.counts[key]}</td>
+                  <td className="mono" style={{ textAlign: "right" }}>{pct(rate[key] ?? 0)}</td>
+                  <td className="text-faint text-sm">{meaning}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
 
 // V4 Forward Track Record -- the primary performance page (Sections 28-31).
 // Six cohorts, counts only until a cohort clears the sample floor. No
@@ -11,7 +71,8 @@ import { ForwardTestNotice } from "../components/v4/sharedComponents";
 // No static pseudo-portfolio accounting is reproduced.
 export function V4ShadowTrackRecord() {
   const [selected, setSelected] = useState<"all" | string>("all");
-  const record = useAsync(() => api.getV4TrackRecordByConfiguration(), []);
+  const [view, setView] = useState<V4TrackRecordView>("all");
+  const record = useAsync(() => api.getV4TrackRecordByConfiguration(view), [view]);
   const overall = useAsync(() => api.getV4ShadowTrackRecord(), []);
 
   if (record.loading && !record.data) return <LoadingState label="Loading V4 forward track record…" />;
@@ -26,6 +87,26 @@ export function V4ShadowTrackRecord() {
     <div>
       <div className="page-header"><h1>V4 Forward Track Record</h1></div>
       <ForwardTestNotice text={record.data.notice} />
+
+      <div className="card">
+        <div className="tab-bar" data-testid="outcome-view-selector">
+          <button
+            className={`tab-button ${view === "all" ? "active" : ""}`}
+            onClick={() => setView("all")}
+          >
+            All forward outcomes
+          </button>
+          <button
+            className={`tab-button ${view === "executable_only" ? "active" : ""}`}
+            onClick={() => setView("executable_only")}
+          >
+            Executable-only outcomes
+          </button>
+        </div>
+        <p className="text-faint text-sm" style={{ marginTop: 8 }}>{record.data.view_note}</p>
+      </div>
+
+      <SettlementQualityCard quality={record.data.settlement_quality} />
 
       <div className="card">
         <div className="tab-bar" data-testid="cohort-selector">
@@ -61,6 +142,8 @@ export function V4ShadowTrackRecord() {
                   <th style={{ textAlign: "right" }}>Failed</th>
                   <th style={{ textAlign: "right" }}>Entry observed</th>
                   <th style={{ textAlign: "right" }}>Settled</th>
+                  <th style={{ textAlign: "right" }}>Executable</th>
+                  <th style={{ textAlign: "right" }}>Scored</th>
                   <th>Sample</th>
                 </tr>
               </thead>
@@ -74,6 +157,8 @@ export function V4ShadowTrackRecord() {
                     <td className="mono" style={{ textAlign: "right" }}>{r.failed}</td>
                     <td className="mono" style={{ textAlign: "right" }}>{r.entry_observed}{r.entry_failed ? <span className="text-faint"> / {r.entry_failed} failed</span> : null}</td>
                     <td className="mono" style={{ textAlign: "right" }}>{r.settled}{r.settlement_failed ? <span className="text-faint"> / {r.settlement_failed} failed</span> : null}</td>
+                    <td className="mono" style={{ textAlign: "right" }}>{r.settlement_quality.counts.EXECUTABLE_BID_ASK}<span className="text-faint"> / {r.settlement_quality.total}</span></td>
+                    <td className="mono" style={{ textAlign: "right" }}>{r.scored_settlements}</td>
                     <td><span className="pill pill-warning">{r.sample_sufficiency}</span></td>
                   </tr>
                 ))}

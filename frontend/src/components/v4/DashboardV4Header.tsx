@@ -44,7 +44,12 @@ export function DashboardV4Header() {
   const h = ops.data?.health;
   const v4Enabled = !!h?.v4_shadow?.enabled;
   const latest = decisions.data?.decisions.slice(0, 5) ?? [];
-  const settled = record.data?.configurations.reduce((a, r) => a + (r.settled ?? 0), 0) ?? 0;
+  // The sample floor is PER COHORT, so the guard must read the best-covered
+  // cohort -- not the sum across all six. Summing let six cohorts of 7 clear
+  // a floor of 30 that none of them individually came close to, silently
+  // retiring the small-sample warning (found in the v4.1.0 forensic audit).
+  const settled = record.data?.configurations.reduce((a, r) => Math.max(a, r.settled ?? 0), 0) ?? 0;
+  const settledTotal = record.data?.configurations.reduce((a, r) => a + (r.settled ?? 0), 0) ?? 0;
 
   return (
     <>
@@ -112,7 +117,7 @@ export function DashboardV4Header() {
       <div className="card" data-testid="dashboard-performance">
         <h2>Forward performance <Link className="text-link text-sm" to="/v4-shadow-track-record">track record →</Link></h2>
         {settled < 30 ? (
-          <div className="notice"><strong>INSUFFICIENT SAMPLE</strong> — {settled} settled V4 observation{settled === 1 ? "" : "s"}. Performance metrics are withheld below 30 settled per cohort.</div>
+          <div className="notice"><strong>INSUFFICIENT SAMPLE</strong> — {settledTotal} settled V4 observation{settledTotal === 1 ? "" : "s"}, best-covered cohort {settled}. Performance metrics are withheld below 30 settled per cohort.</div>
         ) : null}
         {record.data && (
           <div className="grid grid-3" style={{ gap: 8, marginTop: 8 }}>

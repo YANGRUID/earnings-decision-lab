@@ -27,6 +27,7 @@ import type {
   V4ShadowTrackRecord,
   V4ShadowConfigurationsResponse,
   V4TrackRecordByConfiguration,
+  V4TrackRecordView,
 } from "../types/api";
 
 import { cachedStatus } from "../lib/statusCache";
@@ -140,8 +141,10 @@ export const api = {
   // V4 consolidation -- six-configuration read models. All read-only.
   getV4ShadowConfigurations: (id: number) =>
     request<V4ShadowConfigurationsResponse>(`/v4/shadow/decisions/${id}/configurations`),
-  getV4TrackRecordByConfiguration: () =>
-    request<V4TrackRecordByConfiguration>("/v4/shadow/track-record/by-configuration"),
+  getV4TrackRecordByConfiguration: (view: V4TrackRecordView = "all") =>
+    request<V4TrackRecordByConfiguration>(
+      `/v4/shadow/track-record/by-configuration?view=${view}`,
+    ),
   // Status-style endpoints are read through a short shared cache (see
   // lib/statusCache.ts): several components on one screen ask for the same
   // summary at the same moment, and a navigation must never fire duplicates.

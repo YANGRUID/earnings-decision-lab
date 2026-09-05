@@ -29,6 +29,15 @@ from models.v4_shadow import (
     V4ShadowSettlement,
 )
 from services.v4_settlement_history import effective_settlements
+from services.v4_settlement_quality import (
+    GRADE_EXECUTABLE,
+    GRADE_INTRINSIC,
+    GRADE_MARKET_CLOSE,
+    GRADE_UNRESOLVED,
+    SettlementQualityBreakdown,
+    executable_only,
+    summarize_settlement_quality,
+)
 
 router = APIRouter(prefix="/v4/shadow", tags=["v4-shadow"])
 
@@ -565,9 +574,41 @@ def _settlement_policy_text(recorded_version: str | None) -> str:
 SAMPLE_FLOOR = 30
 
 
+def _quality_block(breakdown: SettlementQualityBreakdown) -> dict:
+    """Counts first, rates second -- with a tiny sample the counts are the
+    honest statement and the rates are only a convenience."""
+    return {
+        "total": breakdown.total,
+        "counts": {
+            GRADE_EXECUTABLE: breakdown.counts.get(GRADE_EXECUTABLE, 0),
+            GRADE_MARKET_CLOSE: breakdown.counts.get(GRADE_MARKET_CLOSE, 0),
+            GRADE_INTRINSIC: breakdown.counts.get(GRADE_INTRINSIC, 0),
+            GRADE_UNRESOLVED: breakdown.counts.get(GRADE_UNRESOLVED, 0),
+        },
+        "executable_settlement_rate": breakdown.executable_rate,
+        "eod_fallback_rate": breakdown.fallback_rate,
+        "expiration_intrinsic_rate": breakdown.intrinsic_rate,
+        "unresolved_rate": breakdown.unresolved_rate,
+    }
+
+
 @router.get("/track-record/by-configuration")
-def get_shadow_track_record_by_configuration(db: DbSession) -> dict:
+def get_shadow_track_record_by_configuration(
+    db: DbSession, view: str = "all"
+) -> dict:
+    """Per-configuration forward record.
+
+    ``view=all`` reports every settlement of record. ``view=executable_only``
+    restricts the realized outcome metrics to settlements whose every leg was
+    priced on its own required executable side, excluding closing-mark and
+    expiration-intrinsic settlements. That is an analytics filter and nothing
+    more -- no observation is deleted, and both views read the same immutable
+    rows. Settlement-quality counts always describe the FULL set, so the two
+    views reconcile.
+    """
     from sqlalchemy import func
+
+    executable_view = view == "executable_only"
 
     def counts(model, status_col, key_col):
         out: dict[str, dict[str, int]] = {}
@@ -591,10 +632,15 @@ def get_shadow_track_record_by_configuration(db: DbSession) -> dict:
         bucket = settlements.setdefault(row.configuration_key, {})
         bucket[row.status] = bucket.get(row.status, 0) + 1
     # Per-cohort realized outcomes (only this cohort's own settlements).
+    # At most one SETTLED row per configuration exists by construction
+    # (partial unique index), so this needs no superseding pass.
+    settled_all = db.query(V4ShadowConfigSettlement).filter_by(status="SETTLED").all()
+    quality_by_key: dict[str, list] = {}
+    for x in settled_all:
+        quality_by_key.setdefault(x.configuration_key, []).append(x)
+    scored = executable_only(settled_all) if executable_view else settled_all
     realized: dict[str, list] = {}
-    for x in db.query(V4ShadowConfigSettlement).filter_by(status="SETTLED"):
-        # At most one SETTLED row per configuration exists by construction
-        # (partial unique index), so this needs no superseding pass.
+    for x in scored:
         realized.setdefault(x.configuration_key, []).append(x)
 
     rows = []
@@ -623,6 +669,10 @@ def get_shadow_track_record_by_configuration(db: DbSession) -> dict:
                 "entry_failed": e.get("NOT_EXECUTABLE", 0),
                 "settled": st.get("SETTLED", 0),
                 "settlement_failed": st.get("OBSERVATION_FAILED", 0),
+                "settlement_quality": _quality_block(
+                    summarize_settlement_quality(quality_by_key.get(key, []))
+                ),
+                "scored_settlements": n_settled,
                 "wins": wins if sufficient else None,
                 "losses": losses if sufficient else None,
                 "win_rate": (wins / n_settled) if sufficient and n_settled else None,
@@ -648,6 +698,18 @@ def get_shadow_track_record_by_configuration(db: DbSession) -> dict:
     return {
         "notice": EXPERIMENTAL_NOTICE,
         "sample_floor": SAMPLE_FLOOR,
+        "view": "executable_only" if executable_view else "all",
+        "view_note": (
+            "Realized metrics cover ONLY settlements priced on a real executable side "
+            "on every leg; closing-mark and expiration-intrinsic settlements are excluded "
+            "from the metrics but remain persisted and are still counted under settlement "
+            "quality."
+            if executable_view
+            else "Realized metrics cover every settlement of record, including those priced "
+            "on an end-of-day closing mark. A closing mark is not a fill -- see settlement "
+            "quality, or switch to the executable-only view."
+        ),
+        "settlement_quality": _quality_block(summarize_settlement_quality(settled_all)),
         "metrics_note": (
             "Each cohort's counts and outcomes come only from that cohort's own entry and "
             "settlement observations. Win rate, average/median standardized return and realized "
