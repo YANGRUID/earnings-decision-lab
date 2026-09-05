@@ -34,6 +34,7 @@ The second caveat adds noise to the magnitude distribution; it is not a
 directional bias. It is reported, never silently absorbed.
 """
 
+import hashlib
 from dataclasses import dataclass
 from decimal import Decimal
 from statistics import median as _median
@@ -71,6 +72,19 @@ def evidence_quality(n: int) -> str:
     return QUALITY_DECILES
 
 
+def _source_digest(event_ids: list[int] | None) -> str | None:
+    """A stable fingerprint of the exact events behind a distribution.
+
+    Sorted so ordering cannot change it, and hashed so a frozen decision can
+    later be PROVEN to have used this sample without storing every
+    observation alongside it.
+    """
+    if not event_ids:
+        return None
+    joined = ",".join(str(i) for i in sorted(event_ids))
+    return hashlib.sha256(joined.encode()).hexdigest()[:32]
+
+
 def _quantile(ordered: list[Decimal], q: Decimal) -> Decimal:
     """Linear interpolation between order statistics, matching
     v4_expected_move's own convention."""
@@ -96,6 +110,15 @@ class MoveDistribution:
     as_of: object  # the exclusive point-in-time boundary (date)
     timing_method: str
     timing_provenance: str
+    #: Anchoring trust, kept ORTHOGONAL to sample size: a large sample of
+    #: unverified-timing observations is plentiful evidence of uncertain
+    #: provenance, which is a different thing from a small verified one.
+    timing_quality: str = "timing_unverified"
+    #: A stable digest of the contributing earnings-event ids, so a frozen
+    #: decision can be shown later to have used exactly this sample without
+    #: persisting every observation (Section 15).
+    source_digest: str | None = None
+    source_event_count: int = 0
     version: str = MOVE_DISTRIBUTION_VERSION
 
     median_abs_move_pct: Decimal | None = None
@@ -135,10 +158,13 @@ def build_move_distribution(
     as_of: object,
     timing_method: str = TIMING_CLOSE_TO_CLOSE,
     timing_provenance: str = TIMING_UNVERIFIED,
+    timing_quality: str = "timing_unverified",
+    source_event_ids: list[int] | None = None,
 ) -> MoveDistribution:
     """Pure. ``signed_moves`` must already be point-in-time filtered by the
     caller -- this function has no way to check that and never assumes it."""
     n = len(signed_moves)
+    digest = _source_digest(source_event_ids)
     if n == 0:
         return MoveDistribution(
             sample_n=0,
@@ -146,6 +172,9 @@ def build_move_distribution(
             as_of=as_of,
             timing_method=timing_method,
             timing_provenance=timing_provenance,
+            timing_quality=timing_quality,
+            source_digest=digest,
+            source_event_count=len(source_event_ids or []),
         )
 
     abs_moves = [abs(m) for m in signed_moves]
@@ -162,6 +191,9 @@ def build_move_distribution(
         as_of=as_of,
         timing_method=timing_method,
         timing_provenance=timing_provenance,
+        timing_quality=timing_quality,
+        source_digest=digest,
+        source_event_count=len(source_event_ids or []),
         median_abs_move_pct=_median(abs_moves),
         mean_abs_move_pct=sum(abs_moves, Decimal(0)) / n,
         p25_abs_move_pct=_quantile(ordered, Decimal("0.25")) if quartiles_ok else None,

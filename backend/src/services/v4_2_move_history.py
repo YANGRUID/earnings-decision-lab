@@ -28,8 +28,15 @@ from analytics.earnings.v4_2_move_distribution import (
     MoveDistribution,
     build_move_distribution,
 )
+from analytics.earnings.v4_2_reaction_anchoring import (
+    AnchoredReaction,
+    aggregate_timing_quality,
+    anchored_reaction,
+    classify_announcement_time,
+)
 from models.company import Company
 from models.earnings_event import EarningsEvent
+from models.price_bar import PriceBar
 from models.price_reaction import PriceReaction
 
 
@@ -89,3 +96,89 @@ def move_distribution_for_ticker(
             timing_provenance=TIMING_UNVERIFIED,
         )
     return move_distribution_for(db, company_id=company.id, as_of=as_of)
+
+
+def anchored_moves_before(
+    db: Session, company_id: int, before: date
+) -> tuple[list[AnchoredReaction], list[int]]:
+    """Point-in-time anchored reactions, recomputed from immutable price bars.
+
+    Unlike ``historical_moves_before`` -- which reads the existing
+    ``PriceReaction`` corpus and therefore inherits its AMC-only anchoring --
+    this re-derives each move under the versioned AMC/BMO rule. It writes
+    nothing and leaves the persisted corpus exactly as it is.
+
+    Point-in-time on BOTH sides: only events that reported strictly before
+    ``before``, and only bars dated strictly before it, so a post-earnings
+    observation that had not yet happened cannot contribute.
+    """
+    events = (
+        db.query(EarningsEvent)
+        .filter(
+            EarningsEvent.company_id == company_id,
+            EarningsEvent.earnings_date.isnot(None),
+            EarningsEvent.earnings_date < before,
+        )
+        .all()
+    )
+    if not events:
+        return [], []
+
+    company = db.get(Company, company_id)
+    if company is None:
+        return [], []
+
+    bars: dict[date, Decimal] = {
+        row.trade_date: row.close
+        for row in db.query(PriceBar).filter(
+            PriceBar.ticker == company.ticker,
+            # A bar dated on or after the decision boundary is future
+            # information and must not be able to anchor anything.
+            PriceBar.trade_date < before,
+        )
+    }
+
+    reactions: list[AnchoredReaction] = []
+    contributing: list[int] = []
+    for event in events:
+        if event.earnings_date is None:  # defensive: the query already excludes these
+            continue
+        reaction = anchored_reaction(
+            bars,
+            earnings_date=event.earnings_date,
+            timing_classification=classify_announcement_time(event.announcement_time),
+        )
+        if reaction is None:
+            continue
+        reactions.append(reaction)
+        contributing.append(event.id)
+    return reactions, contributing
+
+
+def anchored_move_distribution_for(
+    db: Session, *, company_id: int, as_of: date
+) -> MoveDistribution:
+    """The V4.2 distribution: versioned anchoring, point-in-time safe, with
+    its timing quality and a digest of the events behind it."""
+    reactions, event_ids = anchored_moves_before(db, company_id, as_of)
+    return build_move_distribution(
+        [r.signed_move_pct for r in reactions],
+        as_of=as_of,
+        timing_method=TIMING_CLOSE_TO_CLOSE,
+        timing_provenance=(
+            TIMING_VERIFIED
+            if reactions and all(r.timing_verified for r in reactions)
+            else TIMING_UNVERIFIED
+        ),
+        timing_quality=aggregate_timing_quality(reactions),
+        source_event_ids=event_ids,
+    )
+
+
+def anchored_move_distribution_for_ticker(
+    db: Session, *, ticker: str, as_of: date
+) -> MoveDistribution:
+    company = db.query(Company).filter(Company.ticker == ticker).one_or_none()
+    if company is None:
+        return build_move_distribution([], as_of=as_of)
+    return anchored_move_distribution_for(db, company_id=company.id, as_of=as_of)
