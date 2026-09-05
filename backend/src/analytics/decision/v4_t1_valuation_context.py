@@ -64,6 +64,15 @@ class V4T1LegInput:
     entry_vega: Decimal | None
     market_data_quality: str | None
     external_contract_id: str | None
+    # Liquidity evidence observed at entry (V4.2 Phase 2). Optional with a
+    # None default so every existing construction site is unaffected, and
+    # deliberately read by NOTHING in the valuation or the ranking: this is
+    # collection, not a new input to any decision. NULL means the provider
+    # supplied no figure, which is not the same as a market reporting zero.
+    entry_volume: int | None = None
+    entry_open_interest: int | None = None
+    entry_bid_size: int | None = None
+    entry_ask_size: int | None = None
 
     @property
     def entry_executable_price(self) -> Decimal | None:

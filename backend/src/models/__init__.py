@@ -18,6 +18,12 @@ from models.provider_health_event import ProviderHealthEvent
 from models.provider_usage_event import ProviderUsageEvent
 from models.research_preparation_job import ResearchPreparationJob
 from models.scheduler_run import SchedulerRun, SchedulerRunEvent
+from models.v4_2_challenger import (
+    V4ChainMetadataSnapshot,
+    V42ChallengerCandidate,
+    V42ChallengerConfigResult,
+    V42ChallengerDecision,
+)
 from models.v4_shadow import (
     V4ForwardWindowTelemetry,
     V4ShadowCandidate,
@@ -35,6 +41,10 @@ __all__ = [
     "AIThesisVersion",
     "AppProviderSettings",
     "Company",
+    "V42ChallengerCandidate",
+    "V42ChallengerConfigResult",
+    "V42ChallengerDecision",
+    "V4ChainMetadataSnapshot",
     "DocumentChunk",
     "EarningsCalendarEvent",
     "EarningsEstimateSnapshot",

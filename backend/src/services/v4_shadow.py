@@ -375,6 +375,13 @@ def _persist_candidate(
                 theta=leg.entry_theta,
                 vega=leg.entry_vega,
                 market_data_quality=leg.market_data_quality,
+                # Liquidity evidence the provider already returned and this
+                # persistence previously dropped (0 of 211 legs carried any).
+                # Collection only -- no decision reads these.
+                volume=leg.entry_volume,
+                open_interest=leg.entry_open_interest,
+                bid_size=leg.entry_bid_size,
+                ask_size=leg.entry_ask_size,
                 source_provider="ibkr_tws",
                 retrieved_at=source.leg_retrieved_at.get(leg.leg_index),
             )

@@ -383,6 +383,10 @@ def assemble_shadow_candidates(
                     entry_vega=quote.vega if quote else None,
                     market_data_quality=quote.market_data_quality if quote else None,
                     external_contract_id=quote.external_contract_id if quote else None,
+                    entry_volume=quote.volume if quote else None,
+                    entry_open_interest=quote.open_interest if quote else None,
+                    entry_bid_size=getattr(quote, "bid_size", None) if quote else None,
+                    entry_ask_size=getattr(quote, "ask_size", None) if quote else None,
                 )
             )
             if quote is not None:

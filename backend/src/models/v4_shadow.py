@@ -344,6 +344,11 @@ class V4ShadowCandidateLeg(Base):
     theta: Mapped[Decimal | None] = mapped_column(Numeric(18, 6))
     vega: Mapped[Decimal | None] = mapped_column(Numeric(18, 6))
     volume: Mapped[int | None] = mapped_column(Integer)
+    # Depth-of-one sizes observed at entry (V4.2 Phase 2). Nullable on
+    # purpose: NULL means the provider did not supply a size, which is a
+    # different fact from a market reporting a size of 0.
+    bid_size: Mapped[int | None] = mapped_column(Integer)
+    ask_size: Mapped[int | None] = mapped_column(Integer)
     open_interest: Mapped[int | None] = mapped_column(Integer)
 
     market_data_quality: Mapped[str | None] = mapped_column(String(24))
