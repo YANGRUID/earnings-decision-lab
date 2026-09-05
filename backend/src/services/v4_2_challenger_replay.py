@@ -29,6 +29,7 @@ from analytics.decision.v4_2_viability import (
     choose_v4_2_candidate,
 )
 from models.v4_shadow import V4ShadowCandidate, V4ShadowDecision
+from services.v4_2_move_history import move_distribution_for_ticker
 
 
 @dataclass
@@ -41,6 +42,9 @@ class EventReplay:
     v42: ChallengerDecision
     implied_move_pct: Decimal | None
     historical_sample_n: int
+    historical_quality: str | None
+    historical_median_abs_move_pct: Decimal | None
+    edge_ratio: Decimal | None
     candidates_considered: int
 
     @property
@@ -78,17 +82,17 @@ def replay_event(
     move = decision.expected_move or {}
     if isinstance(move, str):
         move = json.loads(move)
+    # The implied move is the one number V4.1 already computed correctly and
+    # froze on the decision -- reused verbatim, never recomputed.
     implied = _decimal(move.get("implied_move_pct"))
-    sample_n = int(move.get("historical_sample_n") or 0)
-    expected = _decimal(move.get("historical_median_abs_move_pct"))
-    evidence = MoveEvidence(
-        implied_move_pct=implied,
-        # Only a real historical distribution counts. With no sample there
-        # is no quantitative expected move, and the gate must say so rather
-        # than fall back to the qualitative label.
-        expected_abs_move_pct=expected if sample_n > 0 else None,
-        historical_sample_n=sample_n,
+    # The historical distribution is rebuilt POINT-IN-TIME from the decision's
+    # own date. V4.1 recorded historical_sample_n = 0 on every event because
+    # the production path never passed historical moves in at all; that gap is
+    # reported separately and is not fixed in the V4.1 path here.
+    distribution = move_distribution_for_ticker(
+        db, ticker=decision.ticker, as_of=decision.generated_at.date()
     )
+    evidence = MoveEvidence(implied_move_pct=implied, distribution=distribution)
 
     selected = next((r for r in rows if r.rank == 1), None)
     return EventReplay(
@@ -99,7 +103,10 @@ def replay_event(
         v41_median=_decimal(selected.core_median_return) if selected else None,
         v42=choose_v4_2_candidate(economics, evidence, policy),
         implied_move_pct=implied,
-        historical_sample_n=sample_n,
+        historical_sample_n=distribution.sample_n,
+        historical_quality=distribution.quality,
+        historical_median_abs_move_pct=distribution.median_abs_move_pct,
+        edge_ratio=evidence.edge_ratio,
         candidates_considered=len(economics),
     )
 

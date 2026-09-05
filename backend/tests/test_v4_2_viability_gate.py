@@ -5,6 +5,7 @@ asserts that a particular historical trade would have been avoided: the gate
 is an ex-ante economic judgement and is tested as one.
 """
 
+from datetime import date
 from decimal import Decimal
 
 import pytest
@@ -23,6 +24,7 @@ from analytics.decision.v4_2_viability import (
     assess_viability,
     choose_v4_2_candidate,
 )
+from analytics.earnings.v4_2_move_distribution import build_move_distribution
 
 D = Decimal
 
@@ -37,15 +39,24 @@ def econ(cid="c1", strategy="bull_call_spread", median="0.05", worst="-0.10",
     )
 
 
-#: A quantitative move edge that exists -- expected move well above implied.
-LONG_EDGE = MoveEvidence(implied_move_pct=D("0.10"), expected_abs_move_pct=D("0.15"),
-                         historical_sample_n=12)
-#: Expected move well below implied.
-SHORT_EDGE = MoveEvidence(implied_move_pct=D("0.10"), expected_abs_move_pct=D("0.05"),
-                          historical_sample_n=12)
+def _evidence(implied: str, moves: list[str]) -> MoveEvidence:
+    """Builds evidence through the REAL distribution object, so these tests
+    exercise the same construction the replay and production paths use --
+    never a stand-in with hand-set fields."""
+    return MoveEvidence(
+        implied_move_pct=D(implied),
+        distribution=build_move_distribution(
+            [D(m) for m in moves], as_of=date(2026, 9, 1)
+        ),
+    )
+
+
+#: Historical median move well ABOVE implied -- a long-move edge exists.
+LONG_EDGE = _evidence("0.10", ["0.15", "-0.16", "0.14", "-0.15", "0.15", "0.15"])
+#: Historical median move well BELOW implied -- a short-move edge exists.
+SHORT_EDGE = _evidence("0.10", ["0.05", "-0.04", "0.05", "-0.06", "0.05", "0.05"])
 #: Exactly the production situation: no historical distribution at all.
-NO_EVIDENCE = MoveEvidence(implied_move_pct=D("0.10"), expected_abs_move_pct=None,
-                           historical_sample_n=0)
+NO_EVIDENCE = _evidence("0.10", [])
 
 
 class TestAbsoluteGate:
@@ -154,8 +165,7 @@ class TestMoveSemantics:
     def test_a_long_move_structure_is_refused_when_the_market_prices_more(self):
         """A 'large move' view is not an edge if the option market already
         implies a larger one."""
-        priced_in = MoveEvidence(implied_move_pct=D("0.20"), expected_abs_move_pct=D("0.12"),
-                                 historical_sample_n=12)
+        priced_in = _evidence("0.20", ["0.12", "-0.12", "0.12", "-0.13", "0.12", "0.12"])
         v = assess_viability(econ(strategy="long_strangle"), priced_in)
         assert not v.acceptable
         assert NO_MOVE_EDGE in v.reason_codes
@@ -164,8 +174,7 @@ class TestMoveSemantics:
         assert assess_viability(econ(strategy="iron_butterfly"), SHORT_EDGE).acceptable
 
     def test_a_short_move_structure_is_refused_without_a_real_margin(self):
-        marginal = MoveEvidence(implied_move_pct=D("0.10"), expected_abs_move_pct=D("0.095"),
-                                historical_sample_n=12)
+        marginal = _evidence("0.10", ["0.095", "-0.095", "0.095", "-0.096", "0.095", "0.095"])
         v = assess_viability(econ(strategy="iron_butterfly"), marginal)
         assert NO_MOVE_EDGE in v.reason_codes
 

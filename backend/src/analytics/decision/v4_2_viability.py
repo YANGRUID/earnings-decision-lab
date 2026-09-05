@@ -110,11 +110,53 @@ class ViabilityPolicy:
 
 DEFAULT_POLICY = ViabilityPolicy()
 
-LONG_MOVE_STRATEGIES = frozenset({"long_straddle", "long_strangle"})
-SHORT_MOVE_STRATEGIES = frozenset(
-    {"iron_butterfly", "iron_condor", "long_call_butterfly",
-     "put_credit_spread", "call_credit_spread"}
-)
+# Move-edge applicability is derived from the project's OWN payoff-shape
+# taxonomy (analytics/decision/v4_strategy_semantics.py), never from a list of
+# strategy names kept here. That matters for two reasons: a name list is a
+# second source of truth that silently rots when a family is added, and a gate
+# that names strategies is one edit away from becoming a preference for or
+# against particular families -- which this challenger must never contain.
+#
+#   two_sided_convex              -> profits from MAGNITUDE in either
+#                                    direction; the long-move test applies.
+#   range_credit / tent_pinning   -> profit from the move staying small; the
+#                                    short-move test applies.
+#   single_sided_convex           -> a long call/put needs a DIRECTIONAL move
+#                                    past its own breakeven. A two-sided
+#                                    magnitude test is the wrong instrument,
+#                                    and the modeled-median gate already
+#                                    prices its breakeven and IV crush.
+#   vertical_bounded_directional  -> bounded, threshold-shaped payoffs
+#                                    (including credit verticals, whose risk
+#                                    is a directional move against them, not
+#                                    a large move in either direction).
+#
+# The last two are NOT_APPLICABLE, which is a statement about economics, not
+# an exemption: they still face every other gate.
+LONG_MOVE_SHAPES = frozenset({"two_sided_convex"})
+SHORT_MOVE_SHAPES = frozenset({"range_credit", "tent_pinning"})
+
+
+def move_exposure_for(strategy: str) -> str | None:
+    """"long" | "short" | None (not move-magnitude exposed).
+
+    Returns None for an unrecognised strategy rather than guessing -- an
+    unknown family is not quietly assumed to be direction-neutral.
+    """
+    from analytics.decision.v4_strategy_semantics import (  # noqa: PLC0415
+        get_strategy_semantics,
+    )
+    from analytics.options.strategy_candidates import StrategyCategory  # noqa: PLC0415
+
+    try:
+        semantics = get_strategy_semantics(StrategyCategory(strategy))
+    except (ValueError, KeyError):
+        return None
+    if semantics.payoff_shape in LONG_MOVE_SHAPES:
+        return "long"
+    if semantics.payoff_shape in SHORT_MOVE_SHAPES:
+        return "short"
+    return None
 
 
 @dataclass(frozen=True)
@@ -133,30 +175,156 @@ class CandidateEconomics:
     mean_relative_spread: Decimal | None
 
 
+MOVE_EDGE_PASS = "PASS"
+MOVE_EDGE_FAIL = "FAIL"
+MOVE_EDGE_INSUFFICIENT = "INSUFFICIENT_EVIDENCE"
+MOVE_EDGE_NOT_APPLICABLE = "NOT_APPLICABLE"
+
+
 @dataclass(frozen=True)
 class MoveEvidence:
-    """What Python -- never the language model -- computed about the move.
+    """What Python -- never the language model -- knows about the move.
 
-    ``expected_abs_move_pct`` is None when no quantitative expected move
-    could be derived from evidence (e.g. no historical post-earnings move
-    distribution). That is a refusal to guess, and the gate treats it as
-    such rather than falling back on a qualitative label.
+    ``distribution`` is the point-in-time historical distribution; it carries
+    its own sample size, quality tier and timing provenance, so this object
+    cannot present thin evidence as strong.
     """
 
     implied_move_pct: Decimal | None
-    expected_abs_move_pct: Decimal | None
-    historical_sample_n: int = 0
+    distribution: object | None = None
+
+    @property
+    def expected_abs_move_pct(self) -> Decimal | None:
+        """The central tendency of the historical distribution.
+
+        The MEDIAN absolute move, deliberately, rather than an exceedance
+        proportion: at the sample sizes available (10-48 per company) a
+        proportion carries a standard error of roughly 7-15 percentage
+        points, while the median is stable. Exceedance is reported alongside
+        as a diagnostic, never as the gate.
+        """
+        return getattr(self.distribution, "median_abs_move_pct", None)
+
+    @property
+    def sample_n(self) -> int:
+        return int(getattr(self.distribution, "sample_n", 0) or 0)
+
+    @property
+    def quality(self) -> str | None:
+        return getattr(self.distribution, "quality", None)
 
     @property
     def edge_ratio(self) -> Decimal | None:
-        """expected / implied. >1 favours long-move, <1 short-move."""
-        if (
-            self.implied_move_pct is None
-            or self.expected_abs_move_pct is None
-            or self.implied_move_pct <= 0
-        ):
+        """expected / implied. Above 1 favours a long-move structure, below
+        1 a short-move one."""
+        expected = self.expected_abs_move_pct
+        if expected is None or self.implied_move_pct is None or self.implied_move_pct <= 0:
             return None
-        return self.expected_abs_move_pct / self.implied_move_pct
+        return expected / self.implied_move_pct
+
+
+@dataclass(frozen=True)
+class MoveEdgeResult:
+    """Section 19 -- an explicit diagnostic, not a bare boolean."""
+
+    status: str
+    exposure: str | None
+    implied_move_pct: Decimal | None
+    expected_abs_move_pct: Decimal | None
+    edge_ratio: Decimal | None
+    threshold: Decimal | None
+    sample_n: int
+    quality: str | None
+    exceedance_of_implied: Decimal | None
+    explanation: str
+    version: str = MOVE_EDGE_VERSION
+
+    @property
+    def blocking(self) -> bool:
+        return self.status in (MOVE_EDGE_FAIL, MOVE_EDGE_INSUFFICIENT)
+
+    @property
+    def reason_code(self) -> str | None:
+        if self.status == MOVE_EDGE_FAIL:
+            return NO_MOVE_EDGE
+        if self.status == MOVE_EDGE_INSUFFICIENT:
+            return INSUFFICIENT_MOVE_EVIDENCE
+        return None
+
+
+def evaluate_move_edge(
+    strategy: str, evidence: MoveEvidence, policy: "ViabilityPolicy | None" = None
+) -> MoveEdgeResult:
+    """Whether the move exposure this structure takes is justified against
+    what the option market already prices."""
+    policy = policy or DEFAULT_POLICY
+    exposure = move_exposure_for(strategy)
+    exceedance = None
+    if evidence.distribution is not None and evidence.implied_move_pct is not None:
+        exceed = getattr(evidence.distribution, "exceedance_frequency", None)
+        if callable(exceed):
+            exceedance = exceed(evidence.implied_move_pct)
+
+    if exposure is None or not policy.require_move_edge:
+        return MoveEdgeResult(
+            status=MOVE_EDGE_NOT_APPLICABLE,
+            exposure=exposure,
+            implied_move_pct=evidence.implied_move_pct,
+            expected_abs_move_pct=evidence.expected_abs_move_pct,
+            edge_ratio=evidence.edge_ratio,
+            threshold=None,
+            sample_n=evidence.sample_n,
+            quality=evidence.quality,
+            exceedance_of_implied=exceedance,
+            explanation=(
+                "this structure's payoff is not move-magnitude exposed, so a "
+                "two-sided move-edge test is not the right instrument for it"
+                if exposure is None
+                else "move-edge requirement disabled for sensitivity analysis"
+            ),
+        )
+
+    ratio = evidence.edge_ratio
+    margin = policy.move_edge_margin
+    threshold = (Decimal(1) + margin) if exposure == "long" else (Decimal(1) - margin)
+
+    if ratio is None:
+        return MoveEdgeResult(
+            status=MOVE_EDGE_INSUFFICIENT,
+            exposure=exposure,
+            implied_move_pct=evidence.implied_move_pct,
+            expected_abs_move_pct=evidence.expected_abs_move_pct,
+            edge_ratio=None,
+            threshold=threshold,
+            sample_n=evidence.sample_n,
+            quality=evidence.quality,
+            exceedance_of_implied=exceedance,
+            explanation=(
+                f"no quantitative expected move could be derived (sample n="
+                f"{evidence.sample_n}, quality={evidence.quality}); a qualitative "
+                "volatility label alone does not establish an edge against the "
+                "implied move"
+            ),
+        )
+
+    passed = ratio >= threshold if exposure == "long" else ratio <= threshold
+    direction = "above" if exposure == "long" else "below"
+    return MoveEdgeResult(
+        status=MOVE_EDGE_PASS if passed else MOVE_EDGE_FAIL,
+        exposure=exposure,
+        implied_move_pct=evidence.implied_move_pct,
+        expected_abs_move_pct=evidence.expected_abs_move_pct,
+        edge_ratio=ratio,
+        threshold=threshold,
+        sample_n=evidence.sample_n,
+        quality=evidence.quality,
+        exceedance_of_implied=exceedance,
+        explanation=(
+            f"{exposure}-move structure requires historical median move "
+            f"{direction} implied by {margin:.0%} (ratio {'>=' if exposure == 'long' else '<='} "
+            f"{threshold:.2f}); observed {ratio:.2f} from n={evidence.sample_n}"
+        ),
+    )
 
 
 @dataclass(frozen=True)
@@ -170,52 +338,6 @@ class ViabilityVerdict:
     @property
     def primary_reason(self) -> str | None:
         return self.reason_codes[0] if self.reason_codes else None
-
-
-def move_edge_verdict(
-    strategy: str, evidence: MoveEvidence, policy: ViabilityPolicy = DEFAULT_POLICY
-) -> tuple[bool, str | None, str | None]:
-    """Whether the move exposure this strategy takes is justified against
-    what the option market already prices.
-
-    A strategy with no directional move exposure (a vertical, a single
-    call/put) is not judged here -- its edge is directional, and this gate
-    makes no claim about direction.
-    """
-    if not policy.require_move_edge:
-        return True, None, None
-    long_move = strategy in LONG_MOVE_STRATEGIES
-    short_move = strategy in SHORT_MOVE_STRATEGIES
-    if not (long_move or short_move):
-        return True, None, None
-
-    ratio = evidence.edge_ratio
-    if ratio is None:
-        return (
-            False,
-            INSUFFICIENT_MOVE_EVIDENCE,
-            (
-                "no quantitative expected move could be derived "
-                f"(historical sample n={evidence.historical_sample_n}); a qualitative "
-                "volatility label alone does not establish an edge against the "
-                "implied move"
-            ),
-        )
-
-    margin = policy.move_edge_margin
-    if long_move and ratio < (Decimal(1) + margin):
-        return (
-            False,
-            NO_MOVE_EDGE,
-            f"long-move structure needs expected/implied > {1 + margin:.2f}, observed {ratio:.2f}",
-        )
-    if short_move and ratio > (Decimal(1) - margin):
-        return (
-            False,
-            NO_MOVE_EDGE,
-            f"short-move structure needs expected/implied < {1 - margin:.2f}, observed {ratio:.2f}",
-        )
-    return True, None, None
 
 
 def assess_viability(
@@ -288,11 +410,10 @@ def assess_viability(
             f"{policy.min_semantic_compatibility}"
         )
 
-    ok, code, why = move_edge_verdict(economics.strategy, evidence, policy)
-    if not ok and code is not None:
-        reasons.append(code)
-        if why:
-            detail.append(why)
+    edge = evaluate_move_edge(economics.strategy, evidence, policy)
+    if edge.blocking and edge.reason_code is not None:
+        reasons.append(edge.reason_code)
+        detail.append(edge.explanation)
 
     return ViabilityVerdict(
         economics.candidate_id, not reasons, tuple(reasons), tuple(detail)
