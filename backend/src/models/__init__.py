@@ -21,7 +21,10 @@ from models.scheduler_run import SchedulerRun, SchedulerRunEvent
 from models.v4_2_challenger import (
     V4ChainMetadataSnapshot,
     V42ChallengerCandidate,
+    V42ChallengerCandidateObservation,
+    V42ChallengerConfigEntry,
     V42ChallengerConfigResult,
+    V42ChallengerConfigSettlement,
     V42ChallengerDecision,
 )
 from models.v4_shadow import (
@@ -42,7 +45,10 @@ __all__ = [
     "AppProviderSettings",
     "Company",
     "V42ChallengerCandidate",
+    "V42ChallengerCandidateObservation",
+    "V42ChallengerConfigEntry",
     "V42ChallengerConfigResult",
+    "V42ChallengerConfigSettlement",
     "V42ChallengerDecision",
     "V4ChainMetadataSnapshot",
     "DocumentChunk",
