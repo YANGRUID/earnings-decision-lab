@@ -67,3 +67,80 @@ All seven are append-only: a `BEFORE UPDATE` trigger rejects edits.
 - V4 scheduler work uses the dedicated scheduler DB pool; API requests use the API pool.
 - The test suite rebinds both session factories to the disposable test database, so no test can
   reach production.
+
+## V4.2 parallel shadow — one evidence package, two methodologies
+
+Not active. `V4_2_PARALLEL_ENABLED` defaults to `false`, and with it off nothing below runs.
+
+The whole design follows from one requirement: the two methodologies must see **identical**
+evidence, or the comparison measures the data rather than the methodology.
+
+```
+                    ONE POINT-IN-TIME EVIDENCE PACKAGE
+                    (underlying, chain, candidates, quotes,
+                     research package, ONE DecisionView)
+                                  |
+                  +---------------+---------------+
+                  |                               |
+             V4.1 CONTROL                   V4.2 CHALLENGER
+                  |                               |
+         ACTION / NO_ACTION              ACTION / NO_ACTION
+                  |                               |
+          frozen position                 frozen position
+                  |                               |
+         entry observation               entry observation
+                  |                               |
+       T+1 15:30 settlement             T+1 15:30 settlement
+                  |                               |
+          forward outcome                 forward outcome
+                  +---------------+---------------+
+                                  |
+                         EVENT-LEVEL COMPARISON
+```
+
+The challenger reads the control's own frozen candidates and their frozen quotes. It re-prices
+nothing, so both sides see the same strikes, the same spreads and the same modeled T+1 economics,
+and its decision and entry together cost **zero** additional market-data requests. Only settlement
+can require new quotes, and only for contracts the control is not itself settling.
+
+### Where it runs
+
+A third phase of the existing 15:30 ET window, never a second scheduler registration:
+
+```
+phase 1  control settlement   (due positions, priority)
+phase 2  control decisions    (new observations)
+phase 3  challenger           (flag-gated, last)
+```
+
+Control priority is structural rather than promised: the challenger does not begin until both
+control phases have returned, so it cannot delay a settlement, delay a decision, or take the
+market-data lock ahead of either. Its scheduler run is recorded under its own job id
+(`v4_2_challenger_phase`), so a challenger failure never moves V4.1's counters, and its health is
+a separate domain that cannot make V4.1 readiness red.
+
+### Challenger evidence tables
+
+| Table | Cardinality | Holds |
+|---|---|---|
+| `v4_2_challenger_decision` | 1 per event/gate version/window | every version stamp, frozen move context + digest, gate outcome, request telemetry |
+| `v4_2_challenger_candidate` | N per decision | modeled economics carried from the control, move edge, liquidity, gate verdict, expiry provenance |
+| `v4_2_challenger_config_result` | 6 per decision | one configuration's own ACTION / NO_ACTION and its reason |
+| `v4_2_challenger_candidate_observation` | 1 per candidate per phase | ENTRY / EXIT / EXIT_EOD executable quote evidence, shared by every configuration holding it |
+| `v4_2_challenger_config_entry` | ≤1 per configuration result | the frozen position: contracts, conIds, quantity, capital, entry value |
+| `v4_2_challenger_config_settlement` | ≥0 per configuration result | realized outcome; many immutable attempts, at most one `SETTLED` |
+| `v4_chain_metadata_snapshot` | 1 per event/window | listed expirations and strikes at the decision instant (shared, not challenger-specific) |
+
+All append-only under the same `reject_snapshot_update()` trigger the control's tables use. The
+one-settlement-of-record rule is a **partial unique index** on `status = 'SETTLED'`, so a failed
+attempt is retained forever and a later end-of-day recovery is appended, pointing back at the
+attempt it supersedes.
+
+### Separate cohorts
+
+A challenger outcome must never appear inside a V4.1 Track Record count. The guarantee is
+structural: the rows live in tables the control's queries do not read, and the challenger's own
+read model queries no control table. What the two share is the released *policy* — the same timing
+policy object, the same executable conventions, the same end-of-day fallback module and the same
+settlement-quality grading function — because a challenger that settled on kinder terms than the
+control would make every comparison between them worthless.

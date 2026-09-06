@@ -1,4 +1,4 @@
-# V4.2 Challenger — Phases 1–2
+# V4.2 Challenger — Phases 1–3
 
 **Not production.** v4.1.0 remains the control methodology and the official recommendation path.
 Nothing in this document is registered, scheduled, or reachable from a running service.
@@ -13,7 +13,14 @@ Nothing in this document is registered, scheduled, or reachable from a running s
 | Move distribution | *(never populated)* | `v4_2_move_distribution_v1` |
 | Expiry selection | `select_expiration_after` (nearest index) | `v4_2_expiry_ladder_v1` (foundation) |
 | Friction | `t1_pricing_v1` (4/10/18%) | `earnings_friction_v2` (advisory only) |
-| Timing policy | `v4-1530-entry-1530-t1-settlement-v2` | unchanged |
+| Timing policy | `v4-1530-entry-1530-t1-settlement-v2` | **unchanged — the challenger settles at the same T+1 15:30 ET** |
+| Reaction anchoring | *(implicit, BMO-defective)* | `v4_2_reaction_anchoring_v2` |
+| Challenger evidence schema | — | `v4_2_challenger_evidence_v1` |
+| Multi-expiry construction | *(single expiry)* | `v4_2_multi_expiry_v1` |
+| Entry convention | `BUY_AT_ASK_SELL_AT_BID` | **identical** |
+| Exit convention | `CLOSE_LONG_AT_BID_CLOSE_SHORT_AT_ASK` | **identical** |
+| Settlement fallback | EXECUTABLE → MARKET_CLOSE → EXPIRATION_INTRINSIC | **identical, same module** |
+| Settlement grading | `services/v4_settlement_quality.py` | **identical, same function** |
 
 Unchanged and deliberately untouched: DecisionView `v4-decision-view-v1`, strategy semantics
 `v4-strategy-semantics-v2`, compatibility `view_strategy_compatibility_v1`, expected move
@@ -254,19 +261,168 @@ reference data, so the measurement holds):
 **4 metadata requests, 0 market-data requests, 465 ms total, 0 writes.** No chain sweep, no
 sixfold configuration multiplier, no duplicate DeepSeek call.
 
+## Phase 3 — forward outcomes, multi-expiry execution, parallel foundation
+
+Phase 3 built the missing half of the lifecycle: a challenger decision can now become a frozen
+position, and a frozen position can become a realized outcome, without any of it touching V4.1.
+
+### The lifecycle
+
+```
+ONE point-in-time evidence package
+        |
+        +-- V4.1 CONTROL ----- decision -- entry -- T+1 15:30 settlement -- outcome
+        |
+        +-- V4.2 CHALLENGER -- decision -- entry -- T+1 15:30 settlement -- outcome
+                                                                              |
+                                                              EVENT-LEVEL COMPARISON
+```
+
+Both sides read the same frozen candidates, so both see identical strikes, identical spreads and
+identical modeled T+1 economics. Any difference between them is attributable to the gate and the
+ranking, never to one of them having seen better market data.
+
+### Entry evidence
+
+`services/v4_2_challenger_entry.py`. Pure over already-frozen data — no provider is reached, and
+that is structural rather than a discipline: the challenger prices its entry from the control's
+own frozen leg quotes, so a parallel run costs **zero additional market-data requests at entry**.
+
+- Opening a LONG leg pays the **ASK**; opening a SHORT leg receives the **BID**. No midpoint, no
+  last price, no model price, no historical substitution. A missing required side makes the
+  observation `NOT_EXECUTABLE` and fails only the configurations holding that candidate.
+- **One observation per unique candidate, shared by every configuration that selected it.** Six
+  configurations that pick the same candidate produce one quote observation and six independently
+  sized positions — never six acquisitions.
+- Candidates that genuinely differ get their own observations, and contracts are deduplicated
+  across all of them.
+- A configuration that said NO_ACTION gets **no entry row at all** — not a row with quantity zero.
+  There is nothing to settle, so no settlement and no P&L can ever attach to it.
+- `frozen_legs_json` carries the exact contracts, conIds included. That is the position.
+
+### Settlement evidence
+
+`services/v4_2_challenger_settlement.py`. The challenger gets no advantage anywhere in the exit:
+
+| Rule | Control | Challenger |
+|---|---|---|
+| Exit instant | T+1 15:30 ET, active timing policy | **same policy object** |
+| Long leg | closed at BID | **closed at BID** |
+| Short leg | closed at ASK | **closed at ASK** |
+| Empty book | IBKR −1 price + size 0 = `NO_BID`/`NO_ASK`, a real market fact | **same semantics** |
+| Silence | `REQUIRED_SIDE_TIMEOUT`, distinct from an empty book | **same distinction** |
+| Missed window | terminal `SETTLEMENT_WINDOW_MISSED`, never quoted late | **same** |
+| EOD fallback | `services/v4_settlement_fallback.py` | **the same module, imported** |
+| Grading | `services/v4_settlement_quality.py` | **the same function** |
+
+Contracts resolve by the conIds frozen at entry: no strike is re-selected, no expiration changed,
+no strategy substituted, no quantity resized. Settlement is append-only — a configuration may
+accumulate any number of immutable failed attempts and at most one `SETTLED` row, enforced by a
+partial unique index rather than by convention. A later end-of-day recovery is a NEW row pointing
+at the attempt it supersedes; the original failure is never rewritten.
+
+Rule 4 holds for the challenger identically: a **non-expiring** option with an empty book and no
+closing mark stays `UNRESOLVED`. It is not written down to zero, because a living option with time
+value left is not worth zero — it is simply unquoted.
+
+### Quote sharing
+
+`settle_shadow_decision_cohorts` gained one optional observer, `on_quotes`, which publishes the
+exit quotes the control's sweep acquired. With the flag off it is never passed, and V4.1 behaves
+byte-identically. With it on, a challenger position holding a contract the control just quoted
+prices its exit from that evidence instead of opening a second subscription; only genuinely
+challenger-only contracts become new requests, and both counts are persisted per observation.
+
+### Multi-expiry candidate construction
+
+`services/v4_2_multi_expiry.py`. Closes what Phase 2 left open.
+
+```
+listed metadata (ONE security-definition call, no quotes)
+     -> bounded ladder, at most 3 rungs
+     -> per expiry: its OWN ATM window, its OWN implied move, its OWN strikes, its OWN geometry
+     -> dedupe exact contracts across expiries, strategies and variants
+     -> quote each unique contract ONCE
+     -> value everything at the SAME T+1 15:30 objective
+     -> combine survivors, then rank across expiries
+```
+
+The near-expiry candidate is **not** cloned forward. Each rung derives its own
+`ExpectedMoveContext` from its own real straddle quotes — in Python, from observed option prices,
+never from a model and never from a language model. A 17-delta wing 2 days out and 30 days out are
+different instruments; copying one forward would fabricate economics.
+
+No minimum-DTE rule was added. A same-day expiry stays eligible and may win if its own T+1
+economics and its own observed liquidity say so; what the ladder adds is the alternatives to
+compare it against. Every candidate carries its expiration, ladder rung, DTE at entry and at
+settlement, settlement risk, and its expiry's own implied move with that move's source.
+
+### Scheduler architecture
+
+The challenger is a **third phase of the existing 15:30 window**, never a second registration:
+
+```
+phase 1  control settlement   (due positions, priority)
+phase 2  control decisions    (new observations)
+phase 3  challenger           (flag-gated, last)
+```
+
+Control priority is structural. The challenger cannot delay a control settlement, cannot delay a
+control decision, and cannot take the market-data lock before either, because it does not begin
+until both have returned. Its exceptions are caught and persisted as challenger evidence;
+persistence uses SAVEPOINTs so a challenger rollback cannot unwind control work. Its scheduler run
+is recorded under its own job id, so a challenger failure never moves V4.1's counters.
+
+**DecisionView is never called twice.** The challenger reasons over the control's frozen candidate
+set, which already embeds that window's single DecisionView. A challenger needing a different
+prompt or schema would be a different methodology version, and would have to say so.
+
+### Prospective only
+
+The phase evaluates only control decisions generated **in the current window**
+(`WINDOW_LOOKBACK = 6h`). Without that bound the first run after activation would sweep up every
+control decision ever made and manufacture challenger "forward evidence" for events whose outcomes
+are already known — evidence that looks prospective in the table and is nothing of the kind.
+
+### Feature flag
+
+`V4_2_PARALLEL_ENABLED`, default **false**. With it off: no challenger phase runs, no challenger
+row is written, no quote observer is attached to the control's settlement, and V4.1 behaviour is
+byte-identical. Turning it on activates **observation only** — V4.1 remains the control and the
+official recommendation path, and no UI stops saying CHALLENGER / PARALLEL SHADOW / EXPERIMENTAL.
+
 ## Promotion gates — what must be true before parallel production
 
-| # | Gate | Phase 2 status |
+| # | Gate | Status |
 |---|---|---|
-| 1 | Chain metadata frozen on the decision | **CLOSED** — `v4_chain_metadata_snapshot`, proven live |
-| 2 | Challenger evidence table and read model | **CLOSED** — immutable tables + comparison API/UI |
-| 3 | Volume / open-interest persistence | **CLOSED** — captured, zero-vs-missing preserved |
-| 4 | Multi-expiry candidate generation | **OPEN** — ladder and metadata exist; per-expiry candidate construction does not |
-| 5 | BMO / `announcement_time` defects | **OPEN** — anchoring versioned; the shared fix and any timing enrichment are your decision |
-| 6 | More events | **OPEN** — N = 7 remains a description, not a validation |
+| 1 | Chain metadata frozen on the decision | **CLOSED** (Phase 2) |
+| 2 | Challenger evidence table and read model | **CLOSED** (Phase 2) |
+| 3 | Volume / open-interest persistence | **CLOSED** (Phase 2) |
+| 4 | Multi-expiry candidate generation | **CLOSED** (Phase 3) — per-expiry economics, bounded to 3 |
+| 5 | Challenger outcome observation | **CLOSED** (Phase 3) — entry, settlement, EOD recovery, realized outcome |
+| 6 | Parallel scheduler behind a default-off flag | **CLOSED** (Phase 3) |
+| 7 | Market-hours zero-write dry-run with live quotes | **OPEN** — requires an open US options market |
+| 8 | BMO / `announcement_time` defects | **OPEN** — anchoring versioned; the shared fix is your decision |
+| 9 | More events | **OPEN** — N = 7 remains a description, not a validation |
 
-Gate 4 is the substantive remaining engineering. Gates 5 and 6 are decisions and time, not code.
+Gate 7 is a scheduling constraint, not engineering: it cannot be satisfied while the market is
+closed, and no amount of code makes a Saturday run count as one.
 
-**Not built, and deliberately not half-wired:** parallel scheduler activation (no challenger job
-exists), per-expiry candidate construction, and challenger settlement observation. V4.2 has never
-run in production, has frozen no production evidence, and places nothing.
+## Known limitations
+
+State plainly, every time:
+
+- **Natural N is tiny.** Seven realized control events. No rate computed over them estimates
+  anything; each describes what happened.
+- **Historical announcement timing is 100% unverified.** All 1,831 historical events carry
+  `announcement_time = UNKNOWN`. UNKNOWN is included and labelled rather than excluded, because
+  excluding it would leave nothing — and it is never fabricated.
+- **The old seven events cannot be replayed multi-expiry honestly.** No chain metadata was frozen
+  at their decision instants and today's chain is a different object.
+- **IBKR market data is delayed.** It is labelled delayed everywhere and never relabelled live.
+- **Volume and open interest are only prospectively complete.** Historical rows have none.
+- **V4.2 is not proven superior to V4.1.** It has no realized forward outcomes at all. The
+  vocabulary is CONTROL and CHALLENGER — never better, improved, winner, or beats.
+
+**Not built:** brokerage order execution, order APIs, and any path by which V4.2 becomes the
+product recommendation. V4.2 places nothing.

@@ -114,3 +114,19 @@ anywhere: there is no real capital ledger. Metrics are per-decision and standard
 sample — AVGO, decided 2026-09-02 15:32 ET, six configurations observed at entry — settles
 prospectively at 15:30 ET on 2026-09-03. Activation is never a code default: the flag is `false`
 unless the environment sets it.
+
+### V4.2 parallel shadow — NOT active
+
+`V4_2_PARALLEL_ENABLED` is `false`, in code and in production. The challenger runtime exists in
+the production image but does nothing: with the flag off, the 15:30 window runs exactly the two
+control phases it always has, no challenger row is written, and no observer is attached to the
+control's settlement sweep.
+
+When it is turned on it activates **observation only**. The challenger becomes a third phase of
+this same window, strictly after both control phases, and accumulates its own forward evidence in
+its own tables under its own cohort. V4.1 remains the control and the official recommendation
+path; turning this flag on does not change what the product recommends.
+
+Activation requires a genuine market-hours zero-write dry-run with live quotes, exactly as V4.1's
+did on 2026-09-02. A run outside market hours does not satisfy that, and cannot be made to. See
+`docs/v4_2_challenger.md` for the lifecycle and the remaining gates.
