@@ -26,6 +26,8 @@ import type {
   V4ShadowDecisionsResponse,
   V4ShadowTrackRecord,
   V4ShadowConfigurationsResponse,
+  V4ChallengerOperations,
+  V4ChallengerTrackRecord,
   V4MethodologyComparison,
   V4TrackRecordByConfiguration,
   V4TrackRecordView,
@@ -145,6 +147,10 @@ export const api = {
   // V4.2 challenger research surface (read-only).
   getV4MethodologyComparison: () =>
     request<V4MethodologyComparison>("/v4-2/challenger/comparison"),
+  getV4ChallengerTrackRecord: () =>
+    request<V4ChallengerTrackRecord>("/v4-2/challenger/track-record"),
+  getV4ChallengerOperations: () =>
+    request<V4ChallengerOperations>("/v4-2/challenger/operations"),
   getV4TrackRecordByConfiguration: (view: V4TrackRecordView = "all") =>
     request<V4TrackRecordByConfiguration>(
       `/v4/shadow/track-record/by-configuration?view=${view}`,

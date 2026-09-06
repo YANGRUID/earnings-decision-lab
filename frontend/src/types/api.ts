@@ -1528,6 +1528,47 @@ export interface V4MethodologySide {
   no_action_reason: string | null;
   candidates_evaluated: number | null;
   candidates_accepted: number | null;
+  // Challenger-only. The control has no move edge and no expiry ladder, so
+  // these stay null on its side rather than being invented for symmetry.
+  move_edge_status: string | null;
+  move_edge_ratio: number | null;
+  expiry_ladder_position: number | null;
+  entry_dte: number | null;
+  dte_at_settlement: number | null;
+  lifecycle: V4ChallengerLifecycle | null;
+}
+
+export interface V4ChallengerLifecycle {
+  // NO_ACTION is terminal and successful here, not "no entry yet".
+  state:
+    | "NO_ACTION"
+    | "PENDING_ENTRY"
+    | "ENTRY_FAILED"
+    | "WAITING_SETTLEMENT"
+    | "SETTLED"
+    | "SETTLEMENT_FAILED";
+  entries_observed: number;
+  entries_failed: number;
+  settled: number;
+  settlement_failed: number;
+  settlement_grades: string[];
+  realized_pnl: string | null;
+}
+
+export interface V4ExpiryRung {
+  expiration: string;
+  ladder_position: number | null;
+  entry_dte: number | null;
+  dte_at_settlement: number | null;
+  settlement_risk: string | null;
+  implied_move_pct: string | null;
+  candidates: number;
+  viable_candidates: number;
+  best_median_return: string | null;
+  best_worst_return: string | null;
+  best_candidate_id: string | null;
+  mean_relative_spread: string | null;
+  move_edge_status: string | null;
 }
 
 export interface V4ChallengerEvidence {
@@ -1556,6 +1597,7 @@ export interface V4MethodologyComparisonEvent {
   control: V4MethodologySide;
   challenger: V4MethodologySide;
   challenger_evidence: V4ChallengerEvidence;
+  multi_expiry: V4ExpiryRung[];
   configurations: V4MethodologyConfigRow[];
   differs: boolean;
 }
@@ -1564,4 +1606,73 @@ export interface V4MethodologyComparison {
   notice: string;
   events: V4MethodologyComparisonEvent[];
   counts: { events: number; challenger_evaluated: number; differs: number };
+}
+
+// V4.2 CHALLENGER forward evidence -- a SEPARATE cohort from the V4.1 Track
+// Record. These types are deliberately not shared with the control's: a
+// structural type shared between the two is the easiest possible way for a
+// challenger row to end up inside a control statistic.
+export interface V4ChallengerOutcomeStats {
+  settled: number;
+  wins: number;
+  losses: number;
+  flat: number;
+  win_rate: number | null;
+  median_standardized_return: string | null;
+  median_capital_used_return: string | null;
+  total_realized_pnl: string | null;
+}
+
+export interface V4ChallengerTrackRecord {
+  notice: string;
+  methodology: string;
+  cohort: string;
+  events: {
+    observed: number;
+    action: number;
+    no_action: number;
+    failed: number;
+    // null, never 0: an unmeasured rate and a measured zero are different facts.
+    action_rate: number | null;
+    no_action_reasons: Record<string, number>;
+  };
+  lifecycle: {
+    entries_observed: number;
+    entries_failed: number;
+    settlements_due: number;
+    settled: number;
+    settlement_failed: number;
+  };
+  all_outcomes: V4ChallengerOutcomeStats;
+  executable_only_outcomes: V4ChallengerOutcomeStats;
+  settlement_quality: Record<string, number>;
+  by_configuration: Record<string, Record<string, number | string | null>>;
+  by_strategy: Record<string, Record<string, number>>;
+  by_expiry_ladder_position: Record<string, Record<string, number | null>>;
+  warnings: string[];
+}
+
+export interface V4ChallengerOperations {
+  notice: string;
+  scheduler: {
+    parallel_enabled: boolean;
+    state: string;
+    phase: string;
+    runs_inside: string;
+    separate_job_registered: boolean;
+    control_priority: boolean;
+  };
+  counts: {
+    events_evaluated: number;
+    action: number;
+    no_action: number;
+    entry_observed: number;
+    entry_failed: number;
+    settlement_due: number;
+    settled: number;
+    settlement_failed: number;
+    evaluation_failed: number;
+  };
+  no_action_is_a_failure: boolean;
+  affects_v4_1_readiness: boolean;
 }

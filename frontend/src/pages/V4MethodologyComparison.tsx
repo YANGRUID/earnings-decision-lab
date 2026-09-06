@@ -2,7 +2,11 @@ import { useAsync } from "../hooks/useAsync";
 import { api } from "../api/client";
 import { ErrorState, LoadingState } from "../components/StatusStates";
 import { configLabel } from "../components/v4/shared";
-import type { V4MethodologyComparisonEvent, V4MethodologySide } from "../types/api";
+import type {
+  V4ExpiryRung,
+  V4MethodologyComparisonEvent,
+  V4MethodologySide,
+} from "../types/api";
 
 // V4.1 CONTROL vs V4.2 CHALLENGER.
 //
@@ -12,7 +16,38 @@ import type { V4MethodologyComparisonEvent, V4MethodologySide } from "../types/a
 // because before forward outcomes exist there is nothing to be better at,
 // and the comparison's value depends on it not quietly becoming an argument.
 //
-// Ex-ante only. Nothing on this page shows a realized outcome.
+// Ex-ante evidence, plus the lifecycle state each side reached. A realized
+// outcome, when one exists, is shown as its own labelled row with its own
+// settlement quality -- never folded into the modeled economics above it, and
+// never used to describe one methodology as ahead of the other.
+
+// NO ACTION must read as an intentional, professional outcome. It is what a
+// methodology with an absolute viability gate is SUPPOSED to produce when
+// nothing clears it, and presenting it as a failure would create pressure to
+// weaken the gate.
+const LIFECYCLE_PILL: Record<string, string> = {
+  NO_ACTION: "pill-neutral",
+  PENDING_ENTRY: "pill-neutral",
+  ENTRY_FAILED: "pill-warning",
+  WAITING_SETTLEMENT: "pill-neutral",
+  SETTLED: "pill-positive",
+  SETTLEMENT_FAILED: "pill-warning",
+};
+
+const LIFECYCLE_LABEL: Record<string, string> = {
+  NO_ACTION: "No action",
+  PENDING_ENTRY: "Pending entry",
+  ENTRY_FAILED: "Entry not executable",
+  WAITING_SETTLEMENT: "Awaiting T+1 settlement",
+  SETTLED: "Settled",
+  SETTLEMENT_FAILED: "Settlement failed",
+};
+
+const GRADE_LABEL: Record<string, string> = {
+  EXECUTABLE_BID_ASK: "Executable bid/ask",
+  MARKET_CLOSE_FALLBACK: "End-of-day closing mark",
+  EXPIRATION_INTRINSIC_AT_CLOSE: "Expiration intrinsic value",
+};
 
 const READINESS_PILL: Record<string, string> = {
   READY: "pill-positive",
@@ -22,7 +57,7 @@ const READINESS_PILL: Record<string, string> = {
   CANNOT_REPLAY_HONESTLY: "pill-neutral",
 };
 
-function pct(v: number | null | undefined): string {
+function pct(v: number | string | null | undefined): string {
   return v === null || v === undefined ? "—" : `${(Number(v) * 100).toFixed(2)}%`;
 }
 
@@ -53,6 +88,25 @@ function SideCard({ side, tone }: { side: V4MethodologySide; tone: "control" | "
                   <td>Positive scenarios</td>
                   <td className="mono">{pct(side.positive_scenario_fraction)}</td>
                 </tr>
+                {side.move_edge_status ? (
+                  <tr>
+                    <td>Move edge</td>
+                    <td className="mono">
+                      {side.move_edge_status}
+                      {side.move_edge_ratio !== null && side.move_edge_ratio !== undefined
+                        ? ` (${Number(side.move_edge_ratio).toFixed(2)}×)`
+                        : ""}
+                    </td>
+                  </tr>
+                ) : null}
+                {side.dte_at_settlement !== null && side.dte_at_settlement !== undefined ? (
+                  <tr>
+                    <td>DTE at entry / settlement</td>
+                    <td className="mono">
+                      {side.entry_dte ?? "—"} / {side.dte_at_settlement}
+                    </td>
+                  </tr>
+                ) : null}
               </tbody>
             </table>
           ) : (
@@ -63,6 +117,29 @@ function SideCard({ side, tone }: { side: V4MethodologySide; tone: "control" | "
               {side.no_action_reason ?? "No reason recorded."}
             </div>
           )}
+          {side.lifecycle ? (
+            <div style={{ marginTop: 10 }} data-testid={`lifecycle-${tone}`}>
+              <span className={`pill ${LIFECYCLE_PILL[side.lifecycle.state] ?? "pill-neutral"}`}>
+                {LIFECYCLE_LABEL[side.lifecycle.state] ?? side.lifecycle.state}
+              </span>
+              {side.lifecycle.settled > 0 ? (
+                <p className="text-sm" style={{ marginBottom: 0 }}>
+                  Realized P&amp;L{" "}
+                  <span className="mono">{side.lifecycle.realized_pnl ?? "—"}</span> across{" "}
+                  {side.lifecycle.settled} configuration(s)
+                  {side.lifecycle.settlement_grades.length > 0 ? (
+                    <>
+                      {" "}priced as{" "}
+                      {side.lifecycle.settlement_grades
+                        .map((grade: string) => GRADE_LABEL[grade] ?? grade)
+                        .join(", ")}
+                    </>
+                  ) : null}
+                  .
+                </p>
+              ) : null}
+            </div>
+          ) : null}
           <p className="text-faint text-sm" style={{ marginBottom: 0 }}>
             {side.candidates_evaluated ?? 0} candidate(s) evaluated
             {side.candidates_accepted !== null && side.candidates_accepted !== undefined
@@ -72,6 +149,53 @@ function SideCard({ side, tone }: { side: V4MethodologySide; tone: "control" | "
           </p>
         </>
       )}
+    </div>
+  );
+}
+
+function ExpiryLadder({ rungs }: { rungs: V4ExpiryRung[] }) {
+  return (
+    <div data-testid="expiry-ladder">
+      <h3>Expiries considered</h3>
+      <p className="text-faint text-sm">
+        The bounded ladder the challenger compared, each rung on its own listed strikes and
+        its own implied move, all valued at the same T+1 objective. Rung 0 is the expiry V4.1
+        would have chosen.
+      </p>
+      <div style={{ overflowX: "auto" }}>
+        <table style={{ fontVariantNumeric: "tabular-nums" }}>
+          <thead>
+            <tr>
+              <th>Rung</th><th>Expiration</th><th>DTE at settlement</th>
+              <th>Implied move</th><th>Candidates</th><th>Viable</th>
+              <th>Best modeled median</th><th>Downside</th><th>Spread</th><th>Move edge</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rungs.map((rung) => (
+              <tr key={rung.expiration}>
+                <td className="mono">{rung.ladder_position ?? "—"}</td>
+                <td className="mono">{rung.expiration}</td>
+                <td className="mono">
+                  {rung.dte_at_settlement ?? "—"}
+                  {rung.dte_at_settlement === 0 ? (
+                    <span className="pill pill-warning" style={{ marginLeft: 6 }}>
+                      expires that day
+                    </span>
+                  ) : null}
+                </td>
+                <td className="mono">{pct(rung.implied_move_pct)}</td>
+                <td className="mono">{rung.candidates}</td>
+                <td className="mono">{rung.viable_candidates}</td>
+                <td className="mono">{pct(rung.best_median_return)}</td>
+                <td className="mono">{pct(rung.best_worst_return)}</td>
+                <td className="mono">{pct(rung.mean_relative_spread)}</td>
+                <td className="mono">{rung.move_edge_status ?? "—"}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 }
@@ -93,6 +217,8 @@ function EventBlock({ event }: { event: V4MethodologyComparisonEvent }) {
         <SideCard side={event.control} tone="control" />
         <SideCard side={event.challenger} tone="challenger" />
       </div>
+
+      {event.multi_expiry.length > 0 ? <ExpiryLadder rungs={event.multi_expiry} /> : null}
 
       <h3>Challenger evidence readiness</h3>
       <div className="grid grid-4" style={{ gap: 8 }}>

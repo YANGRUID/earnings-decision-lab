@@ -37,6 +37,7 @@ const PERFORMANCE_NAV_ITEMS: NavItem[] = [
   // Research: V4.2 is a challenger, not a second product, so it sits beside
   // the forward record rather than in the primary decision flow.
   { to: "/methodology-comparison", label: "Methodology Comparison" },
+  { to: "/challenger-track-record", label: "Challenger Track Record" },
 ];
 
 const OPERATIONS_NAV_ITEMS: NavItem[] = [{ to: "/operations", label: "Live Operations" }];

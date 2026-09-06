@@ -41,6 +41,7 @@ const OPS_SECTIONS = [
   { id: "ops-jobs", label: "Scheduler jobs" },
   { id: "ops-attention", label: "Attention" },
   { id: "ops-v4", label: "V4 forward engine" },
+  { id: "ops-v4-2", label: "V4.2 challenger" },
 ];
 
 const TIMING_LABELS: Record<string, string> = {
@@ -96,6 +97,89 @@ function healthPillClass(state: HealthState | string): string {
 
 function HealthPill({ state }: { state: HealthState | string }) {
   return <span className={`pill pill-${healthPillClass(state)}`}>{state.toUpperCase()}</span>;
+}
+
+// V4.2 CHALLENGER operations.
+//
+// Its own card, its own counters, and deliberately BELOW the V4.1 engine card:
+// a challenger failure must never contribute to production readiness, and the
+// surest way to keep that true is for its numbers never to be added to V4.1's.
+// NO ACTION is reported as a successful outcome here, not filed under failures.
+function V42ChallengerCard() {
+  const ops = useAsync(() => api.getV4ChallengerOperations(), []);
+  if (ops.error && !ops.data) return null;
+  if (!ops.data) return null;
+  const { scheduler, counts } = ops.data;
+  return (
+    <div className="card" id="ops-v4-2" data-testid="operations-v4-2">
+      <h2>
+        V4.2 challenger{" "}
+        <span className="pill pill-warning">PARALLEL SHADOW · EXPERIMENTAL</span>
+      </h2>
+      <p className="text-sm text-muted">
+        A separate cohort from the V4.1 forward record above. V4.1 remains the control and the
+        official methodology; nothing here changes what the product recommends, and these
+        counters never contribute to V4.1 readiness.
+      </p>
+      <div className="grid grid-4">
+        <Stat
+          label="Parallel observation"
+          value={
+            scheduler.parallel_enabled ? (
+              <span className="pill pill-positive">ENABLED</span>
+            ) : (
+              <span className="pill pill-neutral">DISABLED</span>
+            )
+          }
+          mono={false}
+          sub={`state ${scheduler.state}`}
+        />
+        <Stat
+          label="Runs as"
+          value="window phase"
+          mono={false}
+          sub="inside the V4.1 15:30 window, after the control"
+        />
+        <Stat
+          label="Separate 15:30 job"
+          value={scheduler.separate_job_registered ? "yes" : "none"}
+          mono={false}
+          sub="a second registration could race the control"
+        />
+        <Stat label="Control priority" value={scheduler.control_priority ? "guaranteed" : "—"} mono={false} />
+      </div>
+      <div className="grid grid-4" style={{ marginTop: 8 }}>
+        <Stat
+          label="Events evaluated"
+          value={counts.events_evaluated}
+          sub={`${counts.action} action · ${counts.no_action} no action`}
+        />
+        <Stat
+          label="Entries"
+          value={counts.entry_observed}
+          sub={`${counts.entry_failed} not executable`}
+        />
+        <Stat
+          label="Settlements"
+          value={`${counts.settled} settled · ${counts.settlement_due} due`}
+          sub={`${counts.settlement_failed} failed`}
+        />
+        <Stat
+          label="Evidence"
+          value={
+            <Link className="text-link" to="/challenger-track-record">
+              Challenger Track Record →
+            </Link>
+          }
+          mono={false}
+        />
+      </div>
+      <p className="text-sm text-muted" style={{ marginBottom: 0 }}>
+        NO ACTION is a successful methodology outcome, not a failure: it is what an absolute
+        viability gate is supposed to produce when nothing clears it.
+      </p>
+    </div>
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -645,6 +729,7 @@ export function Operations() {
       {jobs.data ? <SchedulerJobsSection jobs={jobs.data.jobs} staleness={s.staleness} now={now} /> : jobs.error ? <ErrorState message={jobs.error} /> : <LoadingState label="Loading scheduler jobs…" />}
       {failures.data ? <AttentionSection failures={failures.data.failures} /> : failures.error ? <ErrorState message={failures.error} /> : null}
       <V4EngineCard v4={s.health.v4_shadow} ai={s.health.ai_provider} jobs={jobs.data?.jobs ?? []} />
+      <V42ChallengerCard />
     </div>
   );
 }
