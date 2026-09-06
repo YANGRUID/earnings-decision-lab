@@ -17,12 +17,26 @@ transacted at that price.
 
 from collections.abc import Iterable
 from dataclasses import dataclass, field
+from typing import Protocol
 
-from models.v4_shadow import V4ShadowConfigSettlement
 from services.v4_settlement_fallback import (
     PRICING_EXPIRATION_INTRINSIC_AT_CLOSE,
     PRICING_MARKET_CLOSE_FALLBACK,
 )
+
+
+class GradableSettlement(Protocol):
+    """Anything that records how it was priced.
+
+    Structural rather than a concrete model, so the CHALLENGER's settlements
+    are graded by this exact function rather than by a parallel copy of it.
+    Two graders would eventually disagree, and the moment they did, the
+    control/challenger comparison would be measuring the graders instead of
+    the methodologies."""
+
+    status: str
+    pricing_method: str | None
+
 
 GRADE_EXECUTABLE = "EXECUTABLE_BID_ASK"
 GRADE_MARKET_CLOSE = "MARKET_CLOSE_FALLBACK"
@@ -48,7 +62,7 @@ GRADE_LABELS = {
 }
 
 
-def settlement_grade(row: V4ShadowConfigSettlement) -> str:
+def settlement_grade(row: GradableSettlement) -> str:
     """The evidence grade of ONE settlement.
 
     A settlement written before the end-of-day fallback existed carries no
@@ -77,9 +91,7 @@ class SettlementQualityBreakdown:
     def rates(self) -> dict[str, float]:
         if not self.total:
             return {grade: 0.0 for grade in GRADE_SEVERITY}
-        return {
-            grade: self.counts.get(grade, 0) / self.total for grade in GRADE_SEVERITY
-        }
+        return {grade: self.counts.get(grade, 0) / self.total for grade in GRADE_SEVERITY}
 
     @property
     def executable_rate(self) -> float:
@@ -99,7 +111,7 @@ class SettlementQualityBreakdown:
 
 
 def summarize_settlement_quality(
-    rows: Iterable[V4ShadowConfigSettlement],
+    rows: Iterable[GradableSettlement],
 ) -> SettlementQualityBreakdown:
     out = SettlementQualityBreakdown()
     for row in rows:
@@ -111,12 +123,17 @@ def summarize_settlement_quality(
     return out
 
 
-def executable_only(
-    rows: Iterable[V4ShadowConfigSettlement],
-) -> list[V4ShadowConfigSettlement]:
+def executable_only[SettlementT: GradableSettlement](
+    rows: Iterable[SettlementT],
+) -> list[SettlementT]:
     """The subset whose exit value was a real executable price on every leg.
 
     An analytics filter, never a deletion: the excluded settlements remain
     exactly as persisted and are still reported under All Outcomes.
+
+    Generic over the row type so a caller gets back exactly what it passed in:
+    filtering a list of control settlements must not widen it into "something
+    gradable", which would let a challenger row into a control list without
+    the type checker noticing.
     """
     return [row for row in rows if settlement_grade(row) in EXECUTABLE_GRADES]

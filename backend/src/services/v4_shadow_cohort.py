@@ -23,6 +23,7 @@ result) and isolate failures per candidate/configuration.
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
 from decimal import Decimal
@@ -304,12 +305,21 @@ def settle_shadow_decision_cohorts(
     decision: V4ShadowDecision,
     observed_at: datetime,
     timing_policy_version: str = V4_ACTIVE_TIMING_POLICY.version,
+    on_quotes: Callable[[dict[str, Any]], None] | None = None,
 ) -> CohortSettlementSummary:
     """Sections 11-16. Settles the exact frozen positions. Never raises.
 
     ``timing_policy_version`` is the policy the EXIT is observed under and is
     written on every settlement row; the decision/entry rows keep their own
-    frozen version (prospective transition, no rewritten history)."""
+    frozen version (prospective transition, no rewritten history).
+
+    ``on_quotes`` is an optional observer handed the exit quotes this sweep
+    acquired, keyed by conId. It exists so a parallel challenger holding the
+    SAME contract can price its own exit from the control's already-acquired
+    evidence instead of issuing a second subscription for a contract that was
+    just quoted. It is called after acquisition and before any persistence;
+    it takes no part in the control's own settlement, and a caller that
+    passes nothing gets byte-identical behaviour."""
     summary = CohortSettlementSummary()
     entries = (
         db.query(V4ShadowConfigEntry)
@@ -379,6 +389,13 @@ def settle_shadow_decision_cohorts(
             if q is not None:
                 quotes_by_conid[conid] = q
     summary.unique_contracts = sum(len(v) for v in by_expiration.values())
+    if on_quotes is not None:
+        # Publish, never consult: the control's own settlement below reads
+        # quotes_by_conid directly and is unaffected by what an observer does.
+        try:
+            on_quotes(dict(quotes_by_conid))
+        except Exception:  # noqa: BLE001 -- an observer must not break settlement
+            log.error("exit-quote observer failed; control settlement continues", exc_info=True)
 
     # 2. One candidate-level EXIT observation per unique held candidate.
     exit_obs: dict[str, V4ShadowCandidateObservation] = {}
