@@ -84,6 +84,11 @@ log = logging.getLogger("services.v4_shadow_scheduler")
 V4_FORWARD_WINDOW_JOB_ID = "v4_forward_window"
 V4_SHADOW_DECISION_JOB_ID = "v4_shadow_decision"
 V4_SHADOW_SETTLEMENT_JOB_ID = "v4_shadow_settlement"
+#: The V4.2 PARALLEL SHADOW phase of the same window. A recorded PHASE, never
+#: a separately scheduled job: a second 15:30 registration could race the
+#: control for the window and for the market-data lock, which is exactly the
+#: coupling the challenger must not introduce.
+V4_2_CHALLENGER_PHASE_JOB_ID = "v4_2_challenger_phase"
 #: Retired 15:30 registrations that must never fire again (removed from the
 #: persistent job store by migration b7d9f1a3c5e7 and, defensively, at startup).
 RETIRED_V4_JOB_IDS = (V4_SHADOW_DECISION_JOB_ID, V4_SHADOW_SETTLEMENT_JOB_ID)
@@ -241,6 +246,7 @@ def settle_due_cohorts(
     scheduled_at: datetime | None = None,
     job_started_at: datetime | None = None,
     market_data_lock=None,
+    on_quotes: Callable[[dict[str, Any]], None] | None = None,
 ) -> SettlementRunSummary:
     """Six-cohort settlement: every decision with at least one OBSERVED
     configuration entry that has no configuration settlement yet, gated by
@@ -374,6 +380,7 @@ def settle_due_cohorts(
                             decision=decision,
                             observed_at=acquired_at,
                             timing_policy_version=policy_version,
+                            on_quotes=on_quotes,
                         )
                         summary.settled += result.settled
                         summary.failed += result.failed
@@ -424,6 +431,11 @@ class ForwardWindowSummary:
     #: phase (a position that became due after phase 1) -- always 0 unless the
     #: window opened mid-run.
     settled_during_decisions: int = 0
+    #: The V4.2 PARALLEL SHADOW phase, when the flag is on. None means the
+    #: challenger did not run at all, which is the default and is not a
+    #: failure. It is deliberately the LAST field of the last phase: the
+    #: challenger observes, it never participates in the control's window.
+    challenger: Any = None
 
 
 def window_instant_for(now: datetime) -> datetime:
@@ -468,6 +480,17 @@ def run_forward_window(
 
     clock = clock or (lambda: now)
     telemetry: list[SettlementTelemetry] = []
+    # Section 82: exit quotes the CONTROL acquired in this window, keyed by
+    # conId. A challenger position holding one of these contracts prices its
+    # own exit from the control's evidence rather than paying for a second
+    # subscription to a contract that was just quoted. Populated only while
+    # the challenger flag is on -- with it off this dict stays empty and
+    # nothing observes the control's settlement at all.
+    shared_exit_quotes: dict[str, Any] = {}
+    challenger_on = bool(getattr(settings, "v4_2_parallel_enabled", False))
+
+    def _collect_quotes(quotes: dict[str, Any]) -> None:
+        shared_exit_quotes.update(quotes)
 
     def _sink(t: SettlementTelemetry) -> None:
         telemetry.append(t)
@@ -484,6 +507,7 @@ def run_forward_window(
         on_telemetry=_sink,
         scheduled_at=scheduled_at,
         job_started_at=job_started_at,
+        on_quotes=_collect_quotes if challenger_on else None,
     )
     if after_phase is not None:
         after_phase("settlement", settlement)
@@ -502,6 +526,7 @@ def run_forward_window(
             on_telemetry=_sink,
             scheduled_at=scheduled_at,
             job_started_at=job_started_at,
+            on_quotes=_collect_quotes if challenger_on else None,
         )
         summary.settled_during_decisions += late.settled
         settlement.absorb(
@@ -534,6 +559,30 @@ def run_forward_window(
     summary.decisions = decisions
     if after_phase is not None:
         after_phase("decision", decisions)
+
+    # Phase 3 -- V4.2 PARALLEL SHADOW, strictly after the control has finished
+    # both of its phases. Gated by v4_2_parallel_enabled (default False), and
+    # wrapped so that no challenger fault can reach this coordinator: the
+    # control's settlements and decisions are already committed by the time
+    # this runs, and a raised exception here would serve no purpose except to
+    # make a challenger bug look like a control outage.
+    if getattr(settings, "v4_2_parallel_enabled", False):
+        from services.v4_2_parallel import run_challenger_phase  # noqa: PLC0415
+
+        if before_phase is not None:
+            before_phase("challenger")
+        try:
+            summary.challenger = run_challenger_phase(
+                db,
+                settings,
+                provider=provider,
+                now=clock(),
+                shared_exit_quotes=shared_exit_quotes,
+            )
+        except Exception:  # noqa: BLE001 -- a challenger fault is never a control fault
+            log.error("v4.2 challenger phase failed; control window unaffected", exc_info=True)
+        if after_phase is not None:
+            after_phase("challenger", summary.challenger)
     return summary
 
 
@@ -599,6 +648,7 @@ def run_v4_forward_window_job(
         phase_job_ids = {
             "settlement": V4_SHADOW_SETTLEMENT_JOB_ID,
             "decision": V4_SHADOW_DECISION_JOB_ID,
+            "challenger": V4_2_CHALLENGER_PHASE_JOB_ID,
         }
 
         def _before(phase: str) -> None:
@@ -606,6 +656,42 @@ def run_v4_forward_window_job(
 
         def _after(phase: str, result: Any) -> None:
             run = runs[phase]
+            if phase == "challenger":
+                # Recorded under its own job id so a challenger failure can
+                # never move V4.1's success/failure counters. NO_ACTION counts
+                # as a success: declining is correct methodology execution,
+                # not an error.
+                db.commit()
+                if result is None:
+                    finish_scheduler_run(db, run, status=RUN_STATUS_SKIPPED)
+                    return
+                log.info(
+                    "v4.2 challenger phase: evaluated=%d action=%d no_action=%d "
+                    "entries=%d entries_failed=%d settled=%d settlement_failed=%d "
+                    "failed=%d md_requests=%d reused=%d",
+                    result.evaluated,
+                    result.action,
+                    result.no_action,
+                    result.entries_observed,
+                    result.entries_failed,
+                    result.settled,
+                    result.settlement_failed,
+                    result.failed,
+                    result.market_data_requests,
+                    result.contracts_reused_from_control,
+                )
+                finish_scheduler_run(
+                    db,
+                    run,
+                    status=RUN_STATUS_ERROR
+                    if result.failed and not (result.action or result.no_action)
+                    else RUN_STATUS_SUCCESS,
+                    items_evaluated=result.evaluated,
+                    items_succeeded=result.action + result.no_action,
+                    items_failed=result.failed,
+                    error_summary="; ".join(result.errors[:3]) or None,
+                )
+                return
             if phase == "settlement":
                 db.add(
                     _decision_phase_row(
@@ -794,6 +880,35 @@ def run_v4_eod_settlement_fallback_job(*, now: datetime | None = None) -> None:
                 now=resolved_now,
                 dry_run=False,
             )
+        # V4.2 parity (Section 84): the SAME released fallback recovers a
+        # stranded challenger position, with the same hierarchy and the same
+        # provenance labels. Isolated: a challenger recovery failure never
+        # touches the control's run status, which has already been decided by
+        # the control recovery above.
+        if getattr(settings, "v4_2_parallel_enabled", False):
+            try:
+                from services.v4_2_challenger_recovery import (  # noqa: PLC0415
+                    recover_challenger_settlements,
+                )
+
+                with V4_MARKET_DATA_LOCK:
+                    challenger = recover_challenger_settlements(
+                        db,
+                        provider=provider,
+                        session_date=session_date,
+                        now=resolved_now,
+                        dry_run=False,
+                    )
+                db.commit()
+                log.info(
+                    "v4.2 challenger eod recovery: considered=%d settled=%d unresolved=%d",
+                    challenger.candidates_considered,
+                    challenger.settled,
+                    challenger.unresolved,
+                )
+            except Exception:  # noqa: BLE001 -- never the control's problem
+                log.error("v4.2 challenger eod recovery failed", exc_info=True)
+
         finish_scheduler_run(
             db,
             run,

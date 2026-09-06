@@ -46,6 +46,19 @@ class Settings(BaseSettings):
     # and never a brokerage order.
     v4_shadow_enabled: bool = False
 
+    # V4.2 (2026-09-05) -- master switch for the PARALLEL SHADOW challenger.
+    # Default False, and it stays False until a genuine market-hours zero-write
+    # dry-run has passed. With this off, no challenger work is registered or
+    # executed: the 15:30 forward window runs exactly the control phases it
+    # always has, no challenger decision, entry or settlement row is ever
+    # written, and V4.1's behaviour is byte-identical.
+    #
+    # Turning it on activates OBSERVATION ONLY. V4.1 remains the control and
+    # the official methodology; the challenger accumulates its own separate
+    # forward evidence beside it, in its own tables, under its own cohort, and
+    # never becomes the product recommendation by flipping this flag.
+    v4_2_parallel_enabled: bool = False
+
     database_url: str = (
         "postgresql+psycopg://postgres:change_me@localhost:5433/earnings_decision_lab"
     )
