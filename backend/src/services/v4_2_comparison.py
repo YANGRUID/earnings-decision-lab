@@ -49,6 +49,15 @@ class MethodologySide:
     no_action_reason: str | None = None
     candidates_evaluated: int | None = None
     candidates_accepted: int | None = None
+    # Challenger-only fields. The control has no move edge and no expiry
+    # ladder, so these stay None on its side rather than being invented.
+    move_edge_status: str | None = None
+    move_edge_ratio: Decimal | None = None
+    expiry_ladder_position: int | None = None
+    entry_dte: int | None = None
+    dte_at_settlement: int | None = None
+    #: Where the decision got to: NO_ACTION, WAITING_SETTLEMENT, SETTLED, ...
+    lifecycle: dict | None = None
 
 
 @dataclass
@@ -59,6 +68,8 @@ class EventComparison:
     control: MethodologySide
     challenger: MethodologySide
     challenger_evidence: dict = field(default_factory=dict)
+    #: The bounded expiries the challenger considered, one row per rung.
+    multi_expiry: list = field(default_factory=list)
     configurations: list[dict] = field(default_factory=list)
     differs: bool = False
 
@@ -92,9 +103,7 @@ def _control_side(db: Session, decision: V4ShadowDecision) -> MethodologySide:
     )
 
 
-def _challenger_side(
-    db: Session, challenger: V42ChallengerDecision | None
-) -> MethodologySide:
+def _challenger_side(db: Session, challenger: V42ChallengerDecision | None) -> MethodologySide:
     if challenger is None:
         return MethodologySide(methodology="V4.2 CHALLENGER", status=None)
     selected = (
@@ -121,6 +130,115 @@ def _challenger_side(
         no_action_reason=challenger.no_action_reason,
         candidates_evaluated=challenger.candidates_evaluated,
         candidates_accepted=challenger.candidates_accepted,
+        move_edge_status=selected.move_edge_status if selected else None,
+        move_edge_ratio=_decimal(selected.move_edge_ratio) if selected else None,
+        expiry_ladder_position=selected.expiry_ladder_position if selected else None,
+        entry_dte=selected.entry_dte if selected else None,
+        dte_at_settlement=selected.dte_at_settlement if selected else None,
+        lifecycle=_challenger_lifecycle(db, challenger),
+    )
+
+
+def _challenger_lifecycle(db: Session, challenger: V42ChallengerDecision) -> dict:
+    """Where this challenger decision actually got to.
+
+    NO_ACTION is a terminal, successful state here -- not "no entry yet". A
+    reader must be able to tell a methodology that declined from one that
+    wanted to act and could not be priced.
+    """
+    from models.v4_2_challenger import (  # noqa: PLC0415
+        V42ChallengerConfigEntry,
+        V42ChallengerConfigSettlement,
+    )
+
+    entries = (
+        db.query(V42ChallengerConfigEntry).filter_by(challenger_decision_id=challenger.id).all()
+    )
+    settlements = (
+        db.query(V42ChallengerConfigSettlement)
+        .filter_by(challenger_decision_id=challenger.id)
+        .all()
+    )
+    settled = [s for s in settlements if s.status == "SETTLED"]
+    observed = [e for e in entries if e.status == "OBSERVED"]
+    if challenger.status != "RANKED":
+        state = "NO_ACTION"
+    elif settled:
+        state = "SETTLED"
+    elif settlements:
+        state = "SETTLEMENT_FAILED"
+    elif observed:
+        state = "WAITING_SETTLEMENT"
+    elif entries:
+        state = "ENTRY_FAILED"
+    else:
+        state = "PENDING_ENTRY"
+    return {
+        "state": state,
+        "entries_observed": len(observed),
+        "entries_failed": len(entries) - len(observed),
+        "settled": len(settled),
+        "settlement_failed": len(settlements) - len(settled),
+        "settlement_grades": sorted({s.settlement_grade for s in settled if s.settlement_grade}),
+        "realized_pnl": (
+            str(sum((s.realized_pnl or Decimal(0)) for s in settled)) if settled else None
+        ),
+    }
+
+
+def _multi_expiry_view(db: Session, challenger: V42ChallengerDecision | None) -> list[dict]:
+    """The bounded expiries the challenger actually considered, with each
+    rung's own economics.
+
+    Empty when no challenger decision exists, and empty is the honest answer:
+    the ladder is not reconstructible after the fact from a chain that has
+    since moved.
+    """
+    if challenger is None:
+        return []
+    rows = db.query(V42ChallengerCandidate).filter_by(challenger_decision_id=challenger.id).all()
+    by_expiry: dict = {}
+    for row in rows:
+        bucket = by_expiry.setdefault(
+            row.expiration,
+            {
+                "expiration": row.expiration.isoformat(),
+                "ladder_position": row.expiry_ladder_position,
+                "entry_dte": row.entry_dte,
+                "dte_at_settlement": row.dte_at_settlement,
+                "settlement_risk": row.settlement_risk,
+                "implied_move_pct": (
+                    None
+                    if row.expiry_implied_move_pct is None
+                    else str(row.expiry_implied_move_pct)
+                ),
+                "candidates": 0,
+                "viable_candidates": 0,
+                "best_median_return": None,
+                "best_worst_return": None,
+                "best_candidate_id": None,
+                "mean_relative_spread": None,
+                "move_edge_status": None,
+            },
+        )
+        bucket["candidates"] += 1
+        if row.viability_acceptable:
+            bucket["viable_candidates"] += 1
+            median = row.core_median_return
+            best = bucket["best_median_return"]
+            if median is not None and (best is None or median > Decimal(best)):
+                bucket["best_median_return"] = str(median)
+                bucket["best_worst_return"] = (
+                    None if row.core_worst_return is None else str(row.core_worst_return)
+                )
+                bucket["best_candidate_id"] = row.candidate_id
+                bucket["mean_relative_spread"] = (
+                    None if row.mean_relative_spread is None else str(row.mean_relative_spread)
+                )
+                bucket["move_edge_status"] = row.move_edge_status
+    return sorted(
+        by_expiry.values(),
+        key=lambda r: r["ladder_position"] if r["ladder_position"] is not None else 99,
     )
 
 
@@ -154,8 +272,9 @@ def _evidence_readiness(
     overall = (
         EVIDENCE_READY
         if historical == EVIDENCE_READY and multi_expiry == EVIDENCE_READY
-        else (EVIDENCE_PARTIAL if EVIDENCE_READY in (historical, multi_expiry)
-              else EVIDENCE_MISSING)
+        else (
+            EVIDENCE_PARTIAL if EVIDENCE_READY in (historical, multi_expiry) else EVIDENCE_MISSING
+        )
     )
     return {
         "historical_move": historical,
@@ -165,9 +284,7 @@ def _evidence_readiness(
         "multi_expiry_metadata": multi_expiry,
         # The seven pre-Phase-2 events have no frozen chain, and no current
         # chain may stand in for one.
-        "multi_expiry_replay": (
-            "AVAILABLE" if chain is not None else "CANNOT_REPLAY_HONESTLY"
-        ),
+        "multi_expiry_replay": ("AVAILABLE" if chain is not None else "CANNOT_REPLAY_HONESTLY"),
         "overall": overall,
     }
 
@@ -210,9 +327,7 @@ def compare_event(db: Session, decision: V4ShadowDecision) -> EventComparison:
             {
                 "configuration_key": key,
                 "control_status": control_row.status if control_row else None,
-                "control_candidate_id": (
-                    control_row.rank_1_candidate_id if control_row else None
-                ),
+                "control_candidate_id": (control_row.rank_1_candidate_id if control_row else None),
                 "challenger_status": challenger_row.status if challenger_row else None,
                 "challenger_candidate_id": (
                     challenger_row.selected_candidate_id if challenger_row else None
@@ -234,6 +349,7 @@ def compare_event(db: Session, decision: V4ShadowDecision) -> EventComparison:
         control=control,
         challenger=challenger_side,
         challenger_evidence=_evidence_readiness(db, decision, challenger, chain),
+        multi_expiry=_multi_expiry_view(db, challenger),
         configurations=configurations,
         # An absent challenger evaluation is not a disagreement. Reporting it
         # as one would inflate every "differs" count with events the
@@ -247,6 +363,5 @@ def compare_event(db: Session, decision: V4ShadowDecision) -> EventComparison:
 
 def compare_all_events(db: Session) -> list[EventComparison]:
     return [
-        compare_event(db, d)
-        for d in db.query(V4ShadowDecision).order_by(V4ShadowDecision.id).all()
+        compare_event(db, d) for d in db.query(V4ShadowDecision).order_by(V4ShadowDecision.id).all()
     ]
