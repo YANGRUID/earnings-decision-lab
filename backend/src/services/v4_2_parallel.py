@@ -159,6 +159,7 @@ def run_challenger_phase(
             settlement_date=settlement_date,
             summary=summary,
             dry_run=dry_run,
+            activation_at=getattr(settings, "v4_2_parallel_activation_at", None),
         )
     except Exception as exc:  # noqa: BLE001
         log.error("challenger evaluation phase failed", exc_info=True)
@@ -284,6 +285,7 @@ def _evaluate_new_decisions(
     settlement_date: date | None,
     summary: ChallengerPhaseSummary,
     dry_run: bool,
+    activation_at: datetime | None = None,
 ) -> None:
     """Evaluate and freeze a challenger decision for every control decision
     generated in THIS window that does not have one yet.
@@ -311,7 +313,13 @@ def _evaluate_new_decisions(
             V42ChallengerDecision.shadow_decision_id.isnot(None)
         )
     }
+    # Two guards, and the stricter one wins. The lookback keeps the challenger
+    # inside THIS window; the activation boundary is an absolute floor that no
+    # amount of clock drift, restart or replay can slip beneath. Together they
+    # are what makes "no historical backfill" a property rather than a hope.
     window_start = now - WINDOW_LOOKBACK
+    if activation_at is not None and activation_at > window_start:
+        window_start = activation_at
     controls = (
         db.query(V4ShadowDecision)
         .filter(V4ShadowDecision.id.notin_(existing or [0]))
@@ -328,9 +336,10 @@ def _evaluate_new_decisions(
     if skipped:
         summary.skipped_historical = skipped
         log.info(
-            "v4.2 challenger: %d pre-existing control decision(s) left alone -- "
-            "a challenger record is only ever created prospectively",
+            "v4.2 challenger: %d pre-existing control decision(s) left alone "
+            "(boundary %s) -- a challenger record is only ever created prospectively",
             skipped,
+            window_start.isoformat(),
         )
     for control in controls:
         try:

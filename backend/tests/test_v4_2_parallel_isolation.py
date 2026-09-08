@@ -403,6 +403,73 @@ class TestTrackRecordSeparation:
         assert record.actions.action_rate is None, "no observations is not a 0% action rate"
 
 
+class TestProspectiveActivationBoundary:
+    """Section 43 -- an explicit, persisted floor.
+
+    The window lookback is relative and therefore not, on its own, proof
+    against backfill: a restart, a clock skew or a replay could still reach an
+    older decision. The activation boundary is absolute, and these pin that
+    the stricter of the two always wins.
+    """
+
+    def test_a_decision_before_the_boundary_is_refused(self, db_session):
+        from datetime import timedelta
+
+        # Inside the 6h lookback, but BEFORE the activation instant.
+        _control(db_session, "PREBD", generated_at=WINDOW - timedelta(hours=2))
+        summary = run_challenger_phase(
+            db_session,
+            _settings(
+                v4_2_parallel_enabled=True,
+                v4_2_parallel_activation_at=WINDOW - timedelta(hours=1),
+            ),
+            provider=None,
+            now=WINDOW,
+        )
+        db_session.flush()
+        assert summary.evaluated == 0
+        assert summary.skipped_historical == 1
+        assert db_session.query(V42ChallengerDecision).count() == 0
+
+    def test_a_decision_after_the_boundary_is_evaluated(self, db_session):
+        from datetime import timedelta
+
+        _control(db_session, "POSTB", generated_at=WINDOW)
+        summary = run_challenger_phase(
+            db_session,
+            _settings(
+                v4_2_parallel_enabled=True,
+                v4_2_parallel_activation_at=WINDOW - timedelta(hours=1),
+            ),
+            provider=None,
+            now=WINDOW,
+        )
+        assert summary.evaluated == 1
+        assert db_session.query(V42ChallengerDecision).count() == 1
+
+    def test_the_boundary_cannot_widen_the_lookback(self, db_session):
+        """An activation instant far in the past must NOT let the challenger
+        reach decisions the window lookback already excludes."""
+        from datetime import timedelta
+
+        _control(db_session, "WIDEN", generated_at=WINDOW - timedelta(days=30))
+        summary = run_challenger_phase(
+            db_session,
+            _settings(
+                v4_2_parallel_enabled=True,
+                v4_2_parallel_activation_at=WINDOW - timedelta(days=365),
+            ),
+            provider=None,
+            now=WINDOW,
+        )
+        db_session.flush()
+        assert summary.evaluated == 0
+        assert db_session.query(V42ChallengerDecision).count() == 0
+
+    def test_the_default_boundary_is_none(self):
+        assert Settings(_env_file=None).v4_2_parallel_activation_at is None
+
+
 class TestNoOrderPath:
     @pytest.mark.parametrize(
         "module",

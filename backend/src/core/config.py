@@ -59,6 +59,16 @@ class Settings(BaseSettings):
     # never becomes the product recommendation by flipping this flag.
     v4_2_parallel_enabled: bool = False
 
+    # The explicit prospective boundary for parallel shadow. The challenger
+    # may only evaluate control decisions generated at or after this instant.
+    #
+    # The window lookback alone is a relative guard; this is an absolute one,
+    # and it is what makes "no historical backfill" auditable rather than
+    # merely likely. Set it to the activation timestamp when the flag is
+    # turned on. None means no floor beyond the window lookback, which is the
+    # correct default for a system that has never been activated.
+    v4_2_parallel_activation_at: datetime | None = None
+
     database_url: str = (
         "postgresql+psycopg://postgres:change_me@localhost:5433/earnings_decision_lab"
     )
