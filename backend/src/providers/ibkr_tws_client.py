@@ -123,6 +123,23 @@ _OPTION_PROBE_GENERIC_TICKS = "100,101,106"
 SNAPSHOT_WARMUP_MAX_ATTEMPTS = 5
 SNAPSHOT_WARMUP_RETRY_DELAY_SECONDS = 1.5
 
+#: How often a streaming warm-up LOOKS at the accumulating result while it
+#: waits out one attempt's retry delay.
+#:
+#: Measured defect (live market-hours validation, 2026-09-08): the streaming
+#: warm-up slept the FULL retry delay before its first look, so a contract
+#: whose ticks arrived in milliseconds still cost 1.5s. Per-contract cost was
+#: 1.53s (AAPL) and 1.59s (ORCL) against a 1.50s floor -- i.e. essentially the
+#: entire cost of a live option quote was the provider sleeping before it
+#: looked. Over the seventeen contracts of one ORCL run that is 27.1s spent
+#: waiting for data already in hand.
+#:
+#: Polling inside the delay changes nothing about WHAT is observed: the same
+#: requirement, the same terminal conditions, the same attempt count and the
+#: same worst-case ceiling of MAX_ATTEMPTS x RETRY_DELAY. It only stops the
+#: loop sleeping through an answer that has already arrived.
+SNAPSHOT_WARMUP_POLL_INTERVAL_SECONDS = 0.05
+
 DEFAULT_CONNECT_TIMEOUT_SECONDS = 10.0
 DEFAULT_REQUEST_TIMEOUT_SECONDS = 15.0
 
@@ -943,7 +960,28 @@ class TWSConnectionManager(EWrapper, EClient):
         try:
             result = {}
             for attempt in range(1, max_attempts + 1):
-                time.sleep(retry_delay)
+                # Wait out this attempt's delay, but LOOK while waiting. The
+                # bound is unchanged -- at most ``max_attempts`` attempts of
+                # ``retry_delay`` each -- and so are the requirement and the
+                # terminal test; the loop simply stops sleeping once the
+                # answer is in hand. See SNAPSHOT_WARMUP_POLL_INTERVAL_SECONDS.
+                deadline = time.monotonic() + retry_delay
+                while True:
+                    time.sleep(
+                        min(
+                            SNAPSHOT_WARMUP_POLL_INTERVAL_SECONDS,
+                            max(deadline - time.monotonic(), 0.0),
+                        )
+                    )
+                    if pending.error is not None:
+                        break
+                    peeked = dict(pending.result) if isinstance(pending.result, dict) else {}
+                    if requirement_satisfied(peeked):
+                        break
+                    if requirement_terminal is not None and requirement_terminal(peeked):
+                        break
+                    if time.monotonic() >= deadline:
+                        break
                 if pending.error is not None:
                     raise pending.error
                 result = dict(pending.result) if isinstance(pending.result, dict) else {}

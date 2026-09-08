@@ -595,6 +595,118 @@ class TestLiveFindings2026_08_31:
         assert cancel_calls == [req_calls[0]]  # cancelled exactly once, at the end
 
 
+class TestStreamingWarmupDoesNotSleepThroughAnAnswer:
+    """Live market-hours defect (2026-09-08).
+
+    The streaming warm-up slept its full retry delay BEFORE its first look,
+    so a contract whose ticks arrived in milliseconds still cost the whole
+    delay. Measured per-contract cost was 1.53s (AAPL) and 1.59s (ORCL)
+    against a 1.50s floor: essentially the entire cost of a live option quote
+    was the provider waiting for data it already had.
+
+    These pin the fix and, just as importantly, pin what the fix must NOT
+    change: the attempt count, the terminal semantics and the worst-case
+    ceiling are all exactly as before.
+    """
+
+    def _manager_with_ticks(self, monkeypatch, *, ask_after_seconds: float):
+        """A manager whose ASK arrives ``ask_after_seconds`` into the wait,
+        with a controllable clock so the test asserts on modelled elapsed time
+        rather than on real wall-clock timing."""
+        manager = _manager()
+        manager.nextValidId(1)
+        clock = {"t": 0.0}
+        state: dict = {}
+
+        monkeypatch.setattr("providers.ibkr_tws_client.time.monotonic", lambda: clock["t"])
+
+        def _sleep(seconds):
+            clock["t"] += seconds
+            req_id = state.get("req_id")
+            if req_id is not None and clock["t"] >= ask_after_seconds and "sent" not in state:
+                state["sent"] = True
+                manager.tickPrice(req_id, 2, 5.10, None)
+
+        monkeypatch.setattr("providers.ibkr_tws_client.time.sleep", _sleep)
+
+        def _fake_req(req_id, contract, *args):
+            state["req_id"] = req_id
+            manager.tickPrice(req_id, 4, 5.00, None)  # last, never enough
+
+        manager.reqMktData = _fake_req  # type: ignore[method-assign]
+        manager.cancelMktData = lambda _req_id: None  # type: ignore[method-assign]
+        return manager, clock
+
+    def test_returns_as_soon_as_the_required_side_arrives(self, monkeypatch):
+        manager, clock = self._manager_with_ticks(monkeypatch, ask_after_seconds=0.1)
+        result = manager.request_market_data_with_requirement(
+            MagicMock(),
+            requirement_satisfied=lambda r: r.get("ask") is not None,
+            generic_ticks="100,101,106",
+        )
+        assert result["ask"] == 5.10
+        # The old loop could not return before a full 1.5s retry delay.
+        assert clock["t"] < 0.5, f"waited {clock['t']}s for data present at 0.1s"
+
+    def test_the_worst_case_ceiling_is_unchanged(self, monkeypatch):
+        """Nothing ever arrives: still exactly max_attempts x retry_delay."""
+        manager, clock = self._manager_with_ticks(monkeypatch, ask_after_seconds=9_999)
+        result = manager.request_market_data_with_requirement(
+            MagicMock(),
+            requirement_satisfied=lambda r: r.get("ask") is not None,
+            generic_ticks="100,101,106",
+            max_attempts=5,
+            retry_delay=1.5,
+        )
+        assert "ask" not in result
+        assert clock["t"] == pytest.approx(7.5, abs=0.06)
+
+    def test_the_attempt_count_is_unchanged(self, monkeypatch):
+        manager, _clock = self._manager_with_ticks(monkeypatch, ask_after_seconds=9_999)
+        seen: list[int] = []
+        manager.request_market_data_with_requirement(
+            MagicMock(),
+            requirement_satisfied=lambda r: False,
+            generic_ticks="100,101,106",
+            max_attempts=3,
+            on_attempt=lambda n, _r: seen.append(n),
+        )
+        assert seen == [1, 2, 3]
+
+    def test_a_terminal_empty_book_still_stops_early(self, monkeypatch):
+        """An IBKR -1 price with a 0 size is a definitive answer, not silence.
+        It must still short-circuit rather than burn the remaining attempts."""
+        manager = _manager()
+        manager.nextValidId(1)
+        clock = {"t": 0.0}
+        monkeypatch.setattr("providers.ibkr_tws_client.time.monotonic", lambda: clock["t"])
+        monkeypatch.setattr(
+            "providers.ibkr_tws_client.time.sleep",
+            lambda seconds: clock.__setitem__("t", clock["t"] + seconds),
+        )
+        attempts: list[int] = []
+
+        def _fake_req(req_id, contract, *args):
+            manager.tickPrice(req_id, 66, -1.0, None)  # DELAYED_BID: no bid exists
+            manager.tickSize(req_id, 69, 0)  # paired zero size
+
+        manager.reqMktData = _fake_req  # type: ignore[method-assign]
+        manager.cancelMktData = lambda _req_id: None  # type: ignore[method-assign]
+        result = manager.request_market_data_with_requirement(
+            MagicMock(),
+            requirement_satisfied=lambda r: r.get("bid") is not None,
+            requirement_terminal=lambda r: bool(r.get("bid_no_data_sentinel")),
+            generic_ticks="100,101,106",
+            max_attempts=5,
+            retry_delay=1.5,
+            on_attempt=lambda n, _r: attempts.append(n),
+        )
+        assert result.get("bid") is None
+        assert result.get("bid_no_data_sentinel") is True
+        assert attempts == [1], "a definitive empty book must not burn five attempts"
+        assert clock["t"] < 1.5
+
+
 class TestDelayedTickNormalization:
     """IBKR TWS delayed-market-data forensic (2026-08-31) -- CONFIRMED_
     ADAPTER_BUG_FIXED. A raw, unfiltered callback trace against the real
