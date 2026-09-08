@@ -236,6 +236,80 @@ class TestDeadlineGuard:
         cats = {e.ticker: e.category for e in db_session.query(V4ShadowRunEvent).all()}
         assert cats["RDY"] == "DEADLINE_SKIPPED" and cats["NOCO"] == "RESEARCH_NOT_READY"
 
+    def test_an_ineligible_company_is_not_reported_as_a_research_miss(self, db_session):
+        """Live evidence (2026-09-08): all seventeen events that missed that
+        day's window were sub-$10B and had been correctly filtered out of
+        research preparation the night before. The gate reported "no Company
+        row exists" for every one of them, so Operations showed seventeen
+        misses when the true number of preparation failures was zero.
+
+        A deliberate exclusion and a genuine gap must not share a label.
+        """
+        from decimal import Decimal
+
+        from models.earnings_calendar_event import EarningsCalendarEvent
+        from models.v4_shadow import V4ShadowRunEvent
+        from services.v4_shadow_orchestration import run_shadow_decisions_for_due_events
+
+        small = EarningsCalendarEvent(
+            symbol="TINY",
+            company_name="Tiny Co",
+            earnings_date=date(2026, 9, 10),
+            earnings_time="AMC",
+            source="EARNINGSAPI",
+            status="UPCOMING",
+            market_cap=Decimal("8090000000"),  # GME's real cap that day
+        )
+        db_session.add(small)
+        db_session.flush()
+
+        summary = run_shadow_decisions_for_due_events(
+            db_session,
+            None,
+            now=_et(2026, 9, 10, 15, 30),
+            provider=None,
+            view_generator=lambda *a, **k: pytest.fail("must not evaluate an ineligible event"),
+            due_predicate=lambda e, now: True,
+            candidate_events=[small],
+        )
+        assert summary.not_eligible == 1
+        assert summary.research_not_ready == 0, "a policy exclusion is not a research miss"
+        assert {o.status for o in summary.outcomes} == {"NOT_ELIGIBLE"}
+        row = db_session.query(V4ShadowRunEvent).filter_by(ticker="TINY").one()
+        assert row.category == "NOT_ELIGIBLE"
+        assert "market cap below" in row.message
+        assert row.retryable is False, "no amount of retrying makes a company larger"
+
+    def test_an_unknown_market_cap_stays_a_research_miss(self, db_session):
+        """The opposite direction, and the reason the two are separated at all:
+        a missing market cap is a data gap worth investigating, so it must NOT
+        be filed under the reassuring 'deliberately out of scope' label."""
+        from models.earnings_calendar_event import EarningsCalendarEvent
+        from services.v4_shadow_orchestration import run_shadow_decisions_for_due_events
+
+        unknown = EarningsCalendarEvent(
+            symbol="UNKN",
+            company_name="Unknown Cap Co",
+            earnings_date=date(2026, 9, 10),
+            earnings_time="AMC",
+            source="EARNINGSAPI",
+            status="UPCOMING",
+        )
+        db_session.add(unknown)
+        db_session.flush()
+
+        summary = run_shadow_decisions_for_due_events(
+            db_session,
+            None,
+            now=_et(2026, 9, 10, 15, 30),
+            provider=None,
+            view_generator=lambda *a, **k: pytest.fail("must not evaluate"),
+            due_predicate=lambda e, now: True,
+            candidate_events=[unknown],
+        )
+        assert summary.research_not_ready == 1
+        assert summary.not_eligible == 0
+
     def test_before_the_deadline_evaluation_proceeds(self, db_session):
         from models.ai_thesis_version import AIThesisVersion
         from models.company import Company

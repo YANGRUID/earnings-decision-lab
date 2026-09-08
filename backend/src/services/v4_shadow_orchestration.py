@@ -95,6 +95,9 @@ class ShadowRunSummary:
     no_action: int = 0
     already_generated: int = 0
     research_not_ready: int = 0
+    #: Due events deliberately out of scope (e.g. below the market-cap floor).
+    #: Counted apart from research_not_ready because nothing failed for these.
+    not_eligible: int = 0
     failed: int = 0
     #: Due, research-ready events whose full evaluation was NOT started
     #: because the run reached its deadline (Section 16, deadline guard).
@@ -129,7 +132,9 @@ def _record_event(
     db.flush()
 
 
-def _research_is_ready(db: Session, company: Company | None) -> tuple[bool, str]:
+def _research_is_ready(
+    db: Session, company: Company | None, event: object | None = None
+) -> tuple[bool, str, str]:
     """Section 7 -- a cheap, non-blocking readiness check.
 
     Deliberately does NOT trigger a synchronous SEC backfill, and does
@@ -137,9 +142,42 @@ def _research_is_ready(db: Session, company: Company | None) -> tuple[bool, str]
     answer is simply ready or not ready; producing a DecisionView from
     incomplete evidence would be worse than recording an honest
     RESEARCH_NOT_READY.
+
+    Returns ``(ready, reason, category)``. The category separates two things
+    that used to be reported identically and are operationally opposite:
+
+      NOT_ELIGIBLE        this company is deliberately out of scope, research
+                          was never intended, and nothing failed.
+      RESEARCH_NOT_READY  we DID intend to cover this company and the evidence
+                          is not there -- something to investigate.
+
+    Live evidence (2026-09-08): seventeen events reported "no Company row
+    exists for this calendar event yet". Every one of them was sub-$10B and had
+    been correctly filtered out of preparation the night before, so the true
+    count of preparation misses that day was zero -- but Operations showed
+    seventeen. A gate that reports the symptom instead of the rule turns a
+    working policy into a standing alarm, and a standing alarm is one nobody
+    reads.
     """
     if company is None:
-        return False, "no Company row exists for this calendar event yet"
+        if event is not None:
+            from services.earnings_eligibility import (  # noqa: PLC0415 -- local, avoids cycle
+                check_static_eligibility,
+            )
+
+            # NOT_ELIGIBLE is reserved for a DELIBERATE exclusion -- a company
+            # we know the size of and have decided not to cover. An event whose
+            # market cap is simply unknown is a data gap, not a policy
+            # decision, and collapsing the two would hide the gap behind a
+            # reassuring label.
+            verdict = check_static_eligibility(event)  # type: ignore[arg-type]
+            if not verdict.eligible and getattr(event, "market_cap", None) is not None:
+                return (
+                    False,
+                    f"not eligible for research coverage: {verdict.reason}",
+                    "NOT_ELIGIBLE",
+                )
+        return False, "no Company row exists for this calendar event yet", "RESEARCH_NOT_READY"
     from models.ai_thesis_version import AIThesisVersion  # noqa: PLC0415 -- local, avoids cycle
 
     thesis = (
@@ -149,8 +187,8 @@ def _research_is_ready(db: Session, company: Company | None) -> tuple[bool, str]
         .first()
     )
     if thesis is None:
-        return False, "no AI thesis has been prepared for this company"
-    return True, ""
+        return False, "no AI thesis has been prepared for this company", "RESEARCH_NOT_READY"
+    return True, "", ""
 
 
 def run_shadow_decisions_for_due_events(
@@ -187,6 +225,7 @@ def run_shadow_decisions_for_due_events(
     """
     outcomes: list[ShadowEventOutcome] = []
     ranked = no_action = already = not_ready = failed = deadline_skipped = 0
+    not_eligible = 0
     lock_wait_ms = 0
     clock = clock or (lambda: datetime.now(UTC))
     lock = market_data_lock if market_data_lock is not None else nullcontext()
@@ -222,19 +261,24 @@ def run_shadow_decisions_for_due_events(
                 )
                 continue
 
-            ready, why = _research_is_ready(db, company)
+            ready, why, category = _research_is_ready(db, company, event)
             if not ready:
-                not_ready += 1
+                if category == "NOT_ELIGIBLE":
+                    not_eligible += 1
+                else:
+                    not_ready += 1
                 _record_event(
                     db,
                     event_id=event.id,
                     ticker=ticker,
                     stage="research_gate",
-                    category="RESEARCH_NOT_READY",
+                    category=category,
                     message=why,
-                    retryable=True,
+                    # An ineligible company is not a retryable condition: no
+                    # amount of retrying makes it larger.
+                    retryable=category != "NOT_ELIGIBLE",
                 )
-                outcomes.append(ShadowEventOutcome(event.id, ticker, "RESEARCH_NOT_READY", why))
+                outcomes.append(ShadowEventOutcome(event.id, ticker, category, why))
                 continue
 
             assert company is not None  # guaranteed by _research_is_ready
@@ -375,6 +419,7 @@ def run_shadow_decisions_for_due_events(
         no_action=no_action,
         already_generated=already,
         research_not_ready=not_ready,
+        not_eligible=not_eligible,
         failed=failed,
         deadline_skipped=deadline_skipped,
         market_data_lock_wait_ms=lock_wait_ms,

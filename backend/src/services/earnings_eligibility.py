@@ -69,6 +69,29 @@ def check_us_listing(
     return False, f"not US listed ({label}; no SEC-registered US exchange listing)", False
 
 
+def check_static_eligibility(event: EarningsCalendarEvent) -> EligibilityResult:
+    """The PURE subset of ``check_eligibility``: the rules that can be decided
+    from the calendar row alone, with no provider call and no network.
+
+    Exists because the V4 decision gate needs to distinguish "we failed to
+    prepare research for a company we intended to cover" from "this company is
+    deliberately out of scope", and it must do so without blocking the 15:30
+    window on an options-chain lookup.
+
+    Live evidence (2026-09-08): all seventeen events that missed that day's
+    window were sub-$10B and had been correctly filtered out of research
+    preparation the night before. The gate nonetheless reported "no Company
+    row exists for this calendar event yet" -- a true statement about the
+    symptom that reads like a pipeline failure, and made a working policy look
+    like seventeen misses. Naming the real rule is the whole point.
+    """
+    if event.market_cap is None:
+        return EligibilityResult(event.symbol, False, "market cap unknown")
+    if event.market_cap < MIN_MARKET_CAP:
+        return EligibilityResult(event.symbol, False, f"market cap below ${MIN_MARKET_CAP:,.0f}")
+    return EligibilityResult(event.symbol, True)
+
+
 def check_eligibility(
     event: EarningsCalendarEvent,
     options_provider: OptionsDataProvider | None,
