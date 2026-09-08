@@ -1021,7 +1021,10 @@ export interface FailureEntry {
   category: string;
   explanation: string;
   detail: string | null;
-  retryability: "RETRYABLE" | "NOT_RETRYABLE" | "WINDOW_MISSED";
+  // RESOLVED: the condition genuinely happened and is genuinely over (the
+  // job has succeeded since). Kept visible because the history is real,
+  // but never styled like a live failure.
+  retryability: "RETRYABLE" | "NOT_RETRYABLE" | "WINDOW_MISSED" | "RESOLVED";
 }
 
 export interface PreflightCheck {

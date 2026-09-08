@@ -140,9 +140,12 @@ def build_challenger_track_record(db: Session) -> ChallengerTrackRecord:
         else:
             record.actions.no_action_events += 1
             reason = (decision.no_action_reason or "unspecified").strip()
-            # Group by the reason's leading clause: the detail after it names
-            # specific candidates and would give every event its own bucket.
-            key = reason.split(";")[0].split("(")[0].strip()[:80] or "unspecified"
+            # Group by the GATE that refused, which is the stable part before
+            # the colon. Everything after it is a per-event tally of reason
+            # codes, so grouping on that would give every event its own bucket
+            # -- and truncating it to a fixed width cuts mid-token, which reads
+            # as a rendering bug rather than a category.
+            key = reason.split(":")[0].strip() or "unspecified"
             record.actions.no_action_reasons[key] = record.actions.no_action_reasons.get(key, 0) + 1
 
     entries = db.query(V42ChallengerConfigEntry).all()

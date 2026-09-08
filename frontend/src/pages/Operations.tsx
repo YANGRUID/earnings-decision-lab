@@ -559,6 +559,10 @@ function SchedulerJobsSection({ jobs, staleness, now }: { jobs: SchedulerJobView
 function retryPill(r: FailureEntry["retryability"]) {
   if (r === "RETRYABLE") return <span className="pill pill-warning">RETRYABLE</span>;
   if (r === "WINDOW_MISSED") return <span className="pill pill-negative">WINDOW MISSED</span>;
+  // A past, since-recovered condition reads as history, not as an open
+  // incident: a two-day-old gateway outage styled like a live one trains
+  // people to ignore the panel.
+  if (r === "RESOLVED") return <span className="pill pill-positive">RESOLVED</span>;
   return <span className="pill pill-neutral">NOT RETRYABLE</span>;
 }
 

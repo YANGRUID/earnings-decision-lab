@@ -119,6 +119,11 @@ _NOT_APPLICABLE = "gray"
 RETRYABLE = "RETRYABLE"
 NOT_RETRYABLE = "NOT_RETRYABLE"
 WINDOW_MISSED = "WINDOW_MISSED"
+#: The condition genuinely occurred and is genuinely over -- the job has run
+#: successfully since. Kept visible rather than deleted (the history is real),
+#: but distinguishable at a glance from something still broken, so a two-day-old
+#: outage stops looking like a live one.
+RESOLVED = "RESOLVED"
 
 # ---------------------------------------------------------------------------
 # System health
@@ -810,7 +815,7 @@ def _window_passed_row(f: _Facts) -> V4PipelineEvent:
         f.timeline.append(TimelineStep("V4 decision", latest.occurred_at, "failed", latest.message))
         if latest.category == "DEADLINE_SKIPPED":
             return f.row(STATE_DEADLINE_SKIPPED, latest.message)
-        if latest.category == "RESEARCH_NOT_READY":
+        if latest.category in ("RESEARCH_NOT_READY", "NOT_ELIGIBLE"):
             return f.row(STATE_RESEARCH_NOT_READY, latest.message)
         return f.row(STATE_DECISION_FAILED, f"{latest.category}: {latest.message}")
     f.timeline.append(
@@ -1159,7 +1164,12 @@ CALENDAR_SYNC_STALE_AFTER = timedelta(hours=30)
 MISSED_JOB_GRACE = timedelta(minutes=5)
 
 _V4_FAILURE_CATEGORIES_RETRYABLE = {"INTERNAL_ERROR", "VIEW_GENERATION_FAILED"}
-_V4_NON_FAILURE_CATEGORIES = {"OK"}
+# NOT_ELIGIBLE is a deliberate coverage decision, not an operational failure:
+# the company is below the market-cap floor and research was never intended for
+# it. Live evidence (2026-09-08): seventeen sub-$10B events were reported as
+# research misses when the true number of preparation failures that day was
+# zero. A standing alarm for a working policy is an alarm nobody reads.
+_V4_NON_FAILURE_CATEGORIES = {"OK", "NOT_ELIGIBLE"}
 
 
 @dataclass(frozen=True)
@@ -1207,6 +1217,15 @@ def _v4_run_event_failures(db: Session, since: datetime) -> list[FailureEntry]:
         )
     for day, group in not_ready_by_day.items():
         symbols = sorted({e.ticker for e in group if e.ticker})
+        # Group by the real gate reason so a reader can tell "the worker never
+        # ran" from "the thesis is missing" without opening every row.
+        by_reason: dict[str, list[str]] = {}
+        for e in group:
+            by_reason.setdefault((e.message or "unspecified").strip(), []).append(e.ticker or "?")
+        breakdown = "; ".join(
+            f"{reason} ({len(tickers)}): {', '.join(sorted(set(tickers))[:12])}"
+            for reason, tickers in sorted(by_reason.items(), key=lambda kv: -len(kv[1]))
+        )
         failures.append(
             FailureEntry(
                 occurred_at=max(e.occurred_at for e in group),
@@ -1214,10 +1233,10 @@ def _v4_run_event_failures(db: Session, since: datetime) -> list[FailureEntry]:
                 stage="research_gate",
                 category="RESEARCH_NOT_READY",
                 explanation=(
-                    f"{len(symbols)} event(s) were not research-ready at the {day.isoformat()} "
-                    "decision window"
+                    f"{len(symbols)} event(s) we intended to cover were not research-ready "
+                    f"at the {day.isoformat()} decision window"
                 ),
-                detail=", ".join(symbols[:40]) + (" …" if len(symbols) > 40 else ""),
+                detail=breakdown[:2000],
                 retryability=WINDOW_MISSED,
             )
         )
@@ -1228,21 +1247,64 @@ def get_recent_failures(db: Session, *, now: datetime | None = None) -> list[Fai
     now = now or datetime.now(UTC)
     since = now - FAILURE_LOOKBACK
     failures = _v4_run_event_failures(db, since)
-    for run in (
+    # One row per FAILING JOB, not one per failed run. A job that retries on a
+    # short interval produces an entry every few minutes -- live evidence
+    # (2026-09-08): a two-day-old gateway outage had filled the list with
+    # identical ibkr_gateway_healthcheck rows, one per ten minutes, burying
+    # everything else. Collapsing them keeps the whole history addressable
+    # while letting a reader see what is actually wrong.
+    error_runs = (
         db.query(SchedulerRun)
         .filter(SchedulerRun.status == "error", SchedulerRun.started_at >= since)
         .order_by(SchedulerRun.started_at.desc())
         .all()
-    ):
+    )
+    by_job: dict[str, list[SchedulerRun]] = {}
+    for run in error_runs:
+        by_job.setdefault(run.job_id, []).append(run)
+    for job_id, runs in by_job.items():
+        newest = max(runs, key=lambda r: r.started_at)
+        oldest = min(runs, key=lambda r: r.started_at)
+        # Has this job succeeded since its most recent failure? If so the
+        # condition is over, and saying so is the difference between a live
+        # incident and a scar.
+        recovered_at = (
+            db.query(SchedulerRun.started_at)
+            .filter(
+                SchedulerRun.job_id == job_id,
+                SchedulerRun.status == "success",
+                SchedulerRun.started_at > newest.started_at,
+            )
+            .order_by(SchedulerRun.started_at.asc())
+            .limit(1)
+            .scalar()
+        )
+        if len(runs) == 1:
+            span = ""
+        else:
+            span = (
+                f" -- {len(runs)} failed runs between "
+                f"{oldest.started_at.astimezone(EASTERN):%Y-%m-%d %H:%M} and "
+                f"{newest.started_at.astimezone(EASTERN):%Y-%m-%d %H:%M} ET"
+            )
+        if recovered_at is not None:
+            explanation = (
+                f"Scheduler job {job_id} was failing but has since recovered "
+                f"({recovered_at.astimezone(EASTERN):%Y-%m-%d %H:%M} ET)"
+            )
+            retry = RESOLVED
+        else:
+            explanation = f"Scheduler job {job_id} failed to complete"
+            retry = RETRYABLE
         failures.append(
             FailureEntry(
-                occurred_at=run.started_at,
+                occurred_at=newest.started_at,
                 symbol=None,
-                stage=run.job_id,
+                stage=job_id,
                 category="scheduler_run_error",
-                explanation=f"Scheduler job {run.job_id} failed to complete",
-                detail=run.error_summary,
-                retryability=RETRYABLE,
+                explanation=explanation + span,
+                detail=newest.error_summary,
+                retryability=retry,
             )
         )
     for job in (
