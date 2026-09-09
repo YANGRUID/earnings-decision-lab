@@ -74,6 +74,23 @@ class RecoverySummary:
     notes: list[str] = field(default_factory=list)
 
 
+def _session_has_closed(now: datetime, session_date: date) -> bool:
+    """True once the regular US session on ``session_date`` has ended.
+
+    A closing mark that does not yet exist must not be used as one; this is
+    what keeps MARKET_CLOSE_FALLBACK meaning what the released methodology
+    says it means.
+    """
+    from analytics.earnings_timing import EASTERN  # noqa: PLC0415
+
+    local = now.astimezone(EASTERN)
+    if local.date() > session_date:
+        return True
+    if local.date() < session_date:
+        return False
+    return (local.hour, local.minute) >= (16, 0)
+
+
 def _eastern_date(moment: datetime) -> date:
     return moment.astimezone(EASTERN).date()
 
@@ -117,6 +134,19 @@ def recover_due_settlements(
     now = now or datetime.now(UTC)
     summary = RecoverySummary(session_date=session_date, dry_run=dry_run)
     summary.settled_at = now.isoformat()
+    # Whether a FINAL same-session closing mark can exist yet. Before 16:00 ET
+    # on the settlement date it cannot: the last intraday bar is a real
+    # same-session price but it is not a close, and labelling it
+    # MARKET_CLOSE_FALLBACK would claim a finality the session has not
+    # reached. Executable prices are unaffected -- those are still preferred
+    # and still settle mid-session.
+    session_close_is_final = _session_has_closed(now, session_date)
+    if not session_close_is_final:
+        summary.notes.append(
+            f"session {session_date.isoformat()} has not closed at {now.isoformat()}: "
+            "executable sides are settled now, and any leg with an empty book is left "
+            "unresolved for a post-close retry rather than priced from an intraday bar"
+        )
 
     pending = _pending_configs(db, session_date)
     if not pending:
@@ -279,6 +309,7 @@ def recover_due_settlements(
                     getattr(quote, f"{side}_book_empty", None) if quote is not None else None
                 ),
                 market_data_quality=quality,
+                session_close_is_final=session_close_is_final,
             )
             if resolution.is_executable:
                 resolution.provenance["executable_source"] = executable_at

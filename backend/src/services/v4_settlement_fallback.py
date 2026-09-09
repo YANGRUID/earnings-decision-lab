@@ -52,6 +52,9 @@ FALLBACK_PRICING_SOURCES = frozenset(
 # Why a leg could not be priced at all, when even the fallbacks are empty.
 UNRESOLVED_NO_CLOSING_MARK = "NO_CLOSING_MARK"
 UNRESOLVED_NO_UNDERLYING_CLOSE = "NO_UNDERLYING_CLOSE"
+#: The session is still open, so no FINAL closing mark exists yet. The leg is
+#: not unpriceable -- it is simply not yet time. Retry after the close.
+UNRESOLVED_SESSION_STILL_OPEN = "SESSION_STILL_OPEN"
 
 
 @dataclass(frozen=True)
@@ -98,6 +101,7 @@ def resolve_leg_exit_price(
     expires_on_settlement_date: bool,
     book_empty: bool | None = None,
     market_data_quality: str | None = None,
+    session_close_is_final: bool = True,
 ) -> LegExitPrice:
     """Apply the hierarchy above to ONE leg. Pure -- every input is already
     an observed fact, and nothing here reaches a provider."""
@@ -119,12 +123,35 @@ def resolve_leg_exit_price(
             provenance=provenance,
         )
 
-    if session_close is not None:
+    if session_close is not None and session_close_is_final:
         return LegExitPrice(
             price=session_close,
             pricing_source=PRICING_MARKET_CLOSE_FALLBACK,
             required_side=side,
             provenance={**provenance, "option_session_close": str(session_close)},
+        )
+    if session_close is not None and not session_close_is_final:
+        # Live evidence (2026-09-09, 15:45 ET): an emergency recovery run
+        # BEFORE the close priced three empty-book legs from the last RTH
+        # 30-minute trade bar and labelled it MARKET_CLOSE_FALLBACK. The data
+        # was genuinely same-session and the timestamp was honest, but the
+        # label claimed a finality the session had not reached yet -- the
+        # released methodology says "final verifiable same-session closing
+        # mark", and at 15:45 there is no such thing.
+        #
+        # An empty book mid-session is not an emergency: the position is still
+        # settleable, just not yet. Refusing here keeps the label truthful and
+        # costs nothing but a retry after 16:00.
+        return LegExitPrice(
+            price=None,
+            pricing_source=None,
+            required_side=side,
+            unresolved_reason=UNRESOLVED_SESSION_STILL_OPEN,
+            provenance={
+                **provenance,
+                "intraday_mark_available": str(session_close),
+                "note": "not used: the session has not closed, so this is not a closing mark",
+            },
         )
 
     if not expires_on_settlement_date:

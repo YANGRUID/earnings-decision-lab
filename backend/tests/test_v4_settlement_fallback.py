@@ -17,6 +17,7 @@ from services.v4_settlement_fallback import (
     PRICING_MARKET_CLOSE_FALLBACK,
     UNRESOLVED_NO_CLOSING_MARK,
     UNRESOLVED_NO_UNDERLYING_CLOSE,
+    UNRESOLVED_SESSION_STILL_OPEN,
     expiration_intrinsic,
     required_exit_side,
     resolve_leg_exit_price,
@@ -144,3 +145,82 @@ class TestNoForbiddenSubstitution:
         assert out.provenance["underlying_close"] == "131.50"
         assert out.provenance["expires_on_settlement_date"] is True
         assert out.required_side == "bid"
+
+
+class TestAClosingMarkThatDoesNotExistYet:
+    """Live incident (2026-09-09, 15:45 ET).
+
+    An emergency recovery run fifteen minutes before the close priced three
+    empty-book legs from the last RTH 30-minute trade bar and labelled the
+    result MARKET_CLOSE_FALLBACK. The data was genuinely same-session and the
+    timestamp was honest, but the label claimed a finality the session had not
+    reached: the released hierarchy says "final verifiable same-session closing
+    mark", and at 15:45 no such thing exists.
+
+    Executable settlement is unaffected -- that is the whole point. Only the
+    closing-mark tier waits for an actual close.
+    """
+
+    def test_the_close_tier_is_refused_while_the_session_is_open(self):
+        out = resolve_leg_exit_price(
+            action="buy",
+            right="put",
+            strike=Decimal("15"),
+            executable_price=None,
+            session_close=Decimal("0.05"),
+            underlying_close=None,
+            expires_on_settlement_date=False,
+            book_empty=True,
+            session_close_is_final=False,
+        )
+        assert out.resolved is False
+        assert out.pricing_source is None
+        assert out.unresolved_reason == UNRESOLVED_SESSION_STILL_OPEN
+        # The mark is recorded as seen but explicitly not used.
+        assert out.provenance["intraday_mark_available"] == "0.05"
+
+    def test_the_same_leg_settles_once_the_session_has_closed(self):
+        out = resolve_leg_exit_price(
+            action="buy",
+            right="put",
+            strike=Decimal("15"),
+            executable_price=None,
+            session_close=Decimal("0.05"),
+            underlying_close=None,
+            expires_on_settlement_date=False,
+            book_empty=True,
+            session_close_is_final=True,
+        )
+        assert out.resolved is True
+        assert out.pricing_source == PRICING_MARKET_CLOSE_FALLBACK
+        assert out.price == Decimal("0.05")
+
+    def test_an_executable_price_still_settles_mid_session(self):
+        """The guard must never delay a real executable settlement -- that is
+        the tier the incident was trying to rescue in the first place."""
+        out = resolve_leg_exit_price(
+            action="buy",
+            right="call",
+            strike=Decimal("20"),
+            executable_price=Decimal("0.20"),
+            session_close=Decimal("0.25"),
+            underlying_close=None,
+            expires_on_settlement_date=False,
+            session_close_is_final=False,
+        )
+        assert out.resolved is True
+        assert out.pricing_source == PRICING_EXECUTABLE_BID
+        assert out.price == Decimal("0.20")
+
+    def test_the_default_stays_final_so_the_scheduled_post_close_job_is_unchanged(self):
+        out = resolve_leg_exit_price(
+            action="buy",
+            right="put",
+            strike=Decimal("15"),
+            executable_price=None,
+            session_close=Decimal("0.05"),
+            underlying_close=None,
+            expires_on_settlement_date=False,
+            book_empty=True,
+        )
+        assert out.pricing_source == PRICING_MARKET_CLOSE_FALLBACK
