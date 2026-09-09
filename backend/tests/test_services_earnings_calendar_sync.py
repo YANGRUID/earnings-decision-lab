@@ -460,3 +460,28 @@ class TestEarningsDateCorrection:
         db_session.refresh(row)
         assert row.status == EarningsCalendarEventStatus.UPCOMING
         assert not any(v.startswith("FAR@") for v in result.vanished)
+
+    def test_a_vanished_event_is_reunited_with_its_corrected_date(self, db_session):
+        """The full ORCL sequence, end to end.
+
+        Vanishing from the old date and reappearing on the new one must produce
+        ONE event, not a ghost plus a duplicate. Before the fix the vanished row
+        was unmatchable and a second row was inserted -- exactly what happened
+        to ORCL in production on 2026-09-09.
+        """
+        today = date(2030, 5, 1)
+        self._sync(db_session, [_entry("REUNITE", date(2030, 5, 3), "amc")], today)
+
+        # 1. disappears from its old date
+        self._sync(db_session, [], today)
+        row = db_session.query(EarningsCalendarEvent).filter_by(symbol="REUNITE").one()
+        assert row.status == EarningsCalendarEventStatus.SKIPPED
+
+        # 2. reappears on the corrected date
+        result = self._sync(db_session, [_entry("REUNITE", date(2030, 5, 6), "amc")], today)
+
+        rows = db_session.query(EarningsCalendarEvent).filter_by(symbol="REUNITE").all()
+        assert len(rows) == 1, "the corrected date must adopt the vanished row, not duplicate it"
+        assert rows[0].earnings_date == date(2030, 5, 6)
+        assert rows[0].status == EarningsCalendarEventStatus.UPCOMING
+        assert result.date_corrected == 1

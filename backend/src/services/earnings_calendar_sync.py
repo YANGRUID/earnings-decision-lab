@@ -109,11 +109,21 @@ def _find_existing_row(
     if exact is not None:
         return exact, False
 
+    # SKIPPED is included deliberately: it is the state
+    # _reconcile_vanished_events puts a row in when the provider stopped
+    # listing it, which is exactly the row a corrected date should adopt.
+    # Excluding it (the pre-2026-09-09 behaviour) meant a vanished event could
+    # never be reunited with its correction, and a duplicate was created.
     upcoming = (
         db.query(EarningsCalendarEvent)
         .filter(
             EarningsCalendarEvent.symbol == entry.symbol,
-            EarningsCalendarEvent.status == EarningsCalendarEventStatus.UPCOMING,
+            EarningsCalendarEvent.status.in_(
+                (
+                    EarningsCalendarEventStatus.UPCOMING,
+                    EarningsCalendarEventStatus.SKIPPED,
+                )
+            ),
         )
         .all()
     )
@@ -253,6 +263,12 @@ def _mark_stale_events(db: Session, today: date) -> int:
     ANALYZED/SKIPPED keeps that real status regardless of date; this is
     purely "nobody ever looked at this one before it passed," swept
     forward so the dashboard's UPCOMING view stays honest."""
+    # A row whose date the provider stopped corroborating is deliberately NOT
+    # swept into COMPLETED. Sweeping it there was the second half of the
+    # 2026-09-09 trap: the date-correction path in _find_existing_row only
+    # matches UPCOMING rows, so once a stale row was auto-completed the
+    # correction could never adopt it and a duplicate event was inserted
+    # instead. SKIPPED rows stay SKIPPED and are reconcilable.
     stale = (
         db.query(EarningsCalendarEvent)
         .filter(
@@ -360,6 +376,9 @@ def sync_earnings_calendar(
             changed = True
         if is_date_correction and existing.earnings_date != entry.earnings_date:
             existing.earnings_date = entry.earnings_date
+            # A corrected event is live again: it was only SKIPPED because its
+            # previous date stopped being corroborated.
+            existing.status = EarningsCalendarEventStatus.UPCOMING
             changed = True
         if existing.earnings_time != timing:
             existing.earnings_time = timing
