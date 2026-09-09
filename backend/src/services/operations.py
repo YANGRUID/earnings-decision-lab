@@ -1183,6 +1183,35 @@ class FailureEntry:
     retryability: str
 
 
+def _settlement_failure_since_recovered(db: Session, event: V4ShadowRunEvent) -> bool:
+    """True when a settlement-stage failure has since been fully made good.
+
+    Every configuration of that decision which reached an OBSERVED entry now
+    has a settlement of record, so nothing this failure referred to is still
+    stranded. Judged from the settlements themselves rather than from a flag,
+    because the recovery is append-only and never edits the failure it
+    supersedes.
+    """
+    if event.stage != "cohort_settlement" or event.shadow_decision_id is None:
+        return False
+    from models.v4_shadow import V4ShadowConfigEntry, V4ShadowConfigSettlement  # noqa: PLC0415
+
+    settled = db.query(V4ShadowConfigSettlement.shadow_config_result_id).filter(
+        V4ShadowConfigSettlement.shadow_decision_id == event.shadow_decision_id,
+        V4ShadowConfigSettlement.status == "SETTLED",
+    )
+    outstanding = (
+        db.query(V4ShadowConfigEntry)
+        .filter(
+            V4ShadowConfigEntry.shadow_decision_id == event.shadow_decision_id,
+            V4ShadowConfigEntry.status == "OBSERVED",
+            V4ShadowConfigEntry.shadow_config_result_id.notin_(settled),
+        )
+        .count()
+    )
+    return outstanding == 0
+
+
 def _v4_run_event_failures(db: Session, since: datetime) -> list[FailureEntry]:
     failures: list[FailureEntry] = []
     events = (
@@ -1200,6 +1229,14 @@ def _v4_run_event_failures(db: Session, since: datetime) -> list[FailureEntry]:
             continue
         if e.category in ("DEADLINE_SKIPPED", "SETTLEMENT_WINDOW_MISSED"):
             retry = WINDOW_MISSED
+        elif _settlement_failure_since_recovered(db, e):
+            # An append-only recovery settled every position this failure was
+            # about. The run event stays exactly as written -- it is real
+            # history -- but it stops being displayed as an open incident.
+            # Live evidence (2026-09-09): fourteen configurations failed at
+            # 15:30 with NO_BID and were all recovered at 15:45; without this
+            # the panel kept three FAILED rows for positions that were settled.
+            retry = RESOLVED
         elif e.retryable or e.category in _V4_FAILURE_CATEGORIES_RETRYABLE:
             retry = RETRYABLE
         else:
