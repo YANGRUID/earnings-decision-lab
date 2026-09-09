@@ -36,6 +36,26 @@ log = logging.getLogger("services.earnings_calendar_sync")
 # usage to roughly 1-3 requests in steady state.
 SYNC_HORIZON_DAYS = 14
 
+#: Dates within this many days of today are ALWAYS re-fetched, even when they
+#: already hold rows.
+#:
+#: Proven defect (2026-09-09). _ranges_needing_fetch treats any date holding at
+#: least one row as permanently covered, so a date was fetched exactly once --
+#: when it first entered the horizon with nothing on it -- and never again.
+#: An earnings date correction is invisible to that design from BOTH ends: the
+#: event's arrival on its new date lands on a date already "covered", and its
+#: disappearance from the old date is never observed either. ORCL moved from
+#: 2026-09-08 to 2026-09-10 at the provider; our Sep-10 rows dated from
+#: 2026-08-22, so the correction was unreachable and a full forward lifecycle
+#: was generated against a date on which no earnings occurred.
+#:
+#: Seven days is deliberate: it covers the decision window (T-1) and the
+#: research-preparation lead time with room to spare, while costing at most
+#: seven extra provider calls per run against EarningsAPI's date-scoped
+#: endpoint -- affordable on the free tier, unlike revalidating the full
+#: horizon daily.
+NEAR_EVENT_REVALIDATION_DAYS = 7
+
 _SESSION_TO_TIMING = {
     "bmo": EarningsTiming.BMO,
     "amc": EarningsTiming.AMC,
@@ -55,6 +75,9 @@ class EarningsCalendarSyncResult:
     unchanged: int = 0
     date_corrected: int = 0
     stale_marked: int = 0
+    #: UPCOMING rows on a REFETCHED date that the provider no longer lists.
+    #: Their date is no longer corroborated by the source that supplied it.
+    vanished: list[str] = field(default_factory=list)
     dates_fetched: int = 0
     dates_skipped: int = 0
     profile_fetch_failures: list[str] = field(default_factory=list)
@@ -106,7 +129,7 @@ def _market_cap_dollars(profile: FinnhubCompanyProfile | None) -> Decimal | None
 
 
 def _ranges_needing_fetch(
-    db: Session, window_start: date, window_end: date
+    db: Session, window_start: date, window_end: date, today: date | None = None
 ) -> tuple[tuple[date, date], ...]:
     """The minimal set of contiguous ``(start, end)`` date ranges in
     ``[window_start, window_end]`` NOT already covered by at least one
@@ -141,6 +164,13 @@ def _ranges_needing_fetch(
         .distinct()
         .all()
     }
+    # A date close to now is never treated as covered: it is exactly where a
+    # provider correction still matters and where "fetched once, ever" caused
+    # the 2026-09-09 incident. Revalidation is bounded to
+    # NEAR_EVENT_REVALIDATION_DAYS so the rate budget stays predictable.
+    if today is not None:
+        horizon = today + timedelta(days=NEAR_EVENT_REVALIDATION_DAYS)
+        covered = {d for d in covered if d < today or d > horizon}
     ranges: list[tuple[date, date]] = []
     range_start: date | None = None
     day = window_start
@@ -155,6 +185,65 @@ def _ranges_needing_fetch(
     if range_start is not None:
         ranges.append((range_start, window_end))
     return tuple(ranges)
+
+
+def _reconcile_vanished_events(
+    db: Session,
+    entries: list[FinnhubCalendarEntry],
+    fetched_ranges: tuple[tuple[date, date], ...],
+    today: date,
+) -> list[str]:
+    """Events we still hold on a date the provider was just asked about, and
+    did not return.
+
+    The other half of a date correction, and the half that has no natural
+    trigger. When ORCL moved from 2026-09-08 to 2026-09-10 it did not merely
+    appear somewhere new -- it also STOPPED appearing on 2026-09-08. Nothing
+    observed that, so a stale row stayed authoritative and produced a full
+    forward lifecycle spanning no earnings at all.
+
+    Only dates actually re-fetched in this run are judged: a date nobody asked
+    about proves nothing about what is on it. A row whose date is no longer
+    corroborated is flipped out of UPCOMING so it cannot silently become due,
+    and is reported by symbol so an operator can see what moved.
+
+    Deliberately conservative: this never deletes and never guesses a new date.
+    If the provider later returns the symbol on its corrected date, the normal
+    correction path in _find_existing_row adopts it.
+    """
+    refetched: set[date] = set()
+    for start, end in fetched_ranges:
+        day = start
+        while day <= end:
+            refetched.add(day)
+            day += timedelta(days=1)
+    if not refetched:
+        return []
+
+    returned = {(e.symbol, e.earnings_date) for e in entries}
+    vanished: list[str] = []
+    rows = (
+        db.query(EarningsCalendarEvent)
+        .filter(
+            EarningsCalendarEvent.status == EarningsCalendarEventStatus.UPCOMING,
+            EarningsCalendarEvent.earnings_date.in_(sorted(refetched)),
+            EarningsCalendarEvent.earnings_date >= today,
+        )
+        .all()
+    )
+    for row in rows:
+        if (row.symbol, row.earnings_date) in returned:
+            continue
+        row.status = EarningsCalendarEventStatus.SKIPPED
+        vanished.append(f"{row.symbol}@{row.earnings_date.isoformat()}")
+        log.warning(
+            "earnings calendar: %s no longer listed on %s by the provider; "
+            "the stored date is no longer corroborated and the event will not "
+            "enter a decision window on it",
+            row.symbol,
+            row.earnings_date.isoformat(),
+        )
+    return vanished
 
 
 def _mark_stale_events(db: Session, today: date) -> int:
@@ -211,7 +300,7 @@ def sync_earnings_calendar(
     window_end = today + timedelta(days=SYNC_HORIZON_DAYS)
     result = EarningsCalendarSyncResult()
 
-    ranges_to_fetch = _ranges_needing_fetch(db, window_start, window_end)
+    ranges_to_fetch = _ranges_needing_fetch(db, window_start, window_end, today=today)
     total_days = (window_end - window_start).days + 1
     result.dates_fetched = sum((end - start).days + 1 for start, end in ranges_to_fetch)
     result.dates_skipped = total_days - result.dates_fetched
@@ -305,6 +394,7 @@ def sync_earnings_calendar(
         else:
             result.unchanged += 1
 
+    result.vanished = _reconcile_vanished_events(db, entries, ranges_to_fetch, today)
     result.stale_marked = _mark_stale_events(db, today)
 
     log.info(

@@ -22,7 +22,10 @@ from models.earnings_calendar_event import EarningsCalendarEvent
 from models.enums import EarningsCalendarEventStatus, EarningsSource, EarningsTiming
 from providers.base import EarningsCalendarProvider
 from providers.types import FinnhubCalendarEntry, FinnhubCompanyProfile
-from services.earnings_calendar_sync import sync_earnings_calendar
+from services.earnings_calendar_sync import (
+    NEAR_EVENT_REVALIDATION_DAYS,
+    sync_earnings_calendar,
+)
 
 
 class _FakeCalendarProvider(EarningsCalendarProvider):
@@ -33,6 +36,9 @@ class _FakeCalendarProvider(EarningsCalendarProvider):
     ) -> None:
         self._entries = entries
         self._profiles = profiles
+        #: Every date the sync actually asked about -- the evidence that a
+        #: near date is revalidated rather than assumed covered.
+        self.requested_dates: set[date] = set()
 
     def get_earnings_calendar(self, from_date: date, to_date: date) -> list[FinnhubCalendarEntry]:
         # Filters by the requested range, matching what a real provider
@@ -41,6 +47,11 @@ class _FakeCalendarProvider(EarningsCalendarProvider):
         # test_sync_upsert_does_not_duplicate_unchanged_event, which
         # depends on an already-covered date's range call correctly
         # returning nothing).
+        day = from_date
+        while day <= to_date:
+            self.requested_dates.add(day)
+            day += timedelta(days=1)
+        self.last_window = (from_date, to_date)
         return [e for e in self._entries if from_date <= e.earnings_date <= to_date]
 
     def get_company_profile(self, symbol: str) -> FinnhubCompanyProfile | None:
@@ -117,9 +128,15 @@ def test_sync_upsert_does_not_duplicate_unchanged_event(db_session):
     result2 = sync_earnings_calendar(db_session, provider, today=date(2030, 1, 1))
     db_session.flush()
 
-    assert result2.fetched == 0  # the covered date is skipped, never re-requested
+    # A near date IS re-requested now: "fetched once, ever" is exactly what
+    # made the 2026-09-09 ORCL date correction unreachable. What must not
+    # happen is a duplicate row -- the re-fetch reconciles, it does not insert.
+    assert result2.fetched == 1
+    assert result2.created == 0 and result2.unchanged == 1
     assert result2.created == 0
-    assert result2.unchanged == 0
+    # Re-observed and confirmed identical -- a reconciliation that changes
+    # nothing is the correct outcome, and is what proves no duplicate appears.
+    assert result2.unchanged == 1
     count = db_session.query(EarningsCalendarEvent).filter_by(symbol="TESTNVDA").count()
     assert count == 1
 
@@ -279,9 +296,13 @@ def test_sync_skips_dates_already_covered_by_an_existing_row(db_session):
     result = sync_earnings_calendar(db_session, provider, today=today)
     db_session.flush()
 
+    # The far end of the horizon is still fetched as its own single-day range;
+    # what changed is that the near dates are revalidated as well.
     assert provider.last_window == (window_end, window_end)
-    assert result.dates_fetched == 1
-    assert result.dates_skipped == 14
+    # 1 genuinely uncovered date + the bounded near-event revalidation window.
+    assert result.dates_fetched == 1 + NEAR_EVENT_REVALIDATION_DAYS + 1
+    # Only dates OUTSIDE the near-event revalidation window are still skipped.
+    assert result.dates_skipped == 15 - (1 + NEAR_EVENT_REVALIDATION_DAYS + 1)
 
 
 def test_sync_marks_past_upcoming_events_completed(db_session):
@@ -367,3 +388,75 @@ def test_sync_records_which_provider_actually_supplied_each_event(db_session):
     row2 = db_session.query(EarningsCalendarEvent).filter_by(symbol="TESTAPI").one()
     assert row2.source == EarningsSource.FINNHUB
     assert row2.earnings_date == date(2030, 1, 6)
+
+
+class TestEarningsDateCorrection:
+    """The 2026-09-09 incident, as regression tests.
+
+    EarningsAPI moved ORCL from 2026-09-08 to 2026-09-10. Our sync fetched each
+    date exactly once -- when it first entered the horizon with no rows on it --
+    so BOTH halves of the correction were unreachable: the arrival landed on a
+    date already considered covered, and the departure from the old date was
+    never observed. A full forward lifecycle was generated against a date on
+    which no earnings occurred.
+    """
+
+    def _sync(self, db, entries, today):
+        provider = _FakeCalendarProvider(entries, {})
+        return sync_earnings_calendar(db, provider, today=today)
+
+    def test_a_moved_date_becomes_one_event_not_two(self, db_session):
+        today = date(2030, 5, 1)
+        first = _entry("MOVED", date(2030, 5, 5), "amc")
+        self._sync(db_session, [first], today)
+        rows = db_session.query(EarningsCalendarEvent).filter_by(symbol="MOVED").all()
+        assert len(rows) == 1 and rows[0].earnings_date == date(2030, 5, 5)
+
+        # The provider corrects it: gone from the 5th, present on the 7th.
+        moved = _entry("MOVED", date(2030, 5, 7), "amc")
+        result = self._sync(db_session, [moved], today)
+
+        rows = db_session.query(EarningsCalendarEvent).filter_by(symbol="MOVED").all()
+        assert len(rows) == 1, "a date correction must not create a second event"
+        assert rows[0].earnings_date == date(2030, 5, 7)
+        assert result.date_corrected == 1
+
+    def test_a_near_date_is_revalidated_even_though_it_already_has_rows(self, db_session):
+        """The primary defect: a covered date was never re-requested."""
+        today = date(2030, 5, 1)
+        self._sync(db_session, [_entry("COVER", date(2030, 5, 3), "amc")], today)
+        provider = _FakeCalendarProvider([_entry("COVER", date(2030, 5, 3), "amc")], {})
+        sync_earnings_calendar(db_session, provider, today=today)
+        assert date(2030, 5, 3) in provider.requested_dates, (
+            "a date inside the revalidation window must be re-requested, or a "
+            "provider correction landing on it can never be seen"
+        )
+
+    def test_an_event_that_vanishes_from_its_date_stops_being_actionable(self, db_session):
+        """The other half, which has no natural trigger."""
+        today = date(2030, 5, 1)
+        self._sync(db_session, [_entry("GONE", date(2030, 5, 3), "amc")], today)
+        row = db_session.query(EarningsCalendarEvent).filter_by(symbol="GONE").one()
+        assert row.status == EarningsCalendarEventStatus.UPCOMING
+
+        result = self._sync(db_session, [], today)  # provider no longer lists it
+
+        db_session.refresh(row)
+        assert row.status != EarningsCalendarEventStatus.UPCOMING, (
+            "a date the provider no longer corroborates must not stay actionable"
+        )
+        assert "GONE@2030-05-03" in result.vanished
+
+    def test_a_date_nobody_asked_about_is_never_judged_vanished(self, db_session):
+        """Absence of evidence is not evidence of absence: only re-fetched
+        dates may be reconciled, or a narrow sync would wipe the far horizon."""
+        today = date(2030, 5, 1)
+        far = today + timedelta(days=13)
+        self._sync(db_session, [_entry("FAR", far, "amc")], today)
+        row = db_session.query(EarningsCalendarEvent).filter_by(symbol="FAR").one()
+
+        result = self._sync(db_session, [], today)
+
+        db_session.refresh(row)
+        assert row.status == EarningsCalendarEventStatus.UPCOMING
+        assert not any(v.startswith("FAR@") for v in result.vanished)
