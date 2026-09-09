@@ -364,9 +364,20 @@ class TestJobsFailuresAndStaleness:
         assert not any(a.category == "job_stale" for a in alerts)
 
     def test_missed_decision_run_is_an_alert(self, db_session):
-        _event(db_session, "DUE")
+        """Deliberately dated far from any real run.
+
+        This assertion depends on the database containing NO v4_shadow_decision
+        scheduler_run on the date under test. The module's NOW is 2026-09-09,
+        and on 2026-09-09 itself the shared test database legitimately contains
+        a run stamped with the real wall clock -- so the alert correctly did
+        NOT fire and the test failed on exactly one calendar day. The
+        production logic is clock-injected and was never wrong; the test was
+        reading the real date through the database.
+        """
+        window_date = date(2027, 3, 10)
+        _event(db_session, "DUE", earnings_date=window_date)
         _company(db_session, "DUE", thesis_age=timedelta(days=1))
-        later = datetime(2026, 9, 9, 16, 0, tzinfo=ET)
+        later = datetime(2027, 3, 10, 16, 0, tzinfo=ET)
         pipeline = get_v4_pipeline(db_session, now=later)
         jobs = get_scheduler_jobs(db_session, self._status(list(ALL_JOB_IDS)))
         alerts, _ = detect_missed_job_alerts(db_session, jobs, pipeline, now=later)

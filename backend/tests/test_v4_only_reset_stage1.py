@@ -163,6 +163,12 @@ class TestSettlementWindowV2:
         )
 
 
+def _must_not_be_called(*_args, **_kwargs):
+    """A DecisionView generator that must never run: reaching it means the
+    gate let an event through that it should have refused."""
+    raise AssertionError("view_generator must not be called for a refused event")
+
+
 class TestDeadlineGuard:
     def test_deadline_is_1550_eastern(self):
         from analytics.forward_windows import DECISION_DEADLINE_ET, decision_deadline_for
@@ -268,7 +274,7 @@ class TestDeadlineGuard:
             None,
             now=_et(2026, 9, 10, 15, 30),
             provider=None,
-            view_generator=lambda *a, **k: pytest.fail("must not evaluate an ineligible event"),
+            view_generator=_must_not_be_called,
             due_predicate=lambda e, now: True,
             candidate_events=[small],
         )
@@ -303,7 +309,7 @@ class TestDeadlineGuard:
             None,
             now=_et(2026, 9, 10, 15, 30),
             provider=None,
-            view_generator=lambda *a, **k: pytest.fail("must not evaluate"),
+            view_generator=_must_not_be_called,
             due_predicate=lambda e, now: True,
             candidate_events=[unknown],
         )
