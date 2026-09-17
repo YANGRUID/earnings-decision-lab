@@ -92,6 +92,8 @@ logger = logging.getLogger(__name__)
 # category they classify into.
 _CODES_AUTH_CONNECTION = {502, 504, 1100, 2110}
 _CODES_SESSION_DISCONNECTED = {1100}
+#: 1101: connectivity restored, data lost; 1102: restored, data maintained.
+_CODES_UPSTREAM_RESTORED = {1101, 1102}
 _CODES_FARM_DISCONNECTED = {2103, 2105, 2108}
 _CODES_FARM_RECONNECTED = {1101, 1102, 2104, 2106, 2119, 2158, 2107}
 _CODES_MARKET_DATA_PERMISSION = {354, 10168, 10197}
@@ -250,6 +252,11 @@ class TWSHealthSnapshot:
     last_heartbeat: datetime | None
     last_error: str | None
     reconnect_state: str  # TWSConnectionState value
+    #: False while IB Gateway reports that ITS OWN connection to IBKR is lost
+    #: (error 1100) and has not reported it restored (1101/1102). A connected,
+    #: API-ready socket says nothing about this.
+    upstream_connected: bool = True
+    upstream_lost_since: datetime | None = None
 
 
 class TWSConnectionManager(EWrapper, EClient):
@@ -292,6 +299,9 @@ class TWSConnectionManager(EWrapper, EClient):
         self._last_heartbeat: datetime | None = None
         self._last_error: str | None = None
         self._last_market_data_quality: str | None = None
+        #: When IB Gateway last reported losing its own link to IBKR (1100)
+        #: without reporting it restored since; None while connected.
+        self._upstream_lost_since: datetime | None = None
 
     # ------------------------------------------------------------------
     # Connection lifecycle
@@ -393,6 +403,7 @@ class TWSConnectionManager(EWrapper, EClient):
         # refused) or a plain unauthenticated timeout with no real
         # connection at all.
         socket_connected = self.isConnected() if hasattr(self, "isConnected") else False
+        lost_since = self._upstream_lost_since
         return TWSHealthSnapshot(
             provider="tws",
             gateway_reachable=socket_connected,
@@ -402,6 +413,8 @@ class TWSConnectionManager(EWrapper, EClient):
             last_heartbeat=self._last_heartbeat,
             last_error=self._last_error,
             reconnect_state=state.value,
+            upstream_connected=lost_since is None,
+            upstream_lost_since=lost_since,
         )
 
     # ------------------------------------------------------------------
@@ -453,6 +466,8 @@ class TWSConnectionManager(EWrapper, EClient):
     # ------------------------------------------------------------------
 
     def nextValidId(self, orderId: int) -> None:  # noqa: N802 (ibapi's own casing)
+        # A new API session starts with no knowledge of an upstream outage.
+        self._upstream_lost_since = None
         with self._req_id_lock:
             self._next_req_id = orderId
         self._set_state(TWSConnectionState.READY)
@@ -523,6 +538,16 @@ class TWSConnectionManager(EWrapper, EClient):
         # server-side timestamp -- used here in preference to "whenever
         # this project's own code happened to process the callback."
         self._last_heartbeat = datetime.fromtimestamp(errorTime / 1000, tz=UTC)
+        # IB Gateway's OWN link to IBKR. Proven defect (2026-09-16): error 1100
+        # arrived at 09:45 ET and no 1101/1102 ever followed, yet the socket
+        # to IB Gateway stayed open and API-ready, so the healthcheck reported
+        # CONNECTED every ten minutes for 18 hours while every contract lookup
+        # timed out -- LEN's 15:30 decision among them.
+        if errorCode in _CODES_SESSION_DISCONNECTED:
+            if self._upstream_lost_since is None:
+                self._upstream_lost_since = self._last_heartbeat
+        elif errorCode in _CODES_UPSTREAM_RESTORED:
+            self._upstream_lost_since = None
         category = classify_error_code(errorCode)
         if errorCode in _CODES_INFORMATIONAL:
             logger.info("IBKR TWS informational (code %d): %s", errorCode, errorString)

@@ -380,7 +380,7 @@ def get_system_health(  # noqa: PLR0912, PLR0915 -- one aggregation, kept in one
         tws_status = get_tws_status(settings, probe=tws_health_probe, provider=tws_provider)
         if tws_status.status_label == "CONNECTED":
             ibkr_state = _HEALTHY
-        elif tws_status.status_label == "AUTH_REQUIRED":
+        elif tws_status.status_label in ("AUTH_REQUIRED", "UPSTREAM_DISCONNECTED"):
             ibkr_state = _DEGRADED
         else:
             ibkr_state = _FAILED

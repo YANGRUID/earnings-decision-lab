@@ -247,6 +247,51 @@ class TestConnectionLifecycle:
         assert snapshot.api_ready is False
 
 
+class TestUpstreamConnectivity:
+    """Proven 2026-09-16: IB Gateway reported error 1100 (its own link to IBKR
+    lost) at 09:45 ET and never 1101/1102. The API socket stayed open and
+    ready, so the healthcheck said CONNECTED for 18 hours while every contract
+    request timed out -- including LEN's 15:30 decision."""
+
+    def _ready_manager(self):
+        manager = _manager()
+        _mock_socket_layer(manager)
+        manager.nextValidId(1)
+        return manager
+
+    def test_a_connectivity_loss_is_visible_on_a_ready_socket(self):
+        manager = self._ready_manager()
+        manager.error(-1, 1789566313404, 1100, "Connectivity between IBKR and TWS has been lost.")
+
+        snapshot = manager.health_snapshot()
+        assert snapshot.api_ready is True, "the socket itself is still fine"
+        assert snapshot.upstream_connected is False
+        assert snapshot.upstream_lost_since is not None
+
+    def test_the_first_loss_time_is_kept_across_repeats(self):
+        manager = self._ready_manager()
+        manager.error(-1, 1789566313404, 1100, "lost")
+        first = manager.health_snapshot().upstream_lost_since
+        manager.error(-1, 1789566343859, 1100, "lost")
+        assert manager.health_snapshot().upstream_lost_since == first
+
+    @pytest.mark.parametrize("restored", [1101, 1102])
+    def test_a_restore_message_clears_it(self, restored):
+        manager = self._ready_manager()
+        manager.error(-1, 1789566313404, 1100, "lost")
+        manager.error(
+            -1, 1789566400000, restored, "Connectivity between IBKR and TWS has been restored"
+        )
+        assert manager.health_snapshot().upstream_connected is True
+
+    def test_farm_messages_do_not_count_as_a_restore(self):
+        manager = self._ready_manager()
+        manager.error(-1, 1789566313404, 1100, "lost")
+        manager.error(-1, 1789566344370, 2103, "Market data farm connection is broken:eufarm")
+        manager.error(-1, 1789566345000, 2104, "Market data farm connection is OK:eufarm")
+        assert manager.health_snapshot().upstream_connected is False
+
+
 class TestNoOrderOperations:
     """Section 0/10/46 -- the single most safety-critical guarantee in
     this migration. These four methods ARE real ibapi.client.EClient

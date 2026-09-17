@@ -201,9 +201,18 @@ class TwsStatus:
     # Settings page needs for its headline state).
     last_heartbeat: datetime | None
     reconnect_state: str
+    #: When IB Gateway lost its own link to IBKR, if it still has not
+    #: reported it restored (see TWSHealthSnapshot.upstream_lost_since).
+    upstream_lost_since: datetime | None = None
 
 
-def tws_status_label(*, configured: bool, gateway_reachable: bool, api_ready: bool) -> str:
+def tws_status_label(
+    *,
+    configured: bool,
+    gateway_reachable: bool,
+    api_ready: bool,
+    upstream_connected: bool = True,
+) -> str:
     """Pure mapping, no I/O -- mirrors ibkr_status_label's own precedent.
     Deliberately distinguishes NOT_CONFIGURED (ibkr_provider != "tws",
     the real default -- see core/config.py) from GATEWAY_UNREACHABLE (tws
@@ -218,10 +227,24 @@ def tws_status_label(*, configured: bool, gateway_reachable: bool, api_ready: bo
         return "GATEWAY_UNREACHABLE"
     if not api_ready:
         return "AUTH_REQUIRED"
+    if not upstream_connected:
+        # The API socket answers, but IB Gateway itself is cut off from IBKR:
+        # every contract and quote request will time out. Needs the IB
+        # Gateway window (re-login), not a retry.
+        return "UPSTREAM_DISCONNECTED"
     return "CONNECTED"
 
 
 def _status_from_snapshot(snapshot, provider_quality: str | None = None) -> TwsStatus:  # noqa: ANN001 -- TWSHealthSnapshot, avoids an import cycle note below
+    upstream_connected = getattr(snapshot, "upstream_connected", True)
+    lost_since = getattr(snapshot, "upstream_lost_since", None)
+    error = snapshot.last_error if not snapshot.api_ready else None
+    if snapshot.api_ready and not upstream_connected:
+        error = (
+            "IB Gateway reports its connection to IBKR is lost (error 1100)"
+            + (f" since {lost_since.isoformat()}" if lost_since else "")
+            + " and has not reported it restored; log in again in the IB Gateway window"
+        )
     return TwsStatus(
         configured=True,
         gateway_reachable=snapshot.gateway_reachable,
@@ -231,14 +254,16 @@ def _status_from_snapshot(snapshot, provider_quality: str | None = None) -> TwsS
         # connection has never seen a marketDataType callback -- see
         # get_tws_status's own docstring for the real reason.
         market_data_quality=snapshot.market_data_quality_last_seen or provider_quality,
-        error=snapshot.last_error if not snapshot.api_ready else None,
+        error=error,
         status_label=tws_status_label(
             configured=True,
             gateway_reachable=snapshot.gateway_reachable,
             api_ready=snapshot.api_ready,
+            upstream_connected=upstream_connected,
         ),
         last_heartbeat=snapshot.last_heartbeat,
         reconnect_state=snapshot.reconnect_state,
+        upstream_lost_since=lost_since,
     )
 
 

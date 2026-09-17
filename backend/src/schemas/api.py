@@ -377,6 +377,7 @@ class TwsStatusResponse(BaseModel):
     # see services/system_status.py::TwsStatus's own comment.
     last_heartbeat: datetime | None
     reconnect_state: str
+    upstream_lost_since: datetime | None = None
 
 
 class TwsProductionSanityResponse(BaseModel):

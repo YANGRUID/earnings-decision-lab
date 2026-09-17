@@ -209,6 +209,40 @@ class TestTwsStatusLabel:
             tws_status_label(configured=True, gateway_reachable=True, api_ready=True) == "CONNECTED"
         )
 
+    def test_an_upstream_loss_is_not_connected(self):
+        """2026-09-16: a ready socket to an IB Gateway that has lost IBKR."""
+        assert (
+            tws_status_label(
+                configured=True, gateway_reachable=True, api_ready=True, upstream_connected=False
+            )
+            == "UPSTREAM_DISCONNECTED"
+        )
+
+    def test_the_status_carries_an_actionable_error(self):
+        from datetime import UTC, datetime
+
+        from providers.ibkr_tws_client import TWSHealthSnapshot
+        from services.system_status import _status_from_snapshot
+
+        lost = datetime(2026, 9, 16, 13, 45, 13, tzinfo=UTC)
+        status = _status_from_snapshot(
+            TWSHealthSnapshot(
+                provider="tws",
+                gateway_reachable=True,
+                socket_connected=True,
+                api_ready=True,
+                market_data_quality_last_seen="DELAYED",
+                last_heartbeat=lost,
+                last_error="[1100] lost",
+                reconnect_state="ready",
+                upstream_connected=False,
+                upstream_lost_since=lost,
+            )
+        )
+        assert status.status_label == "UPSTREAM_DISCONNECTED"
+        assert status.upstream_lost_since == lost
+        assert "log in again" in status.error
+
 
 class TestGetTwsStatus:
     """The real, bounded, connect-then-disconnect probe -- socket-level
@@ -316,6 +350,7 @@ class TestGetTwsStatus:
             # field capable of carrying an account id/username/secret.
             "last_heartbeat",
             "reconnect_state",
+            "upstream_lost_since",
         }
 
 
