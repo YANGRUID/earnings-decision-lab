@@ -290,7 +290,9 @@ function calendarUsageDetail(calendar: SystemHealth["earnings_calendar"]): strin
   if (!u) return "";
   const plan = u.plan_daily_limit ? ` (free plan ${u.plan_daily_limit}/day)` : "";
   const state = u.quota_state === "OK" ? "" : ` · ${u.quota_state.toLowerCase().replace(/_/g, " ")}`;
-  return ` · ${providerLabel(u.provider)} · ${u.requests_recorded_today} app requests today, ${u.requests_recorded_this_month} this month${plan}${state}`;
+  // The provider is already named by the row's own detail; repeating it here
+  // read as two providers.
+  return ` · ${u.requests_recorded_today} app requests today, ${u.requests_recorded_this_month} this month${plan}${state}`;
 }
 
 // The rate-limit state, kept separate from the request counts above: a refusal
