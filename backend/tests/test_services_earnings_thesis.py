@@ -162,3 +162,26 @@ def test_llm_error_raises_thesis_generation_error(db_session):
         raise AssertionError("expected ThesisGenerationError")
     except ThesisGenerationError:
         pass
+
+
+def test_the_thesis_request_has_room_for_the_whole_answer(db_session):
+    """Proven 2026-09-09 .. 09-11: max_tokens=1400 cut GIS, CPRT and LEN's
+    thesis JSON off mid-string (finish_reason=length); GIS never got a thesis
+    and failed the V4 research gate."""
+    from services.earnings_thesis import THESIS_MAX_TOKENS
+
+    seen: list[int] = []
+
+    class _BudgetRecordingLLM(_StubLLM):
+        def generate_structured(self, messages, schema, *, temperature=0.0, max_tokens=1024):
+            seen.append(max_tokens)
+            return super().generate_structured(
+                messages, schema, temperature=temperature, max_tokens=max_tokens
+            )
+
+    company = _seed_company(db_session, "ZZBUDG")
+    _seed_earnings_history(db_session, company)
+    generate_earnings_thesis(db_session, _BudgetRecordingLLM(), _StubEmbedder(), company)
+
+    assert seen and all(budget == THESIS_MAX_TOKENS for budget in seen)
+    assert THESIS_MAX_TOKENS >= 4000

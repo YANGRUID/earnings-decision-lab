@@ -46,6 +46,10 @@ class EligibilityResult:
     # for branches that represent an operational failure of a lookup itself,
     # never a genuine, data-driven business-rule rejection.
     retryable: bool = False
+    #: Which check produced a failure. ``options_chain`` marks the one live
+    #: provider lookup: a transient failure there says nothing about the
+    #: company, only about IB Gateway at that moment.
+    stage: str | None = None
 
 
 def check_us_listing(
@@ -117,7 +121,11 @@ def check_eligibility(
         expirations = options_provider.list_available_expirations(event.symbol, after=date.today())
     except Exception as exc:  # noqa: BLE001 -- provider boundary, reported not raised
         return EligibilityResult(
-            event.symbol, False, f"options chain lookup failed: {exc}", retryable=True
+            event.symbol,
+            False,
+            f"options chain lookup failed: {exc}",
+            retryable=True,
+            stage="options_chain",
         )
     if not expirations:
         return EligibilityResult(event.symbol, False, "no tradable option chain")

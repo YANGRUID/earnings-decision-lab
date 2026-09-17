@@ -45,7 +45,8 @@ from models.earnings_calendar_event import EarningsCalendarEvent
 from models.enums import EarningsCalendarEventStatus
 from models.research_preparation_job import JobStatus, ResearchPreparationJob
 from providers.base import OptionsDataProvider
-from services.earnings_eligibility import check_eligibility
+from services.earnings_eligibility import EligibilityResult, check_eligibility
+from services.listing_identity import duplicate_listing_of, duplicate_listing_reason
 
 # How far ahead of "today" the preparation scan looks. Deliberately wider
 # than run_decision_and_entry_capture_job's own _DECISION_CANDIDATE_
@@ -189,7 +190,27 @@ def enqueue_preparation_candidates(
     results: list[EnqueueResult] = []
 
     for event in candidate_events_for_preparation(db, now=now, lookahead_days=lookahead_days):
+        canonical = duplicate_listing_of(db, event)
+        if canonical is not None:
+            results.append(
+                EnqueueResult(
+                    event.id, event.symbol, "filtered_out", duplicate_listing_reason(canonical)
+                )
+            )
+            continue
         eligibility = check_eligibility(event, options_provider, us_listing=us_listing)
+        deferred_note: str | None = None
+        if not eligibility.eligible and eligibility.stage == "options_chain":
+            # Proven defect (2026-09-15 .. 09-16): IB Gateway had lost its
+            # upstream connection, every options-chain probe timed out, and
+            # LEN, AZO and FERG were each reported as a "preparation warning"
+            # and never queued. Nothing the research worker prepares before
+            # the options step needs IB Gateway -- filings, embeddings,
+            # history and the AI thesis do not -- so a company that has
+            # already passed the market-cap and listing rules is queued, and
+            # the decision gate still checks its option chain live at 15:30.
+            deferred_note = f"queued with the options check deferred: {eligibility.reason}"
+            eligibility = EligibilityResult(event.symbol, True)
         if not eligibility.eligible:
             # Post-live correction (2026-08-25): a retryable (transient
             # provider-call) failure is honestly represented as a
@@ -246,7 +267,7 @@ def enqueue_preparation_candidates(
         )
         db.add(job)
         db.commit()
-        results.append(EnqueueResult(event.id, event.symbol, "queued", None))
+        results.append(EnqueueResult(event.id, event.symbol, "queued", deferred_note))
 
     return results
 

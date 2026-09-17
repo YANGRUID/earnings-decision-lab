@@ -136,3 +136,18 @@ def test_get_company_facts_extracts_eps_and_revenue(httpx_mock):
     assert facts.eps_diluted[0].fiscal_period == "Q4"
     assert facts.revenues[0].value == Decimal("11320000000")
     assert facts.source_provider == "sec_edgar_xbrl"
+
+
+def test_lookup_cik_finds_a_dotted_share_class_in_secs_hyphen_form(httpx_mock):
+    """Proven 2026-09-02: BF.A/BF.B failed company resolution eight times
+    because SEC writes BF-A/BF-B."""
+    tickers = {
+        "0": {"cik_str": 920760, "ticker": "LEN", "title": "LENNAR CORP"},
+        "1": {"cik_str": 920760, "ticker": "LEN-B", "title": "LENNAR CORP"},
+        "2": {"cik_str": 14693, "ticker": "BF-B", "title": "BROWN FORMAN CORP"},
+    }
+    for _ in range(2):  # one ticker-file fetch per lookup
+        httpx_mock.add_response(url="https://www.sec.gov/files/company_tickers.json", json=tickers)
+    provider = SECEdgarProvider(user_agent=UA)
+    assert provider.lookup_cik("BF.B") == "0000014693"
+    assert provider.lookup_cik("len.b") == "0000920760"

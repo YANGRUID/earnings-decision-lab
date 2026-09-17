@@ -151,12 +151,16 @@ class TestCheapFilterFirst:
 
         assert results == []
 
-    def test_a_transient_provider_failure_is_a_warning_not_a_hard_filter(self, db_session):
-        """Post-live correction (2026-08-25): a rate-limited (or
-        otherwise transiently failing) options-chain probe must not be
-        recorded the same way as a genuine, permanent ineligibility
-        verdict (market cap, non-US listing) -- see EligibilityResult.
-        retryable's own docstring for the real Aug 25 WSM evidence."""
+    def test_a_transient_options_lookup_failure_does_not_block_research(self, db_session):
+        """A transient options-chain failure is never recorded like a genuine,
+        permanent ineligibility verdict (the 2026-08-25 WSM evidence) -- and,
+        since 2026-09-17, it no longer blocks research either.
+
+        Proven defect (2026-09-15 .. 09-16): IB Gateway had lost its upstream
+        connection; every probe timed out; LEN, AZO and FERG were reported as
+        warnings and never queued. Filings, embeddings, history and the AI
+        thesis need no IB Gateway, and the decision gate still checks the
+        option chain live at 15:30."""
         _event(db_session, symbol="TESTWARN")
 
         results = enqueue_preparation_candidates(
@@ -164,9 +168,26 @@ class TestCheapFilterFirst:
         )
 
         assert len(results) == 1
-        assert results[0].outcome == "preparation_warning"
+        assert results[0].outcome == "queued"
+        assert "options check deferred" in results[0].reason
         assert "rate-limited" in results[0].reason
-        # Not enqueued this scan either way (same as filtered_out) -- but
-        # nothing here is sticky: the next scan (no job row exists to
-        # dedupe against) will call check_eligibility fresh again.
-        assert db_session.query(ResearchPreparationJob).filter_by(ticker="TESTWARN").count() == 0
+        assert db_session.query(ResearchPreparationJob).filter_by(ticker="TESTWARN").count() == 1
+
+    def test_a_share_class_duplicate_of_a_listed_report_is_not_prepared_twice(
+        self, db_session, options_provider
+    ):
+        """LEN and LEN.B, 2026-09-16: one Lennar report, one observation."""
+        _event(db_session, symbol="TESTLEN")
+        _event(db_session, symbol="TESTLEN.B")
+
+        results = {
+            r.symbol: r
+            for r in enqueue_preparation_candidates(
+                db_session, options_provider, now=FAR_FUTURE_NOW
+            )
+        }
+
+        assert results["TESTLEN"].outcome == "queued"
+        assert results["TESTLEN.B"].outcome == "filtered_out"
+        assert "duplicate share-class listing of TESTLEN" in results["TESTLEN.B"].reason
+        assert db_session.query(ResearchPreparationJob).filter_by(ticker="TESTLEN.B").count() == 0

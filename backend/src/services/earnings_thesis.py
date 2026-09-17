@@ -161,6 +161,18 @@ def _market_setup_block(
     return "\n".join(lines)
 
 
+#: Output budget for one EarningsThesis JSON answer (thinking disabled, so the
+#: whole budget is visible output).
+#:
+#: Proven defect (2026-09-09 .. 09-11): 1,400 tokens truncated the answer
+#: mid-string three times in three days -- GIS ("Unterminated string ... char
+#: 4061"), CPRT and LEN (char 5115) -- each with finish_reason=length. The job
+#: finished COMPLETED_WITH_WARNINGS and GIS never had a thesis, so it could not
+#: pass the V4 research gate. The schema's six prose sections routinely need
+#: 4-5k characters; 4,000 tokens leaves roughly three times that.
+THESIS_MAX_TOKENS = 4000
+
+
 def _find_prohibited_phrases(thesis: EarningsThesis) -> list[str]:
     text = " ".join(
         [
@@ -177,7 +189,9 @@ def _find_prohibited_phrases(thesis: EarningsThesis) -> list[str]:
 
 def _generate_and_enforce(llm: LLMProvider, messages: list[ChatMessage]) -> EarningsThesis:
     try:
-        thesis = llm.generate_structured(messages, EarningsThesis, temperature=0.0, max_tokens=1400)
+        thesis = llm.generate_structured(
+            messages, EarningsThesis, temperature=0.0, max_tokens=THESIS_MAX_TOKENS
+        )
     except LLMError as exc:
         raise ThesisGenerationError(f"thesis generation failed: {exc}") from exc
 
@@ -200,7 +214,7 @@ def _generate_and_enforce(llm: LLMProvider, messages: list[ChatMessage]) -> Earn
     ]
     try:
         thesis = llm.generate_structured(
-            retry_messages, EarningsThesis, temperature=0.0, max_tokens=1400
+            retry_messages, EarningsThesis, temperature=0.0, max_tokens=THESIS_MAX_TOKENS
         )
     except LLMError as exc:
         raise ThesisGenerationError(f"thesis regeneration failed: {exc}") from exc

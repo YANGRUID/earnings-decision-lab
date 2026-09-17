@@ -87,10 +87,23 @@ class SECEdgarProvider(FilingsProvider):
     # --- CIK lookup -------------------------------------------------------
 
     def lookup_cik(self, ticker: str) -> str | None:
+        """SEC writes a share class with a hyphen (``BF-B``, ``LEN-B``); the
+        earnings calendars write it with a dot (``BF.B``, ``LEN.B``). The
+        dotted form is tried as written and then in SEC's own form.
+
+        Proven defect (2026-09-02): BF.A and BF.B failed company resolution
+        eight times ("not found in SEC's own company ticker list"), so a
+        share-class listing could never become a Company row and never pass
+        the research gate."""
         data = self._get_json(_TICKERS_URL)
-        ticker_upper = ticker.upper()
-        for entry in data.values():
-            if entry["ticker"].upper() == ticker_upper:
+        ticker_upper = ticker.strip().upper()
+        candidates = [ticker_upper]
+        if "." in ticker_upper:
+            candidates.append(ticker_upper.replace(".", "-"))
+        by_ticker = {str(entry["ticker"]).upper(): entry for entry in data.values()}
+        for candidate in candidates:
+            entry = by_ticker.get(candidate)
+            if entry is not None:
                 return str(entry["cik_str"]).zfill(10)
         return None
 
