@@ -557,11 +557,15 @@ class TestWhyAnEventWasNotDecided:
 
     def test_a_truncated_thesis_is_named(self, db_session):
         row = self._not_ready_event(db_session, "TRUNC")
-        _company(db_session, "TRUNC")
+        company = _company(db_session, "TRUNC")
+        # Point-in-time: prepared before the window, as GIS was on 2026-09-09.
+        company.created_at = NOW - timedelta(days=3)
         db_session.add(
             ResearchPreparationJob(
                 ticker="TRUNC",
                 earnings_calendar_event_id=row.id,
+                created_at=NOW - timedelta(days=3),
+                completed_at=NOW - timedelta(days=3),
                 status=JobStatus.COMPLETED_WITH_WARNINGS,
                 steps=[
                     {
@@ -614,6 +618,57 @@ class TestWhyAnEventWasNotDecided:
         row.status = "SKIPPED"
         db_session.flush()
         assert classify_event(db_session, row, NOW).lifecycle_state == "BUSINESS_INELIGIBLE"
+
+    def test_a_thesis_written_after_the_window_is_not_called_stale(self, db_session):
+        """SNOW, 2026-09-02: prepared that evening, after its 15:30 window. The
+        cause must describe the window, not today's thesis age."""
+        row = self._not_ready_event(db_session, "LATEX")
+        company = _company(db_session, "LATEX")
+        company.created_at = NOW - timedelta(days=2)
+        db_session.add(
+            AIThesisVersion(
+                company_id=company.id,
+                business_context="b",
+                historical_earnings_pattern="h",
+                guidance_trend="g",
+                key_risks="k",
+                market_setup="m",
+                disclaimer="d",
+                citations=[],
+                provider="deepseek",
+                model="deepseek-v4-flash",
+                created_at=self.LATER + timedelta(hours=5),
+            )
+        )
+        db_session.flush()
+
+        reason = classify_event(db_session, row, self.LATER + timedelta(days=9)).lifecycle_reason
+        assert "only generated after the window" in reason
+
+    def test_a_verdict_about_another_event_is_not_used(self, db_session):
+        """TCOM: its only enqueue verdicts were about an August event."""
+        from models.scheduler_run import SchedulerRun, SchedulerRunEvent
+
+        row = self._not_ready_event(db_session, "OTHEREV")
+        other = _event(db_session, "OTHEREV", earnings_date=date(2026, 8, 20))
+        run = SchedulerRun(job_id="earnings_research_preparation", started_at=NOW, status="success")
+        db_session.add(run)
+        db_session.flush()
+        db_session.add(
+            SchedulerRunEvent(
+                scheduler_run_id=run.id,
+                earnings_calendar_event_id=other.id,
+                symbol="OTHEREV",
+                stage="preparation",
+                outcome="filtered_out",
+                reason="not US listed (country=SG)",
+                occurred_at=NOW - timedelta(days=20),
+            )
+        )
+        db_session.flush()
+
+        reason = classify_event(db_session, row, self.LATER).lifecycle_reason
+        assert "country=SG" not in reason
 
     def test_a_future_window_is_ahead_not_missed(self, db_session):
         row = _event(db_session, "AHEADX", earnings_date=date(2026, 9, 10))

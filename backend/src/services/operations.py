@@ -805,16 +805,20 @@ def _window_status(schedule: EarningsEntryExitSchedule, now: datetime) -> str:
     return WINDOW_PASSED
 
 
-def _latest_enqueue_outcome(db: Session, symbol: str) -> tuple[str, str | None] | None:
-    """The most recent research-enqueue verdict for ``symbol`` (outcome,
-    reason), from the preparation and catch-up jobs' own run events."""
+def _enqueue_verdict_before(
+    db: Session, event: EarningsCalendarEvent, window: datetime
+) -> tuple[str, str | None] | None:
+    """The last research-enqueue verdict for THIS calendar event before its
+    window (outcome, reason). Scoped to the event: TCOM's only verdicts were
+    about a different, August event, and read as if they explained September."""
     from models.scheduler_run import SchedulerRunEvent  # noqa: PLC0415
 
     row = (
         db.query(SchedulerRunEvent)
         .filter(
-            SchedulerRunEvent.symbol == symbol,
+            SchedulerRunEvent.earnings_calendar_event_id == event.id,
             SchedulerRunEvent.stage.in_(("preparation", "readiness")),
+            SchedulerRunEvent.occurred_at <= window,
         )
         .order_by(SchedulerRunEvent.occurred_at.desc())
         .first()
@@ -831,38 +835,66 @@ def _thesis_step_failure(prep: ResearchPreparationJob | None) -> str | None:
 
 def research_miss_cause(db: Session, f: _Facts) -> str:
     """The specific reason research was not ready at the window, from
-    persisted evidence -- never the bare symptom. "No Company row" alone told
-    nobody that GIS's thesis had been truncated, that TCOM and FDX had never
-    been queued because their calendar rows were marked SKIPPED, or that LEN's
-    re-check was blocked by IB Gateway."""
+    persisted evidence as it stood AT the window -- never the bare symptom,
+    and never today's state. "No Company row" alone told nobody that GIS's
+    thesis had been truncated, that TCOM and FDX had never been queued because
+    their calendar rows were marked SKIPPED, or that LEN's recheck was blocked
+    by IB Gateway."""
     event = f.event
+    window = f.schedule.entry_timestamp
     status = getattr(event.status, "name", event.status)
-    if str(status).upper() == "SKIPPED" and f.company is None:
+    company = f.company
+    company_at_window = company is not None and (
+        company.created_at is None or company.created_at <= window
+    )
+    if str(status).upper() == "SKIPPED" and not company_at_window:
         by = f" by {event.vanished_by}" if event.vanished_by else ""
         return (
             "never queued: the calendar marked this event uncorroborated"
             f"{by}, and research preparation only considers corroborated events"
         )
-    if f.prep is not None and f.prep.status == JobStatus.FAILED:
-        if _RESOLUTION_MARKER in (f.prep.error or ""):
-            return f"company resolution failed: {f.prep.error}"
-        return f"research preparation failed: {f.prep.error}"
-    if f.company is not None and f.thesis is None:
-        thesis_failure = _thesis_step_failure(f.prep)
-        if thesis_failure:
-            return f"company prepared, but {thesis_failure}"
-        return "company prepared, but no AI thesis was ever generated"
-    if f.company is not None and not f.thesis_fresh:
-        return "AI thesis was stale at the window and was not refreshed"
-    if f.prep is not None and f.prep.status in (
-        JobStatus.PENDING,
-        JobStatus.RUNNING,
-        JobStatus.INTERRUPTED,
-    ):
-        return f"research was still {f.prep.status.value} when the window opened"
-    outcome = _latest_enqueue_outcome(db, event.symbol)
-    if outcome is not None and outcome[0] in ("filtered_out", "preparation_warning"):
-        return f"never queued: {outcome[1] or outcome[0]}"
+    prep_at_window = (
+        db.query(ResearchPreparationJob)
+        .filter(
+            ResearchPreparationJob.ticker == event.symbol,
+            ResearchPreparationJob.created_at <= window,
+        )
+        .order_by(ResearchPreparationJob.id.desc())
+        .first()
+    )
+    if company_at_window and company is not None:
+        thesis_times = [
+            row[0]
+            for row in db.query(AIThesisVersion.created_at)
+            .filter(AIThesisVersion.company_id == company.id)
+            .all()
+        ]
+        before = [t for t in thesis_times if t <= window]
+        if not before:
+            failure = _thesis_step_failure(prep_at_window)
+            if failure:
+                return f"company prepared, but {failure}"
+            after = [t for t in thesis_times if t > window]
+            if after:
+                return (
+                    "AI thesis was only generated after the window "
+                    f"({min(after).astimezone(EASTERN).strftime('%Y-%m-%d %H:%M')} ET)"
+                )
+            return "company prepared, but no AI thesis existed at the window"
+        age = window - max(before)
+        if age >= _THESIS_FRESH:
+            return f"AI thesis was {age.days} days old at the window and was not refreshed"
+        return "research looked ready at the window; see the decision-gate message"
+    if prep_at_window is not None:
+        if prep_at_window.status == JobStatus.FAILED:
+            if _RESOLUTION_MARKER in (prep_at_window.error or ""):
+                return f"company resolution failed: {prep_at_window.error}"
+            return f"research preparation failed: {prep_at_window.error}"
+        if prep_at_window.completed_at is None or prep_at_window.completed_at > window:
+            return "research was still queued or running when the window opened"
+    verdict = _enqueue_verdict_before(db, event, window)
+    if verdict is not None and verdict[0] in ("filtered_out", "preparation_warning"):
+        return f"never queued: {verdict[1] or verdict[0]}"
     if event.market_cap is None:
         return "never queued: market cap unknown (calendar profile missing)"
     return "never queued: no preparation scan considered this event before its window"
