@@ -6,7 +6,7 @@ import { useListControls } from "../hooks/useListControls";
 import { ListToolbar, Pager } from "./ListControls";
 import { LoadingState, ErrorState } from "./StatusStates";
 import { fmtMarketCap } from "./v4/shared";
-import { formatEt, stateLabel } from "../lib/operationsFormat";
+import { OUT_OF_SCOPE_STATES, formatEt, stateLabel, windowQualifier } from "../lib/operationsFormat";
 import type { EarningsCalendarEvent, PipelineEvent } from "../types/api";
 
 const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
@@ -75,9 +75,9 @@ function fmtEstimate(value: string | null, kind: "eps" | "revenue"): string {
   return fmtMarketCap(value);
 }
 
-/** Every company reporting on one calendar day, with its V4 pipeline state
- * where the event lies inside the V4 window (today−2 … today+7). Opened by
- * clicking a ticker, a day number or the "+N more" overflow in the grid. */
+/** Every company reporting on one calendar day, with its V4 pipeline state for
+ * the displayed month. Opened by clicking a ticker, a day number or the "+N
+ * more" overflow in the grid. */
 function CalendarDayTable({
   date,
   events,
@@ -118,7 +118,7 @@ function CalendarDayTable({
           <h2 style={{ margin: 0 }}>{longDate(date)}</h2>
           <div className="text-sm text-muted">
             {events.length} {events.length === 1 ? "company" : "companies"} · click a ticker to open its workspace
-            {inWindow ? " · V4 pipeline state shown for events inside the 15:30 ET window" : ""}
+            {inWindow ? " · V4 pipeline state as of now" : ""}
           </div>
         </div>
         <button className="btn-secondary" onClick={onClose} aria-label="Close day view">Close ×</button>
@@ -162,7 +162,10 @@ function CalendarDayTable({
                   <td>
                     {p ? (
                       <>
-                        <span className={`pill pill-${p.shadow_decision_id ? "positive" : p.lifecycle_state === "BUSINESS_INELIGIBLE" ? "neutral" : "warning"}`} title={p.lifecycle_reason ?? undefined}>{stateLabel(p.lifecycle_state)}</span>
+                        <span className={`pill pill-${p.shadow_decision_id ? "positive" : OUT_OF_SCOPE_STATES.has(p.lifecycle_state) ? "neutral" : "warning"}`} title={p.lifecycle_reason ?? undefined}>{stateLabel(p.lifecycle_state)}</span>
+                        {windowQualifier(p.lifecycle_state, p.window_status) && (
+                          <span className="text-faint text-sm"> · {windowQualifier(p.lifecycle_state, p.window_status)}</span>
+                        )}
                         {p.shadow_decision_id && (
                           <>
                             {" "}
@@ -171,7 +174,7 @@ function CalendarDayTable({
                         )}
                       </>
                     ) : (
-                      <span className="text-faint text-sm">outside the V4 window</span>
+                      <span className="text-faint text-sm">no V4 state</span>
                     )}
                   </td>
                   <td className="text-sm text-muted">{e.source}</td>
@@ -195,9 +198,15 @@ export function EarningsCalendarGrid() {
     () => api.listEarningsByMonth(cursor.year, cursor.month),
     [cursor.year, cursor.month]
   );
-  // The complete V4 window (including past rows) so a day table can state the
-  // pipeline position of every event that has one. One request, abortable.
-  const pipeline = useAsync((signal) => api.getOperationsEvents({ signal, includePast: true }), []);
+  // The V4 state of every event in the displayed month (past rows included),
+  // so a decided event older than two days is never shown as outside V4 --
+  // KR (2026-09-11) was, while decided and settled. One request, abortable.
+  const monthStart = isoDate(cursor.year, cursor.month, 1);
+  const monthEnd = isoDate(cursor.year, cursor.month, daysInMonth(cursor.year, cursor.month));
+  const pipeline = useAsync(
+    (signal) => api.getOperationsEvents({ signal, includePast: true, start: monthStart, end: monthEnd }),
+    [monthStart, monthEnd]
+  );
   const pipelineByKey = new Map<string, PipelineEvent>();
   for (const p of pipeline.data?.events ?? []) pipelineByKey.set(`${p.symbol}|${p.earnings_date}`, p);
 

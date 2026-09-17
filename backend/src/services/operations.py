@@ -110,6 +110,28 @@ STATE_ENTRY_FAILED = "ENTRY_FAILED"
 STATE_WAITING_SETTLEMENT = "WAITING_SETTLEMENT"
 STATE_SETTLED = "SETTLED"
 STATE_SETTLEMENT_FAILED = "SETTLEMENT_FAILED"
+#: The calendar no longer corroborates the event's date (or an operator
+#: verified there is no report on it): never decided, never a failure.
+STATE_CALENDAR_UNCORROBORATED = "CALENDAR_UNCORROBORATED"
+#: A share-class listing of a report that is already its own event.
+STATE_DUPLICATE_LISTING = "DUPLICATE_LISTING"
+
+#: States that are deliberately outside V4 coverage -- none is a failure and
+#: none belongs in an "eligible" count.
+_OUT_OF_SCOPE_STATES = frozenset(
+    {"BUSINESS_INELIGIBLE", STATE_CALENDAR_UNCORROBORATED, STATE_DUPLICATE_LISTING}
+)
+
+#: Where an event's legal decision window sits relative to now -- the
+#: difference between "waiting for a future window" and "window missed" must
+#: never be inferred from a state label alone.
+WINDOW_AHEAD = "AHEAD"
+WINDOW_OPEN = "OPEN"
+WINDOW_PASSED = "PASSED"
+
+#: The widest date range one pipeline request may cover (a calendar month
+#: with its edges).
+PIPELINE_MAX_RANGE_DAYS = 62
 
 _HEALTHY = "green"
 _DEGRADED = "yellow"
@@ -152,6 +174,104 @@ class EarningsCalendarHealth:
     events_received: int | None
     last_error: str | None
     next_scheduled_sync_at: datetime | None
+    #: The primary provider's request usage and allowance state.
+    primary_usage: CalendarProviderUsage | None = None
+
+
+#: EarningsAPI's free plan, as its own 429 bodies state it: "the daily limit
+#: (100 requests) for the Free plan" and "the Free plan limit for this month"
+#: (1,000 per core/config.py). A paid plan raises both; the counts below are
+#: what this deployment actually sent either way.
+EARNINGSAPI_DAILY_LIMIT = 100
+EARNINGSAPI_MONTHLY_LIMIT = 1000
+#: A primary calendar provider with no successful answer for this long means
+#: the calendar is running on the fallback alone.
+CALENDAR_PRIMARY_STALE_AFTER = timedelta(hours=36)
+
+
+@dataclass(frozen=True)
+class CalendarProviderUsage:
+    """Requests this deployment sent to the primary calendar provider, from
+    its own usage rows. ``provider_units`` counts a multi-date calendar call as
+    one request per date (EarningsAPI has no range endpoint)."""
+
+    provider: str
+    requests_today: int
+    requests_this_month: int
+    daily_limit: int
+    monthly_limit: int
+    daily_remaining: int
+    monthly_remaining: int
+    #: OK | DAILY_EXHAUSTED | MONTHLY_EXHAUSTED | NOT_ANSWERING
+    quota_state: str
+    last_success_at: datetime | None
+    last_refusal_at: datetime | None
+
+
+def get_calendar_provider_usage(
+    db: Session, *, provider: str = "earningsapi", now: datetime | None = None
+) -> CalendarProviderUsage:
+    from models.provider_usage_event import ProviderUsageEvent  # noqa: PLC0415
+
+    now = now or datetime.now(UTC)
+    day_start = datetime(now.year, now.month, now.day, tzinfo=UTC)
+    month_start = datetime(now.year, now.month, 1, tzinfo=UTC)
+    units = func.coalesce(func.sum(func.coalesce(ProviderUsageEvent.provider_units, 1)), 0)
+
+    def _count(since: datetime) -> int:
+        value = (
+            db.query(units)
+            .filter(
+                ProviderUsageEvent.provider == provider,
+                ProviderUsageEvent.occurred_at >= since,
+            )
+            .scalar()
+        )
+        return int(value or 0)
+
+    today = _count(day_start)
+    month = _count(month_start)
+    last_success = (
+        db.query(func.max(ProviderUsageEvent.occurred_at))
+        .filter(ProviderUsageEvent.provider == provider, ProviderUsageEvent.success.is_(True))
+        .scalar()
+    )
+    refusal = (
+        db.query(ProviderUsageEvent)
+        .filter(
+            ProviderUsageEvent.provider == provider,
+            ProviderUsageEvent.success.is_(False),
+        )
+        .order_by(ProviderUsageEvent.occurred_at.desc())
+        .first()
+    )
+    state = "OK"
+    refused_after_success = refusal is not None and (
+        last_success is None or refusal.occurred_at > last_success
+    )
+    if refused_after_success and refusal is not None:
+        if refusal.status_code == "FREE_QUOTA_EXCEEDED" and refusal.occurred_at >= month_start:
+            state = "MONTHLY_EXHAUSTED"
+        elif refusal.status_code == "DAILY_QUOTA_EXCEEDED" and refusal.occurred_at >= day_start:
+            state = "DAILY_EXHAUSTED"
+    if (
+        state == "OK"
+        and refused_after_success
+        and (last_success is None or now - last_success > CALENDAR_PRIMARY_STALE_AFTER)
+    ):
+        state = "NOT_ANSWERING"
+    return CalendarProviderUsage(
+        provider=provider,
+        requests_today=today,
+        requests_this_month=month,
+        daily_limit=EARNINGSAPI_DAILY_LIMIT,
+        monthly_limit=EARNINGSAPI_MONTHLY_LIMIT,
+        daily_remaining=max(EARNINGSAPI_DAILY_LIMIT - today, 0),
+        monthly_remaining=max(EARNINGSAPI_MONTHLY_LIMIT - month, 0),
+        quota_state=state,
+        last_success_at=last_success,
+        last_refusal_at=refusal.occurred_at if refusal is not None else None,
+    )
 
 
 @dataclass(frozen=True)
@@ -425,13 +545,32 @@ def get_system_health(  # noqa: PLR0912, PLR0915 -- one aggregation, kept in one
         active = next(
             (p for p in calendar_domain.providers if p.provider == calendar_domain.primary), None
         )
+        primary_usage = None
         if active is not None and active.configured:
             calendar_state = _HEALTHY
+            if calendar_domain.primary == "earningsapi":
+                primary_usage = get_calendar_provider_usage(db)
             if calendar_sync_run is not None and calendar_sync_run.status == "error":
                 calendar_state = _FAILED
                 calendar_error = calendar_sync_run.error_summary
             elif active.last_success_at is None:
                 calendar_state = _DEGRADED
+            elif primary_usage is not None and primary_usage.quota_state != "OK":
+                # Proven 2026-09-13 .. 09-17: the primary's monthly allowance
+                # was spent and this card still read healthy for four days
+                # while the calendar ran on the less reliable fallback alone.
+                calendar_state = _DEGRADED
+                quota_state = primary_usage.quota_state.lower().replace("_", " ")
+                last_answer = (
+                    primary_usage.last_success_at.isoformat()
+                    if primary_usage.last_success_at
+                    else "never"
+                )
+                calendar_error = (
+                    f"{calendar_domain.primary} {quota_state} (last successful answer "
+                    f"{last_answer}); the calendar is running on "
+                    f"{calendar_domain.fallback or 'no fallback'}"
+                )
         earnings_calendar = EarningsCalendarHealth(
             state=calendar_state,
             active_provider=calendar_domain.primary,
@@ -439,6 +578,7 @@ def get_system_health(  # noqa: PLR0912, PLR0915 -- one aggregation, kept in one
             last_successful_sync_at=active.last_success_at if active else None,
             events_received=calendar_sync_run.items_evaluated if calendar_sync_run else None,
             last_error=calendar_error,
+            primary_usage=primary_usage,
             next_scheduled_sync_at=next(
                 (
                     j.next_run_time
@@ -580,6 +720,7 @@ class V4PipelineEvent:
     settlements_settled: int
     settlements_failed: int
     timeline: list[TimelineStep]
+    window_status: str = WINDOW_AHEAD
 
 
 _THESIS_FRESH = timedelta(days=THESIS_FRESHNESS_DAYS)
@@ -652,7 +793,79 @@ class _Facts:
             settlements_settled=sum(1 for s in self.settlements if s.status == "SETTLED"),
             settlements_failed=sum(1 for s in self.settlements if s.status != "SETTLED"),
             timeline=list(self.timeline),
+            window_status=_window_status(self.schedule, self.now),
         )
+
+
+def _window_status(schedule: EarningsEntryExitSchedule, now: datetime) -> str:
+    if now < schedule.entry_timestamp:
+        return WINDOW_AHEAD
+    if now <= schedule.entry_timestamp + LATE_CUTOFF_GRACE:
+        return WINDOW_OPEN
+    return WINDOW_PASSED
+
+
+def _latest_enqueue_outcome(db: Session, symbol: str) -> tuple[str, str | None] | None:
+    """The most recent research-enqueue verdict for ``symbol`` (outcome,
+    reason), from the preparation and catch-up jobs' own run events."""
+    from models.scheduler_run import SchedulerRunEvent  # noqa: PLC0415
+
+    row = (
+        db.query(SchedulerRunEvent)
+        .filter(
+            SchedulerRunEvent.symbol == symbol,
+            SchedulerRunEvent.stage.in_(("preparation", "readiness")),
+        )
+        .order_by(SchedulerRunEvent.occurred_at.desc())
+        .first()
+    )
+    return (row.outcome, row.reason) if row is not None else None
+
+
+def _thesis_step_failure(prep: ResearchPreparationJob | None) -> str | None:
+    for step in (prep.steps if prep is not None else None) or []:
+        if step.get("step") == "ai_thesis" and step.get("status") == "failed":
+            return str(step.get("detail") or "AI thesis generation failed")
+    return None
+
+
+def research_miss_cause(db: Session, f: _Facts) -> str:
+    """The specific reason research was not ready at the window, from
+    persisted evidence -- never the bare symptom. "No Company row" alone told
+    nobody that GIS's thesis had been truncated, that TCOM and FDX had never
+    been queued because their calendar rows were marked SKIPPED, or that LEN's
+    re-check was blocked by IB Gateway."""
+    event = f.event
+    status = getattr(event.status, "name", event.status)
+    if str(status).upper() == "SKIPPED" and f.company is None:
+        by = f" by {event.vanished_by}" if event.vanished_by else ""
+        return (
+            "never queued: the calendar marked this event uncorroborated"
+            f"{by}, and research preparation only considers corroborated events"
+        )
+    if f.prep is not None and f.prep.status == JobStatus.FAILED:
+        if _RESOLUTION_MARKER in (f.prep.error or ""):
+            return f"company resolution failed: {f.prep.error}"
+        return f"research preparation failed: {f.prep.error}"
+    if f.company is not None and f.thesis is None:
+        thesis_failure = _thesis_step_failure(f.prep)
+        if thesis_failure:
+            return f"company prepared, but {thesis_failure}"
+        return "company prepared, but no AI thesis was ever generated"
+    if f.company is not None and not f.thesis_fresh:
+        return "AI thesis was stale at the window and was not refreshed"
+    if f.prep is not None and f.prep.status in (
+        JobStatus.PENDING,
+        JobStatus.RUNNING,
+        JobStatus.INTERRUPTED,
+    ):
+        return f"research was still {f.prep.status.value} when the window opened"
+    outcome = _latest_enqueue_outcome(db, event.symbol)
+    if outcome is not None and outcome[0] in ("filtered_out", "preparation_warning"):
+        return f"never queued: {outcome[1] or outcome[0]}"
+    if event.market_cap is None:
+        return "never queued: market cap unknown (calendar profile missing)"
+    return "never queued: no preparation scan considered this event before its window"
 
 
 def _gather(db: Session, event: EarningsCalendarEvent, now: datetime) -> _Facts:
@@ -809,14 +1022,20 @@ def _decided_row(f: _Facts) -> V4PipelineEvent:
     return f.row(STATE_WAITING_SETTLEMENT, None, "Observe settlement", f.schedule.exit_timestamp)
 
 
-def _window_passed_row(f: _Facts) -> V4PipelineEvent:
+def _window_passed_row(db: Session, f: _Facts) -> V4PipelineEvent:
     latest = f.run_events[0] if f.run_events else None
     if latest is not None:
         f.timeline.append(TimelineStep("V4 decision", latest.occurred_at, "failed", latest.message))
         if latest.category == "DEADLINE_SKIPPED":
             return f.row(STATE_DEADLINE_SKIPPED, latest.message)
-        if latest.category in ("RESEARCH_NOT_READY", "NOT_ELIGIBLE"):
-            return f.row(STATE_RESEARCH_NOT_READY, latest.message)
+        if latest.category == STATE_CALENDAR_UNCORROBORATED:
+            return f.row(STATE_CALENDAR_UNCORROBORATED, latest.message)
+        if latest.category == STATE_DUPLICATE_LISTING:
+            return f.row(STATE_DUPLICATE_LISTING, latest.message)
+        if latest.category == "NOT_ELIGIBLE":
+            return f.row(STATE_BUSINESS_INELIGIBLE, f"at the decision window: {latest.message}")
+        if latest.category == "RESEARCH_NOT_READY":
+            return f.row(STATE_RESEARCH_NOT_READY, f"window missed -- {research_miss_cause(db, f)}")
         return f.row(STATE_DECISION_FAILED, f"{latest.category}: {latest.message}")
     f.timeline.append(
         TimelineStep(
@@ -890,8 +1109,24 @@ def classify_event(
 ) -> V4PipelineEvent:
     """The V4 lifecycle of one calendar event, derived only from persisted rows."""
     f = _gather(db, event, now)
+    if f.decision is None:
+        from services.v4_shadow_orchestration import (  # noqa: PLC0415 -- avoids an import cycle
+            CALENDAR_UNCORROBORATED,
+            _calendar_identity_block,
+        )
+
+        blocked = _calendar_identity_block(db, event)
+        if blocked is not None:
+            category, why = blocked
+            f.timeline.append(TimelineStep("Calendar corroboration", None, "skipped", why))
+            state = (
+                STATE_CALENDAR_UNCORROBORATED
+                if category == CALENDAR_UNCORROBORATED
+                else STATE_DUPLICATE_LISTING
+            )
+            return f.row(state, why)
     eligible, why_not = _passes_business_filters(event, us_listing)
-    if not eligible:
+    if not eligible and f.decision is None:
         f.timeline.append(TimelineStep("Business eligibility", None, "failed", why_not))
         return f.row(STATE_BUSINESS_INELIGIBLE, why_not)
     f.timeline.append(TimelineStep("Business eligibility", None, "done", None))
@@ -899,7 +1134,7 @@ def classify_event(
     if f.decision is not None:
         return _decided_row(f)
     if now > f.schedule.entry_timestamp + LATE_CUTOFF_GRACE:
-        return _window_passed_row(f)
+        return _window_passed_row(db, f)
     return _pending_row(f)
 
 
@@ -908,16 +1143,29 @@ def get_v4_pipeline(
     *,
     now: datetime | None = None,
     us_listing: Callable[[str], str | None] | None = None,
+    start: date | None = None,
+    end: date | None = None,
 ) -> list[V4PipelineEvent]:
     """One row per real calendar event whose earnings date falls inside
-    [today - 2 days, today + 7 days] (Eastern), with the V4 lifecycle state."""
+    [today - 2 days, today + 7 days] (Eastern), with the V4 lifecycle state.
+
+    ``start``/``end`` select an explicit date range instead (at most
+    PIPELINE_MAX_RANGE_DAYS). Needed by the calendar's day table: with only the
+    default window, a decided and settled event older than two days (KR,
+    2026-09-11) was shown as "outside the V4 window"."""
     now = now or datetime.now(UTC)
     today = now.astimezone(EASTERN).date()
+    first = start or today - timedelta(days=PIPELINE_LOOKBACK_DAYS)
+    last = end or today + timedelta(days=PIPELINE_WINDOW_DAYS)
+    if last < first:
+        first, last = last, first
+    if (last - first).days > PIPELINE_MAX_RANGE_DAYS:
+        last = first + timedelta(days=PIPELINE_MAX_RANGE_DAYS)
     events = (
         db.query(EarningsCalendarEvent)
         .filter(
-            EarningsCalendarEvent.earnings_date >= today - timedelta(days=PIPELINE_LOOKBACK_DAYS),
-            EarningsCalendarEvent.earnings_date <= today + timedelta(days=PIPELINE_WINDOW_DAYS),
+            EarningsCalendarEvent.earnings_date >= first,
+            EarningsCalendarEvent.earnings_date <= last,
         )
         .order_by(
             EarningsCalendarEvent.earnings_date,
@@ -959,7 +1207,7 @@ def compute_research_readiness(
 ) -> ResearchReadiness:
     now = now or datetime.now(UTC)
     upcoming = [p for p in pipeline if p.entry_timestamp + LATE_CUTOFF_GRACE >= now]
-    eligible = [p for p in upcoming if p.lifecycle_state != STATE_BUSINESS_INELIGIBLE]
+    eligible = [p for p in upcoming if p.lifecycle_state not in _OUT_OF_SCOPE_STATES]
     queued = sum(1 for p in eligible if p.lifecycle_state == STATE_RESEARCH_QUEUED)
     running = sum(1 for p in eligible if p.lifecycle_state == STATE_RESEARCH_RUNNING)
     failed = sum(
@@ -1169,7 +1417,7 @@ _V4_FAILURE_CATEGORIES_RETRYABLE = {"INTERNAL_ERROR", "VIEW_GENERATION_FAILED"}
 # it. Live evidence (2026-09-08): seventeen sub-$10B events were reported as
 # research misses when the true number of preparation failures that day was
 # zero. A standing alarm for a working policy is an alarm nobody reads.
-_V4_NON_FAILURE_CATEGORIES = {"OK", "NOT_ELIGIBLE"}
+_V4_NON_FAILURE_CATEGORIES = {"OK", "NOT_ELIGIBLE", "CALENDAR_UNCORROBORATED", "DUPLICATE_LISTING"}
 
 
 @dataclass(frozen=True)
@@ -1627,7 +1875,7 @@ def compute_today_summary(
     today = now.astimezone(EASTERN).date()
     day_start = datetime.combine(today, datetime.min.time(), tzinfo=EASTERN)
     todays = [p for p in pipeline if p.entry_timestamp.astimezone(EASTERN).date() == today]
-    eligible = [p for p in todays if p.lifecycle_state != STATE_BUSINESS_INELIGIBLE]
+    eligible = [p for p in todays if p.lifecycle_state not in _OUT_OF_SCOPE_STATES]
     decisions = db.query(V4ShadowDecision).filter(V4ShadowDecision.generated_at >= day_start).all()
     entries = (
         db.query(V4ShadowConfigEntry).filter(V4ShadowConfigEntry.observed_at >= day_start).all()

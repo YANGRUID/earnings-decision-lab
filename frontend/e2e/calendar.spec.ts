@@ -39,7 +39,13 @@ const pipelineRow = {
   earnings_date: DAY, earnings_timing: "amc", entry_timestamp: `${DAY}T19:30:00Z`, exit_timestamp: `${DAY}T19:30:00Z`,
   lifecycle_state: "WAITING_DECISION", lifecycle_reason: null, next_action: "V4 decision at 15:30 ET", next_action_at: `${DAY}T19:30:00Z`,
   research_ready: true, shadow_decision_id: null, decision_status: null, entries_observed: 0, entries_failed: 0,
-  settlements_settled: 0, settlements_failed: 0, timeline: [],
+  settlements_settled: 0, settlements_failed: 0, timeline: [], window_status: "AHEAD",
+};
+
+const settledRow = {
+  ...pipelineRow, calendar_event_id: 104, symbol: "CASY", company_name: "Caseys General Stores",
+  lifecycle_state: "SETTLED", next_action: null, next_action_at: null, shadow_decision_id: 13,
+  decision_status: "RANKED", entries_observed: 3, settlements_settled: 3, window_status: "PASSED",
 };
 
 const health = {
@@ -62,7 +68,12 @@ async function mockDashboard(page: Page) {
     forward_window: { window_time_et: "15:30", priority: ["Due settlements", "New decision observations"], next_window_at: null, settlements_due: [], decisions_ready: [], decisions_not_ready: [], last_window_started_at: null, last_settlements_due: 0, last_settlements_settled: 0, last_settlements_failed: 0, last_settlements_window_missed: 0, last_settlement_lock_wait_ms_max: null, last_settlement_total_ms_max: null, last_decisions_ready: 0, last_deadline_skipped: 0, last_decision_lock_wait_ms: null },
   }));
   await page.route("**/operations/preparation-progress", json({ queue_depth: 0, completed: 0, failed: 0, worker_active: false, current_symbol: null, current_stage: null, step_index: null, step_total: null, attempt: null, heartbeat_seconds_ago: null, elapsed_seconds: null }));
-  await page.route("**/operations/events*", json({ events: [pipelineRow] }));
+  await page.route("**/operations/events*", (route: Route) => {
+    // The calendar asks for the displayed month explicitly.
+    const url = new URL(route.request().url());
+    const events = url.searchParams.get("start") ? [pipelineRow, settledRow] : [pipelineRow];
+    return route.fulfill({ json: { events } });
+  });
   await page.route("**/v4/shadow/decisions*", json({ notice: "V4", decisions: [] }));
   await page.route("**/v4/shadow/track-record/by-configuration", json({ notice: "V4", sample_floor: 30, metrics_note: "Counts only.", configurations: [] }));
   await page.route("**/earnings-calendar/by-month*", json(monthEvents));
@@ -83,7 +94,11 @@ test.describe("Dashboard earnings calendar", () => {
     // Largest market cap first, and the pipeline state where one exists.
     await expect(table.locator("tbody tr").first()).toContainText("AVGO");
     await expect(table.locator("tr[data-symbol='CPRT']")).toContainText("WAITING DECISION");
-    await expect(table.locator("tr[data-symbol='SAIL']")).toContainText("outside the V4 window");
+    await expect(table.locator("tr[data-symbol='CPRT']")).toContainText("window ahead");
+    // A past, decided and settled event keeps its V4 state (KR, 2026-09-11, was
+    // shown as "outside the V4 window" once it was more than two days old).
+    await expect(table.locator("tr[data-symbol='CASY']")).toContainText("SETTLED");
+    await expect(table.locator("tr[data-symbol='SAIL']")).toContainText("no V4 state");
     await table.getByRole("button", { name: "Close day view" }).click();
     await expect(page.getByTestId("calendar-day-table")).toHaveCount(0);
   });

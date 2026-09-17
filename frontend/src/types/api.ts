@@ -270,7 +270,9 @@ export interface TwsStatus {
   api_ready: boolean;
   market_data_quality: string | null;
   error: string | null;
-  // "NOT_CONFIGURED" | "GATEWAY_UNREACHABLE" | "AUTH_REQUIRED" | "CONNECTED"
+  // "NOT_CONFIGURED" | "GATEWAY_UNREACHABLE" | "AUTH_REQUIRED" |
+  // "UPSTREAM_DISCONNECTED" (API socket fine, IB Gateway cut off from IBKR) |
+  // "CONNECTED"
   status_label: string;
   // IBKR TWS Migration, Phase 3 readiness -- additive. reconnect_state is
   // TWSConnectionState's own real value ("disconnected" | "connecting" |
@@ -278,6 +280,7 @@ export interface TwsStatus {
   // than status_label above.
   last_heartbeat: string | null;
   reconnect_state: string;
+  upstream_lost_since?: string | null;
 }
 
 export interface ProviderCapabilities {
@@ -883,6 +886,21 @@ export interface IbkrHealth {
   provider: string;
 }
 
+// Requests this deployment sent to the primary calendar provider (EarningsAPI),
+// counted from its own usage rows; the limits are the free plan's.
+export interface CalendarProviderUsage {
+  provider: string;
+  requests_today: number;
+  requests_this_month: number;
+  daily_limit: number;
+  monthly_limit: number;
+  daily_remaining: number;
+  monthly_remaining: number;
+  quota_state: "OK" | "DAILY_EXHAUSTED" | "MONTHLY_EXHAUSTED" | "NOT_ANSWERING";
+  last_success_at: string | null;
+  last_refusal_at: string | null;
+}
+
 export interface EarningsCalendarHealth {
   state: HealthState;
   active_provider: string | null;
@@ -891,6 +909,7 @@ export interface EarningsCalendarHealth {
   events_received: number | null;
   last_error: string | null;
   next_scheduled_sync_at: string | null;
+  primary_usage?: CalendarProviderUsage | null;
 }
 
 export interface AiProviderHealth {
@@ -976,7 +995,15 @@ export type V4PipelineState =
   | "ENTRY_FAILED"
   | "WAITING_SETTLEMENT"
   | "SETTLED"
-  | "SETTLEMENT_FAILED";
+  | "SETTLEMENT_FAILED"
+  // The calendar no longer corroborates the date (or an operator verified
+  // there is no report on it): never decided, never a failure.
+  | "CALENDAR_UNCORROBORATED"
+  // A share-class listing of a report that is already its own event.
+  | "DUPLICATE_LISTING";
+
+// Where the legal decision window sits relative to now.
+export type PipelineWindowStatus = "AHEAD" | "OPEN" | "PASSED";
 
 export interface PipelineEvent {
   calendar_event_id: number;
@@ -999,6 +1026,7 @@ export interface PipelineEvent {
   settlements_settled: number;
   settlements_failed: number;
   timeline: TimelineStep[];
+  window_status: PipelineWindowStatus;
 }
 
 export interface SchedulerJobView {

@@ -34,7 +34,36 @@ export const STATE_LABELS: Record<string, string> = {
   WAITING_SETTLEMENT: "WAITING SETTLEMENT",
   SETTLED: "SETTLED",
   SETTLEMENT_FAILED: "SETTLEMENT FAILED",
+  CALENDAR_UNCORROBORATED: "DATE NOT CORROBORATED",
+  DUPLICATE_LISTING: "DUPLICATE LISTING",
 };
+
+// States deliberately outside V4 coverage: none is a failure.
+export const OUT_OF_SCOPE_STATES = new Set(["BUSINESS_INELIGIBLE", "CALENDAR_UNCORROBORATED", "DUPLICATE_LISTING"]);
+
+// A decision-window qualifier, so "waiting for a future window" and "window
+// missed" can never be confused. Only states that are still about the
+// decision (not an entry or settlement) carry one.
+const WINDOW_QUALIFIED = new Set([
+  "CALENDAR_DISCOVERED",
+  "COMPANY_RESOLUTION_FAILED",
+  "RESEARCH_QUEUED",
+  "RESEARCH_RUNNING",
+  "RESEARCH_READY",
+  "RESEARCH_FAILED",
+  "RESEARCH_NOT_READY",
+  "WAITING_DECISION",
+  "DECISION_WINDOW_MISSED",
+  "DECISION_FAILED",
+  "DEADLINE_SKIPPED",
+]);
+
+export function windowQualifier(state: string, windowStatus: string | undefined): string | null {
+  if (!windowStatus || !WINDOW_QUALIFIED.has(state)) return null;
+  if (windowStatus === "PASSED") return "window missed";
+  if (windowStatus === "OPEN") return "window open";
+  return "window ahead";
+}
 
 export function stateLabel(state: string): string {
   return STATE_LABELS[state] ?? state.replace(/_/g, " ");

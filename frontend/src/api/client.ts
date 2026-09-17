@@ -160,10 +160,16 @@ export const api = {
   // summary at the same moment, and a navigation must never fire duplicates.
   getOperationsSummary: () =>
     cachedStatus("operations/summary", STATUS_TTL_MS, () => request<OperationsSummary>("/operations/summary")),
-  getOperationsEvents: (opts: RequestOptions & { includePast?: boolean } = {}) =>
-    request<OperationsEvents>(`/operations/events${opts.includePast ? "?include_past=true" : ""}`, {
+  getOperationsEvents: (opts: RequestOptions & { includePast?: boolean; start?: string; end?: string } = {}) => {
+    const params = new URLSearchParams();
+    if (opts.includePast) params.set("include_past", "true");
+    if (opts.start) params.set("start", opts.start);
+    if (opts.end) params.set("end", opts.end);
+    const query = params.toString();
+    return request<OperationsEvents>(`/operations/events${query ? `?${query}` : ""}`, {
       signal: opts.signal,
-    }),
+    });
+  },
   getOperationsJobs: (opts: RequestOptions = {}) =>
     request<OperationsJobs>("/operations/jobs", { signal: opts.signal }),
   getOperationsFailures: (opts: RequestOptions = {}) =>

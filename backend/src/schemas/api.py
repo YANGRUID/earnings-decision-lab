@@ -1026,6 +1026,21 @@ class IbkrHealthResponse(BaseModel):
     provider: str
 
 
+class CalendarProviderUsageResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    provider: str
+    requests_today: int
+    requests_this_month: int
+    daily_limit: int
+    monthly_limit: int
+    daily_remaining: int
+    monthly_remaining: int
+    quota_state: str
+    last_success_at: datetime | None
+    last_refusal_at: datetime | None
+
+
 class EarningsCalendarHealthResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -1036,6 +1051,7 @@ class EarningsCalendarHealthResponse(BaseModel):
     events_received: int | None
     last_error: str | None
     next_scheduled_sync_at: datetime | None
+    primary_usage: CalendarProviderUsageResponse | None = None
 
 
 class AiProviderHealthResponse(BaseModel):
@@ -1259,6 +1275,8 @@ class V4PipelineEventResponse(BaseModel):
     settlements_settled: int
     settlements_failed: int
     timeline: list[TimelineStepResponse]
+    #: AHEAD | OPEN | PASSED -- the decision window relative to now.
+    window_status: str = "AHEAD"
 
 
 class ResearchReadinessResponse(BaseModel):

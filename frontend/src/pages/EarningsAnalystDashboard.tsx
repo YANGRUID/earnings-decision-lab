@@ -8,7 +8,7 @@ import { EarningsCalendarGrid } from "../components/EarningsCalendarGrid";
 import { DashboardV4Header } from "../components/v4/DashboardV4Header";
 import { TickerSearchBar } from "../components/TickerSearchBar";
 import { fmtMarketCap } from "../components/v4/shared";
-import { countdown, formatEt, stateLabel } from "../lib/operationsFormat";
+import { OUT_OF_SCOPE_STATES, countdown, formatEt, stateLabel } from "../lib/operationsFormat";
 import type { PipelineEvent } from "../types/api";
 
 // Dashboard -- V4-only reset (2026-09-02). The header reads today's window,
@@ -26,6 +26,8 @@ const PILL: Record<string, string> = {
   CALENDAR_DISCOVERED: "neutral",
   BUSINESS_INELIGIBLE: "neutral",
   NO_ACTION: "neutral",
+  CALENDAR_UNCORROBORATED: "neutral",
+  DUPLICATE_LISTING: "neutral",
 };
 
 function pillFor(state: string): string {
@@ -35,7 +37,7 @@ function pillFor(state: string): string {
 
 function UpcomingPipelineSection() {
   const events = useAsync((signal) => api.getOperationsEvents({ signal }), []);
-  const rows = (events.data?.events ?? []).filter((e) => e.lifecycle_state !== "BUSINESS_INELIGIBLE");
+  const rows = (events.data?.events ?? []).filter((e) => !OUT_OF_SCOPE_STATES.has(e.lifecycle_state));
   const controls = useListControls<PipelineEvent>({
     rows,
     urlKey: "dash",

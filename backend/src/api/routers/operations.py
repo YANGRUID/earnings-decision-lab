@@ -3,6 +3,8 @@ reset, 2026-09-02). See services/operations.py. No mutation endpoint of any
 kind; the dev-only /admin/* triggers remain the only manual controls.
 """
 
+from datetime import date
+
 from fastapi import APIRouter
 
 from api.deps import DbSession, Scheduler, TwsHealthProbeDep, TwsProviderDep
@@ -68,11 +70,17 @@ def get_operations_summary(
 
 
 @router.get("/events", response_model=OperationsEventsResponse)
-def get_operations_events(db: DbSession, include_past: bool = False) -> OperationsEventsResponse:
+def get_operations_events(
+    db: DbSession,
+    include_past: bool = False,
+    start: date | None = None,
+    end: date | None = None,
+) -> OperationsEventsResponse:
     """The V4 pipeline. By default forward-only: windows still open or ahead
     plus every event with real V4 evidence; ``include_past=true`` returns the
-    complete monitoring view."""
-    pipeline = get_v4_pipeline(db, us_listing=default_us_listing())
+    complete monitoring view. ``start``/``end`` (earnings dates, at most 62
+    days apart) select the calendar month a day table is showing."""
+    pipeline = get_v4_pipeline(db, us_listing=default_us_listing(), start=start, end=end)
     if not include_past:
         pipeline = forward_pipeline(pipeline)
     return OperationsEventsResponse(events=pipeline)  # type: ignore[arg-type]

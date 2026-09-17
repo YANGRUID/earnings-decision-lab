@@ -39,6 +39,9 @@ function emojiStatus(ibkr: IbkrStatus): { emoji: string; label: string } {
 function twsState(tws: TwsStatus): { label: string; tone: "positive" | "negative" | "neutral" | "warning" } {
   if (tws.reconnect_state === "reconnecting") return { label: "Reconnecting", tone: "warning" };
   if (tws.status_label === "CONNECTED") return { label: "Ready", tone: "positive" };
+  // The API socket answers but IB Gateway itself has lost IBKR (error 1100):
+  // every request times out until someone logs in again in its window.
+  if (tws.status_label === "UPSTREAM_DISCONNECTED") return { label: "IBKR connection lost — log in to IB Gateway", tone: "negative" };
   if (tws.status_label === "AUTH_REQUIRED") return { label: "Authentication required", tone: "negative" };
   if (tws.reconnect_state === "failed") return { label: "Failed", tone: "negative" };
   return { label: "Disconnected", tone: "negative" };

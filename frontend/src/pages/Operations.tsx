@@ -7,7 +7,7 @@ import { ListToolbar, PageOutline, Pager } from "../components/ListControls";
 import { useListControls } from "../hooks/useListControls";
 import { invalidateStatus } from "../lib/statusCache";
 import { providerLabel } from "../lib/format";
-import { JOB_LABELS, STAGE_LABELS, countdown, formatDateTime, formatEt, stateLabel } from "../lib/operationsFormat";
+import { JOB_LABELS, STAGE_LABELS, countdown, formatDateTime, formatEt, stateLabel, windowQualifier } from "../lib/operationsFormat";
 import type {
   AiProviderHealth,
   FailureEntry,
@@ -70,6 +70,8 @@ const STATE_PILL: Record<string, string> = {
   WAITING_SETTLEMENT: "warning",
   SETTLED: "positive",
   SETTLEMENT_FAILED: "negative",
+  CALENDAR_UNCORROBORATED: "neutral",
+  DUPLICATE_LISTING: "neutral",
 };
 
 function usePolling(reloads: Array<() => void>) {
@@ -271,6 +273,15 @@ function ibkrDetail(h: SystemHealth["ibkr"]): string {
   return `${transport} · ${h.market_data_quality ?? "quality unknown"}`;
 }
 
+// The primary calendar provider's allowance, from this deployment's own usage
+// rows. The free plan ran out on 2026-09-13 and nothing on this page said so.
+function calendarUsageDetail(calendar: SystemHealth["earnings_calendar"]): string {
+  const u = calendar.primary_usage;
+  if (!u) return "";
+  const state = u.quota_state === "OK" ? "" : ` · ${u.quota_state.toLowerCase().replace(/_/g, " ")}`;
+  return ` · ${providerLabel(u.provider)} ${u.requests_today}/${u.daily_limit} today, ${u.requests_this_month}/${u.monthly_limit} this month${state}`;
+}
+
 function aiDetail(ai: AiProviderHealth): string {
   const base = providerLabel(ai.provider);
   if (!ai.configured) return `${base} · not configured`;
@@ -282,7 +293,7 @@ function SystemHealthSection({ health }: { health: SystemHealth }) {
   const v4 = health.v4_shadow;
   const rows: { label: string; state: HealthState | string; detail: string; sub: string | null }[] = [
     { label: "IBKR market data", state: health.ibkr.state, detail: ibkrDetail(health.ibkr), sub: health.ibkr.last_error ?? (health.ibkr.last_heartbeat_at ? `heartbeat ${formatDateTime(health.ibkr.last_heartbeat_at)}` : null) },
-    { label: "Earnings calendar", state: health.earnings_calendar.state, detail: `${providerLabel(health.earnings_calendar.active_provider)} · ${health.earnings_calendar.events_received} events`, sub: health.earnings_calendar.last_error ?? `last sync ${formatDateTime(health.earnings_calendar.last_successful_sync_at)} · next ${formatDateTime(health.earnings_calendar.next_scheduled_sync_at)}` },
+    { label: "Earnings calendar", state: health.earnings_calendar.state, detail: `${providerLabel(health.earnings_calendar.active_provider)} · ${health.earnings_calendar.events_received} events${calendarUsageDetail(health.earnings_calendar)}`, sub: health.earnings_calendar.last_error ?? `last sync ${formatDateTime(health.earnings_calendar.last_successful_sync_at)} · next ${formatDateTime(health.earnings_calendar.next_scheduled_sync_at)}` },
     { label: "AI provider", state: health.ai_provider.state, detail: aiDetail(health.ai_provider), sub: health.ai_provider.last_error ?? (health.ai_provider.last_successful_generation_at ? `last generation ${formatDateTime(health.ai_provider.last_successful_generation_at)}` : null) },
     { label: "Scheduler", state: health.scheduler.state, detail: health.scheduler.running ? `running · ${health.scheduler.registered_job_count} jobs` : "NOT RUNNING", sub: `last activity ${formatDateTime(health.scheduler.last_activity_at)} · next ${formatDateTime(health.scheduler.next_activity_at)}` },
     { label: "Database", state: health.database.state, detail: health.database.database_healthy ? "healthy" : "unhealthy", sub: health.database.migration_head ? `migration ${health.database.migration_head}` : null },
@@ -382,7 +393,12 @@ function PipelineRow({ event, now }: { event: PipelineEvent; now: string }) {
         <td>
           {new Date(`${event.earnings_date}T00:00:00`).toLocaleDateString(undefined, { month: "short", day: "numeric" })} {TIMING_LABELS[event.earnings_timing] ?? event.earnings_timing}
         </td>
-        <td><span className={`pill pill-${pillClass}`}>{stateLabel(event.lifecycle_state)}</span></td>
+        <td>
+          <span className={`pill pill-${pillClass}`}>{stateLabel(event.lifecycle_state)}</span>
+          {windowQualifier(event.lifecycle_state, event.window_status) && (
+            <div className="text-sm text-faint" data-testid="window-qualifier">{windowQualifier(event.lifecycle_state, event.window_status)}</div>
+          )}
+        </td>
         <td className="text-sm">{event.research_ready ? <span className="pill pill-positive">ready</span> : <span className="pill pill-neutral">not ready</span>}</td>
         <td className="text-sm text-muted">{event.lifecycle_reason ?? "—"}</td>
         <td className="text-sm">

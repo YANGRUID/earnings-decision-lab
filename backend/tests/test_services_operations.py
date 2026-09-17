@@ -5,7 +5,7 @@ test seeds the exact rows that produce the state and asserts the state,
 the reason and the next action together.
 """
 
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
@@ -528,3 +528,159 @@ class TestListingRuleInThePipeline:
         # Without a lookup the domicile rule stands (deterministic, no network).
         old = {p.symbol: p for p in get_v4_pipeline(db_session, now=NOW)}
         assert old["LULU"].lifecycle_state == "BUSINESS_INELIGIBLE"
+
+
+class TestWhyAnEventWasNotDecided:
+    """2026-09-17 audit: every miss read "RESEARCH NOT READY -- no Company row",
+    whatever the real cause, and a decided event older than two days read
+    "outside the V4 window" in the calendar."""
+
+    LATER = datetime(2026, 9, 9, 16, 0, tzinfo=ET)
+
+    def _not_ready_event(self, db, symbol, **kwargs):
+        from models.v4_shadow import V4ShadowRunEvent
+
+        row = _event(db, symbol, **kwargs)
+        db.add(
+            V4ShadowRunEvent(
+                earnings_calendar_event_id=row.id,
+                ticker=symbol,
+                occurred_at=self.LATER - timedelta(minutes=25),
+                stage="research_gate",
+                category="RESEARCH_NOT_READY",
+                retryable=True,
+                message="no AI thesis has been prepared for this company",
+            )
+        )
+        db.flush()
+        return row
+
+    def test_a_truncated_thesis_is_named(self, db_session):
+        row = self._not_ready_event(db_session, "TRUNC")
+        _company(db_session, "TRUNC")
+        db_session.add(
+            ResearchPreparationJob(
+                ticker="TRUNC",
+                earnings_calendar_event_id=row.id,
+                status=JobStatus.COMPLETED_WITH_WARNINGS,
+                steps=[
+                    {
+                        "step": "ai_thesis",
+                        "status": "failed",
+                        "detail": "thesis generation failed: finish_reason=length",
+                    }
+                ],
+                started_at=NOW - timedelta(days=3),
+                attempt_count=1,
+            )
+        )
+        db_session.flush()
+
+        result = classify_event(db_session, row, self.LATER)
+        assert result.lifecycle_state == STATE_RESEARCH_NOT_READY
+        assert result.window_status == "PASSED"
+        assert "window missed" in result.lifecycle_reason
+        assert "finish_reason=length" in result.lifecycle_reason
+
+    def test_an_event_never_queued_because_its_calendar_row_was_skipped_is_named(self, db_session):
+        from models.v4_shadow import V4ShadowRunEvent
+
+        row = _event(db_session, "SKIPD")
+        row.status = "SKIPPED"
+        row.vanished_by = "finnhub"
+        db_session.add(
+            V4ShadowRunEvent(
+                earnings_calendar_event_id=row.id,
+                ticker="SKIPD",
+                occurred_at=self.LATER - timedelta(minutes=25),
+                stage="research_gate",
+                category="RESEARCH_NOT_READY",
+                retryable=True,
+                message="no Company row exists for this calendar event yet",
+            )
+        )
+        db_session.flush()
+
+        # The pre-fix gate recorded RESEARCH_NOT_READY; today the calendar gate
+        # would refuse it outright. The read model names the calendar either way.
+        result = classify_event(db_session, row, self.LATER)
+        assert result.lifecycle_state == "CALENDAR_UNCORROBORATED"
+        assert "finnhub" in result.lifecycle_reason
+
+    def test_a_future_window_is_ahead_not_missed(self, db_session):
+        row = _event(db_session, "AHEADX", earnings_date=date(2026, 9, 10))
+        result = classify_event(db_session, row, NOW)
+        assert result.window_status == "AHEAD"
+
+    def test_a_share_class_duplicate_is_its_own_state(self, db_session):
+        _event(db_session, "DUPX")
+        klass = _event(db_session, "DUPX.B")
+        result = classify_event(db_session, klass, NOW)
+        assert result.lifecycle_state == "DUPLICATE_LISTING"
+        assert "DUPX" in result.lifecycle_reason
+
+    def test_an_explicit_range_reaches_a_decided_event_older_than_two_days(self, db_session):
+        old = _event(db_session, "OLDKR", earnings_date=date(2026, 9, 1))
+        default = {p.symbol for p in get_v4_pipeline(db_session, now=NOW)}
+        ranged = {
+            p.symbol
+            for p in get_v4_pipeline(
+                db_session, now=NOW, start=date(2026, 9, 1), end=date(2026, 9, 30)
+            )
+        }
+        assert old.symbol not in default
+        assert old.symbol in ranged
+
+
+class TestCalendarProviderUsage:
+    """Proven 2026-09-13 .. 09-17: EarningsAPI's monthly allowance was spent,
+    the calendar ran on Finnhub alone, and nothing on Operations said so."""
+
+    NOW = datetime(2031, 5, 20, 12, 0, tzinfo=UTC)
+
+    def _usage(self, db, *, at, success, status_code=None, units=None):
+        from models.provider_usage_event import ProviderUsageEvent
+
+        db.add(
+            ProviderUsageEvent(
+                provider="earningsapi",
+                domain="earnings_calendar",
+                operation="get_earnings_calendar",
+                occurred_at=at,
+                success=success,
+                latency_ms=10,
+                status_code=status_code,
+                rate_limited=not success,
+                provider_units=units,
+            )
+        )
+        db.flush()
+
+    def test_requests_are_counted_per_date_and_a_spent_month_is_named(self, db_session):
+        from services.operations import get_calendar_provider_usage
+
+        self._usage(db_session, at=self.NOW - timedelta(hours=3), success=True, units=8)
+        self._usage(
+            db_session,
+            at=self.NOW - timedelta(hours=1),
+            success=False,
+            status_code="FREE_QUOTA_EXCEEDED",
+        )
+
+        usage = get_calendar_provider_usage(db_session, now=self.NOW)
+        assert usage.requests_today == 9
+        assert usage.daily_remaining == 91
+        assert usage.quota_state == "MONTHLY_EXHAUSTED"
+
+    def test_a_later_success_clears_the_exhausted_state(self, db_session):
+        from services.operations import get_calendar_provider_usage
+
+        self._usage(
+            db_session,
+            at=self.NOW - timedelta(hours=5),
+            success=False,
+            status_code="DAILY_QUOTA_EXCEEDED",
+        )
+        self._usage(db_session, at=self.NOW - timedelta(hours=1), success=True)
+
+        assert get_calendar_provider_usage(db_session, now=self.NOW).quota_state == "OK"

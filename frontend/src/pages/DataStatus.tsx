@@ -96,7 +96,9 @@ export function DataStatus() {
                     ? "ready"
                     : tws.status_label === "AUTH_REQUIRED"
                       ? "authentication required"
-                      : "unreachable"}
+                      : tws.status_label === "UPSTREAM_DISCONNECTED"
+                        ? "IBKR connection lost"
+                        : "unreachable"}
                 </span>
               </div>
               <div className="stat">
