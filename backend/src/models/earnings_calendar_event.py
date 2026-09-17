@@ -16,10 +16,10 @@ directly, exactly like decision_snapshot's own precedent, since a
 Finnhub-discovered symbol may have no ``company`` row at all yet.
 """
 
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 
-from sqlalchemy import Date, Enum, Numeric, String, UniqueConstraint
+from sqlalchemy import Date, DateTime, Enum, Numeric, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from db.base import Base
@@ -76,6 +76,22 @@ class EarningsCalendarEvent(TimestampMixin, Base):
         default=EarningsCalendarEventStatus.UPCOMING,
         index=True,
     )
+
+    # Corroboration provenance (2026-09-17). Provider names match
+    # providers/factory.py::KNOWN_EARNINGS_CALENDAR_PROVIDERS, whose order is
+    # also their authority: a less authoritative provider never overrules a
+    # more authoritative one's confirmation. See services/earnings_calendar_
+    # sync.py for the rules and migration a4c6e8b0d2f4 for the incident.
+    last_confirmed_by: Mapped[str | None] = mapped_column(String(32))
+    last_confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    vanished_by: Mapped[str | None] = mapped_column(String(32))
+    vanished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: When name/market cap/country were last fetched from a profile endpoint.
+    profile_refreshed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: Operator-verified date and timing. Provider data never changes a
+    #: verified row's date, timing or status; a disagreement is a conflict.
+    verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    verification_note: Mapped[str | None] = mapped_column(Text)
 
     def __repr__(self) -> str:
         return (

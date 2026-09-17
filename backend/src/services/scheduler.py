@@ -300,15 +300,19 @@ def run_earnings_calendar_sync_job(from_date: date | None = None) -> None:
             return
         result = sync_earnings_calendar(db, provider, from_date=from_date)
         db.commit()
-        actual_provider = getattr(provider, "last_actual_provider", None)
         log.info(
-            "earnings calendar sync job complete: provider=%s events_fetched=%d "
-            "created=%d updated=%d stale_marked=%d synced_at=%s",
-            actual_provider or "unknown",
+            "earnings calendar sync job complete: answered_by=%s events_fetched=%d "
+            "created=%d updated=%d vanished=%d restored=%d conflicts=%d stale_marked=%d "
+            "exhausted=%s synced_at=%s",
+            result.dates_answered_by,
             result.fetched,
             result.created,
             result.updated,
+            len(result.vanished),
+            len(result.restored),
+            len(result.conflicts),
             result.stale_marked,
+            result.exhausted_providers,
             datetime.now(UTC).isoformat(),
         )
         finish_scheduler_run(

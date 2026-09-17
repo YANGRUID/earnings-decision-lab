@@ -580,3 +580,81 @@ class TestEarningsCalendarProviderChainCompanyProfile:
         )
         profile = chain.get_company_profile("ZZUNKNOWN")
         assert profile is None
+
+
+class _QuotaExhaustedError(Exception):
+    def __init__(self) -> None:
+        super().__init__("Free quota exceeded")
+        self.quota_exhausted = "FREE_QUOTA_EXCEEDED"
+
+
+class _CountingQuotaProvider(EarningsCalendarProvider):
+    """Refuses every request with a spent-allowance error and counts them."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def get_earnings_calendar(self, from_date, to_date):
+        self.calls += 1
+        raise _QuotaExhaustedError()
+
+    def get_company_profile(self, symbol):
+        self.calls += 1
+        raise _QuotaExhaustedError()
+
+
+class TestEarningsCalendarChainQuotaAndProfileOrder:
+    """Measured 2026-09-10 .. 09-17: with EarningsAPI's allowance spent, every
+    calendar date and every profile still went to it first -- ~100 refused
+    requests per nightly sync, each retried -- and profile lookups had used
+    the scarce allowance in the first place."""
+
+    def test_a_spent_provider_is_asked_once_then_skipped_for_the_run(self):
+        spent = _CountingQuotaProvider()
+        chain = EarningsCalendarProviderChain(
+            [("earningsapi", spent), ("finnhub", _WorkingCalendarProvider("finnhub"))]
+        )
+        for day in (26, 27, 28):
+            entries = chain.get_earnings_calendar(date(2026, 8, day), date(2026, 8, day))
+            assert entries[0].source_provider == "finnhub"
+        chain.get_company_profile("NVDA")
+
+        assert spent.calls == 1
+        assert chain.exhausted == {"earningsapi": "FREE_QUOTA_EXCEEDED"}
+
+    def test_profiles_can_be_looked_up_fallback_first(self):
+        primary = _CountingQuotaProvider()
+        chain = EarningsCalendarProviderChain(
+            [("earningsapi", primary), ("finnhub", _WorkingCalendarProvider("finnhub"))],
+            profile_order=["finnhub", "earningsapi"],
+        )
+        profile = chain.get_company_profile("NVDA")
+
+        assert profile is not None and profile.source_provider == "finnhub"
+        assert primary.calls == 0, "the scarce primary allowance must not be spent on a profile"
+
+    def test_a_non_usd_profile_defers_to_a_usd_one(self):
+        class _CnyProfile(_WorkingCalendarProvider):
+            def get_company_profile(self, symbol):
+                profile = _company_profile(self._source_provider)
+                return profile.model_copy(update={"currency": "CNY"})
+
+        chain = EarningsCalendarProviderChain(
+            [
+                ("earningsapi", _WorkingCalendarProvider("earningsapi")),
+                ("finnhub", _CnyProfile("finnhub")),
+            ],
+            profile_order=["finnhub", "earningsapi"],
+        )
+        profile = chain.get_company_profile("TCOM")
+
+        assert profile is not None and profile.source_provider == "earningsapi"
+
+    def test_the_default_profile_order_is_the_calendar_order(self):
+        chain = EarningsCalendarProviderChain(
+            [
+                ("earningsapi", _WorkingCalendarProvider("earningsapi")),
+                ("finnhub", _WorkingCalendarProvider("finnhub")),
+            ]
+        )
+        assert chain.get_company_profile("NVDA").source_provider == "earningsapi"

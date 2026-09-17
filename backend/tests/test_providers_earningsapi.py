@@ -134,6 +134,37 @@ class TestGetEarningsCalendar:
             provider.get_earnings_calendar(date(2026, 8, 26), date(2026, 8, 26))
         assert exc_info.value.rate_limited is True
 
+    def test_a_spent_quota_is_not_retried_and_is_named(self, httpx_mock):
+        """Live 2026-09-14: FREE_QUOTA_EXCEEDED. Retrying a spent allowance
+        only burns time (and, per request, more of the next allowance)."""
+        httpx_mock.add_response(
+            url=CALENDAR_URL_PATTERN,
+            status_code=429,
+            json={"error": "Free quota exceeded", "code": "FREE_QUOTA_EXCEEDED"},
+        )
+        provider = EarningsApiCalendarProvider(api_key="test-key")
+
+        with pytest.raises(EarningsApiError) as exc_info:
+            provider.get_earnings_calendar(date(2026, 8, 26), date(2026, 8, 26))
+        assert exc_info.value.quota_exhausted == "FREE_QUOTA_EXCEEDED"
+        assert exc_info.value.rate_limited is True
+        assert len(httpx_mock.get_requests()) == 1
+
+    def test_a_per_minute_rate_limit_is_still_retried(self, httpx_mock):
+        httpx_mock.add_response(
+            url=CALENDAR_URL_PATTERN,
+            status_code=429,
+            json={"error": "Rate limit exceeded", "code": "RATE_LIMIT_EXCEEDED"},
+        )
+        httpx_mock.add_response(
+            url=CALENDAR_URL_PATTERN,
+            json={"date": "2026-08-26", "pre": [], "after": [], "notSupplied": []},
+        )
+        provider = EarningsApiCalendarProvider(api_key="test-key")
+
+        assert provider.get_earnings_calendar(date(2026, 8, 26), date(2026, 8, 26)) == []
+        assert len(httpx_mock.get_requests()) == 2
+
     def test_raises_on_malformed_response_shape(self, httpx_mock):
         httpx_mock.add_response(url=CALENDAR_URL_PATTERN, json={"unexpected": "shape"})
         provider = EarningsApiCalendarProvider(api_key="test-key")

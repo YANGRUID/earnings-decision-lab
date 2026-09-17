@@ -17,7 +17,8 @@ allowed to break the real call it's observing.
 import logging
 import time
 from collections.abc import Iterator
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
+from decimal import Decimal
 from typing import Any, TypeVar
 
 import httpx
@@ -43,6 +44,16 @@ def _classify_exception(exc: Exception) -> tuple[str | None, bool]:
         return ("rate_limited" if exc.rate_limited else "error"), exc.rate_limited
     if isinstance(exc, IBKRRateLimitedError):
         return "429", True
+    # Calendar adapters (EarningsAPI, Finnhub) carry their verdict on the
+    # exception itself. Before this was read, every one of EarningsAPI's
+    # refusals from 2026-09-10 onward was recorded as rate_limited=False with
+    # no status, so the spent quota was invisible in the usage data.
+    quota_code = getattr(exc, "quota_exhausted", None)
+    if quota_code:
+        return str(quota_code)[:32], True
+    rate_limited = getattr(exc, "rate_limited", None)
+    if isinstance(rate_limited, bool):
+        return ("429" if rate_limited else "error"), rate_limited
     if isinstance(exc, httpx.HTTPStatusError):
         code = exc.response.status_code
         return str(code), code == 429
@@ -66,6 +77,7 @@ def record_usage_event(
     reasoning_effort: str | None = None,
     reasoning_tokens: int | None = None,
     cache_hit_tokens: int | None = None,
+    provider_units: Decimal | int | None = None,
 ) -> None:
     if db is None:
         return
@@ -87,7 +99,7 @@ def record_usage_event(
                 reasoning_effort=reasoning_effort,
                 reasoning_tokens=reasoning_tokens,
                 cache_hit_tokens=cache_hit_tokens,
-                provider_units=None,
+                provider_units=provider_units,
                 estimated_cost=None,
             )
         )
@@ -95,6 +107,18 @@ def record_usage_event(
     except Exception:
         log.warning("failed to record provider usage event", exc_info=True)
         db.rollback()
+
+
+def _request_units(operation: str, args: tuple[Any, ...]) -> int | None:
+    """Upper bound on real HTTP requests one call makes, where the adapter's
+    shape makes it knowable: EarningsAPI's calendar has no range endpoint, so a
+    ``get_earnings_calendar(from, to)`` call is one request per date. Recorded
+    so a free plan's daily/monthly allowance can be tracked from usage rows."""
+    if operation == "get_earnings_calendar" and len(args) >= 2:
+        first, last = args[0], args[1]
+        if isinstance(first, date) and isinstance(last, date) and last >= first:
+            return (last - first).days + 1
+    return None
 
 
 class _InstrumentedDataProvider:
@@ -118,6 +142,7 @@ class _InstrumentedDataProvider:
 
         def wrapped(*args: Any, **kwargs: Any) -> Any:
             start = time.monotonic()
+            units = _request_units(item, args)
             try:
                 result = attr(*args, **kwargs)
             except Exception as exc:
@@ -131,6 +156,7 @@ class _InstrumentedDataProvider:
                     latency_ms=int((time.monotonic() - start) * 1000),
                     status_code=status_code,
                     rate_limited=rate_limited,
+                    provider_units=units,
                 )
                 raise
             record_usage_event(
@@ -140,6 +166,7 @@ class _InstrumentedDataProvider:
                 operation=item,
                 success=True,
                 latency_ms=int((time.monotonic() - start) * 1000),
+                provider_units=units,
             )
             return result
 

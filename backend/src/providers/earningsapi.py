@@ -63,17 +63,44 @@ _BASE_URL = "https://api.earningsapi.com/v1"
 _COUNTRY_NAME_TO_ISO = {"united states": "US"}
 
 
+#: 429 bodies that mean the plan's allowance is spent, as opposed to the
+#: per-minute RATE_LIMIT_EXCEEDED, which clears on its own. Confirmed live:
+#: DAILY_QUOTA_EXCEEDED ("the daily limit (100 requests) for the Free plan",
+#: 2026-09-10) and FREE_QUOTA_EXCEEDED ("the Free plan limit for this month",
+#: from 2026-09-14 onward).
+QUOTA_EXHAUSTED_CODES = frozenset({"DAILY_QUOTA_EXCEEDED", "FREE_QUOTA_EXCEEDED"})
+
+
+def quota_code(response: httpx.Response) -> str | None:
+    """The EarningsAPI error ``code`` when the body names an exhausted
+    allowance, else None. Never raises on an unexpected body."""
+    try:
+        payload = response.json()
+    except ValueError:
+        return None
+    code = payload.get("code") if isinstance(payload, dict) else None
+    return code if code in QUOTA_EXHAUSTED_CODES else None
+
+
 class EarningsApiError(Exception):
-    def __init__(self, message: str, *, rate_limited: bool = False) -> None:
+    def __init__(
+        self, message: str, *, rate_limited: bool = False, quota_exhausted: str | None = None
+    ) -> None:
         super().__init__(message)
         self.rate_limited = rate_limited
+        #: The exhausted allowance's code (see QUOTA_EXHAUSTED_CODES), or None.
+        #: A spent quota is not retryable within a run: every further request
+        #: is refused and, before this existed, each was retried three times.
+        self.quota_exhausted = quota_exhausted
 
 
 def _retryable(exc: BaseException) -> bool:
     if isinstance(exc, httpx.TransportError):
         return True
     if isinstance(exc, httpx.HTTPStatusError):
-        return exc.response.status_code == 429 or exc.response.status_code >= 500
+        if exc.response.status_code == 429:
+            return quota_code(exc.response) is None
+        return exc.response.status_code >= 500
     return False
 
 
@@ -131,6 +158,7 @@ class EarningsApiCalendarProvider(EarningsCalendarProvider):
                 f"EarningsAPI /calendar/earnings request failed ({exc.response.status_code}) "
                 f"for {day.isoformat()}: {exc.response.text[:200]!r}",
                 rate_limited=exc.response.status_code == 429,
+                quota_exhausted=quota_code(exc.response),
             ) from exc
         payload = response.json()
         if not isinstance(payload, dict) or "pre" not in payload:
@@ -199,6 +227,7 @@ class EarningsApiCalendarProvider(EarningsCalendarProvider):
                 f"EarningsAPI /profile/{symbol.upper()} request failed "
                 f"({exc.response.status_code}): {exc.response.text[:200]!r}",
                 rate_limited=exc.response.status_code == 429,
+                quota_exhausted=quota_code(exc.response),
             ) from exc
         payload = response.json()
         if not payload or not payload.get("companyName"):

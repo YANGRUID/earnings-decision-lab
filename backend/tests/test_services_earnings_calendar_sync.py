@@ -33,12 +33,17 @@ class _FakeCalendarProvider(EarningsCalendarProvider):
         self,
         entries: list[FinnhubCalendarEntry],
         profiles: dict[str, FinnhubCompanyProfile],
+        name: str = "finnhub",
     ) -> None:
         self._entries = entries
         self._profiles = profiles
         #: Every date the sync actually asked about -- the evidence that a
         #: near date is revalidated rather than assumed covered.
         self.requested_dates: set[date] = set()
+        #: The provider this fake stands in for; the sync attributes each
+        #: answered date to it, exactly as it does with the real chain.
+        self.last_actual_provider = name
+        self.profile_calls: list[str] = []
 
     def get_earnings_calendar(self, from_date: date, to_date: date) -> list[FinnhubCalendarEntry]:
         # Filters by the requested range, matching what a real provider
@@ -55,6 +60,7 @@ class _FakeCalendarProvider(EarningsCalendarProvider):
         return [e for e in self._entries if from_date <= e.earnings_date <= to_date]
 
     def get_company_profile(self, symbol: str) -> FinnhubCompanyProfile | None:
+        self.profile_calls.append(symbol)
         return self._profiles.get(symbol)
 
 
@@ -356,38 +362,336 @@ def test_sync_records_which_provider_actually_supplied_each_event(db_session):
     """source= is set explicitly from entry.source_provider on both the
     create and update paths -- never left to the column default, so the
     dashboard/system-status can honestly report which provider (primary
-    EarningsAPI.com or fallback Finnhub) supplied each real row."""
+    EarningsAPI.com or fallback Finnhub) supplied each real row -- and the
+    confirming provider is recorded alongside it."""
     provider = _FakeCalendarProvider(
         [_entry(symbol="TESTAPI", source_provider="earningsapi")],
         {"TESTAPI": _profile(symbol="TESTAPI", source_provider="earningsapi")},
+        name="earningsapi",
     )
     sync_earnings_calendar(db_session, provider, today=date(2030, 1, 1))
     db_session.flush()
 
     row = db_session.query(EarningsCalendarEvent).filter_by(symbol="TESTAPI").one()
     assert row.source == EarningsSource.EARNINGSAPI
+    assert row.last_confirmed_by == "earningsapi"
 
-    # A later run where the same symbol's date moves to a not-yet-covered
-    # day, now supplied by the Finnhub fallback, updates source= via the
-    # date-correction path (_find_existing_row's "single UPCOMING row for
-    # this symbol" match). This is the only real path source= can change
-    # on an update under the per-date dedup design: an *unchanged* date
-    # is never re-fetched at all (see test_sync_upsert_does_not_
-    # duplicate_unchanged_event), so a same-date provider swap can't be
-    # observed through a second sync call the way it could before dedup.
-    fallback_provider = _FakeCalendarProvider(
-        [_entry(symbol="TESTAPI", earnings_date=date(2030, 1, 6), source_provider="finnhub")],
-        {"TESTAPI": _profile(symbol="TESTAPI", source_provider="finnhub")},
+    # The primary itself moves the date: an authoritative correction, applied.
+    primary_again = _FakeCalendarProvider(
+        [_entry(symbol="TESTAPI", earnings_date=date(2030, 1, 6), source_provider="earningsapi")],
+        {},
+        name="earningsapi",
     )
-    result2 = sync_earnings_calendar(db_session, fallback_provider, today=date(2030, 1, 1))
+    result2 = sync_earnings_calendar(db_session, primary_again, today=date(2030, 1, 1))
     db_session.flush()
 
     db_session.expire_all()
     assert result2.date_corrected == 1
-    assert result2.updated == 1
     row2 = db_session.query(EarningsCalendarEvent).filter_by(symbol="TESTAPI").one()
-    assert row2.source == EarningsSource.FINNHUB
+    assert row2.source == EarningsSource.EARNINGSAPI
     assert row2.earnings_date == date(2030, 1, 6)
+
+
+class TestProviderAuthority:
+    """The 2026-09-09 .. 09-16 incident, as regression tests.
+
+    EarningsAPI's quota ran out; the sync fell back to Finnhub for the
+    near-event dates; every event Finnhub simply did not list (KR, TCOM and
+    LEN.B among 65) was marked SKIPPED, and research preparation -- which only
+    considers UPCOMING events -- never prepared them. The next night EarningsAPI
+    answered and SKIPPED 40 Finnhub-only rows the same way. A provider's
+    silence is only evidence when that provider is at least as authoritative as
+    the one whose confirmation it contradicts.
+    """
+
+    TODAY = date(2030, 6, 1)
+
+    def _sync(self, db, entries, name, profiles=None, today=None):
+        provider = _FakeCalendarProvider(entries, profiles or {}, name=name)
+        result = sync_earnings_calendar(db, provider, today=today or self.TODAY)
+        db.flush()
+        return result, provider
+
+    def _row(self, db, symbol):
+        db.expire_all()
+        return db.query(EarningsCalendarEvent).filter_by(symbol=symbol).one()
+
+    def test_a_fallback_answer_never_vanishes_a_primary_confirmed_event(self, db_session):
+        day = self.TODAY + timedelta(days=2)
+        self._sync(
+            db_session, [_entry("AKR", day, "bmo", source_provider="earningsapi")], "earningsapi"
+        )
+
+        # The fallback answers for that date and does not list it (it covers a
+        # different universe of companies).
+        result, _ = self._sync(db_session, [], "finnhub")
+
+        assert self._row(db_session, "AKR").status == EarningsCalendarEventStatus.UPCOMING
+        assert result.vanished == []
+
+    def test_the_primary_answer_does_vanish_a_fallback_only_event(self, db_session):
+        day = self.TODAY + timedelta(days=3)
+        self._sync(db_session, [_entry("AGIS", day, "")], "finnhub")
+
+        result, _ = self._sync(db_session, [], "earningsapi")
+
+        row = self._row(db_session, "AGIS")
+        assert row.status == EarningsCalendarEventStatus.SKIPPED
+        assert row.vanished_by == "earningsapi" and row.vanished_at is not None
+        assert f"AGIS@{day.isoformat()}" in result.vanished
+
+    def test_an_exact_relisting_restores_a_vanished_event(self, db_session):
+        """Before this fix an exact match never touched status, so a falsely
+        vanished event stayed SKIPPED even when its own provider listed it
+        again -- KR stayed SKIPPED for good."""
+        day = self.TODAY + timedelta(days=2)
+        self._sync(db_session, [_entry("ARST", day, "amc")], "finnhub")
+        self._sync(db_session, [], "finnhub")
+        assert self._row(db_session, "ARST").status == EarningsCalendarEventStatus.SKIPPED
+
+        result, _ = self._sync(db_session, [_entry("ARST", day, "amc")], "finnhub")
+
+        row = self._row(db_session, "ARST")
+        assert row.status == EarningsCalendarEventStatus.UPCOMING
+        assert row.vanished_by is None
+        assert f"ARST@{day.isoformat()}" in result.restored
+
+    def test_a_fallback_cannot_restore_what_the_primary_vanished(self, db_session):
+        day = self.TODAY + timedelta(days=2)
+        self._sync(db_session, [_entry("APH", day, "")], "finnhub")
+        self._sync(db_session, [], "earningsapi")  # the primary: not on this date
+
+        # The fallback keeps listing its placeholder.
+        result, _ = self._sync(db_session, [_entry("APH", day, "")], "finnhub")
+
+        assert self._row(db_session, "APH").status == EarningsCalendarEventStatus.SKIPPED
+        assert result.restored == []
+
+    def test_a_fallback_cannot_move_a_primary_confirmed_date(self, db_session):
+        confirmed = self.TODAY + timedelta(days=2)
+        self._sync(
+            db_session,
+            [_entry("AMOV", confirmed, "bmo", source_provider="earningsapi")],
+            "earningsapi",
+        )
+
+        other = self.TODAY + timedelta(days=5)
+        result, _ = self._sync(db_session, [_entry("AMOV", other, "bmo")], "finnhub")
+
+        rows = db_session.query(EarningsCalendarEvent).filter_by(symbol="AMOV").all()
+        assert len(rows) == 1, "a conflicting fallback date must not create a second event"
+        assert rows[0].earnings_date == confirmed
+        assert result.date_corrected == 0
+        assert any(c.startswith(f"AMOV@{other.isoformat()}") for c in result.conflicts)
+
+    def test_the_primary_can_move_a_fallback_confirmed_date(self, db_session):
+        placeholder = self.TODAY + timedelta(days=2)
+        self._sync(db_session, [_entry("AFIX", placeholder, "")], "finnhub")
+
+        real = self.TODAY + timedelta(days=6)
+        result, _ = self._sync(
+            db_session, [_entry("AFIX", real, "bmo", source_provider="earningsapi")], "earningsapi"
+        )
+
+        row = self._row(db_session, "AFIX")
+        assert row.earnings_date == real
+        assert row.earnings_time == EarningsTiming.BMO
+        assert row.last_confirmed_by == "earningsapi"
+        assert result.date_corrected == 1
+
+    def test_a_fallback_cannot_flip_a_primary_confirmed_timing(self, db_session):
+        """Timing decides the decision window: a BMO report entered as AMC is
+        decided after its own release."""
+        day = self.TODAY + timedelta(days=2)
+        self._sync(
+            db_session, [_entry("ATIM", day, "bmo", source_provider="earningsapi")], "earningsapi"
+        )
+
+        result, _ = self._sync(db_session, [_entry("ATIM", day, "amc")], "finnhub")
+
+        assert self._row(db_session, "ATIM").earnings_time == EarningsTiming.BMO
+        assert any(c.startswith(f"ATIM@{day.isoformat()}") for c in result.conflicts)
+
+    def test_a_passed_event_is_never_adopted_by_a_later_report(self, db_session):
+        """SKIPPED rows are not swept to COMPLETED, so before this rule the
+        first listing of KR's NEXT report would have dragged its decided and
+        settled September row forward onto the new date."""
+        past = self.TODAY - timedelta(days=20)
+        db_session.add(
+            EarningsCalendarEvent(
+                symbol="APAST",
+                company_name="Past Co",
+                earnings_date=past,
+                earnings_time=EarningsTiming.BMO,
+                status=EarningsCalendarEventStatus.SKIPPED,
+            )
+        )
+        db_session.flush()
+
+        upcoming = self.TODAY + timedelta(days=3)
+        result, _ = self._sync(db_session, [_entry("APAST", upcoming, "bmo")], "finnhub")
+
+        rows = (
+            db_session.query(EarningsCalendarEvent)
+            .filter_by(symbol="APAST")
+            .order_by(EarningsCalendarEvent.earnings_date)
+            .all()
+        )
+        assert [r.earnings_date for r in rows] == [past, upcoming]
+        assert result.date_corrected == 0 and result.created == 1
+
+    def test_an_event_with_a_frozen_decision_is_never_moved(self, db_session):
+        from models.v4_shadow import V4ShadowDecision
+
+        decided = self.TODAY + timedelta(days=1)
+        self._sync(db_session, [_entry("ADEC", decided, "bmo")], "finnhub")
+        row = self._row(db_session, "ADEC")
+        stamp = datetime(2030, 5, 31, 19, 30, tzinfo=UTC)
+        db_session.add(
+            V4ShadowDecision(
+                earnings_calendar_event_id=row.id,
+                ticker="ADEC",
+                company_name="Decided Co",
+                legal_decision_window_at=stamp,
+                generated_at=stamp,
+                as_of=stamp,
+                status="RANKED",
+                engine_version="v4-test",
+                shadow_schema_version="test",
+                candidate_count=0,
+                rankable_candidate_count=0,
+            )
+        )
+        db_session.flush()
+
+        moved = self.TODAY + timedelta(days=4)
+        result, _ = self._sync(db_session, [_entry("ADEC", moved, "bmo")], "finnhub")
+
+        rows = db_session.query(EarningsCalendarEvent).filter_by(symbol="ADEC").all()
+        assert decided in {r.earnings_date for r in rows}, (
+            "the event a frozen decision refers to must keep its date"
+        )
+        assert result.date_corrected == 0
+
+
+class TestOperatorVerification:
+    TODAY = date(2030, 7, 1)
+
+    def _verified(self, db, symbol, day, timing, status=EarningsCalendarEventStatus.UPCOMING):
+        row = EarningsCalendarEvent(
+            symbol=symbol,
+            company_name=f"{symbol} Inc",
+            earnings_date=day,
+            earnings_time=timing,
+            status=status,
+            source=EarningsSource.FINNHUB,
+            verified_at=datetime(2030, 6, 30, tzinfo=UTC),
+            verification_note="issuer press release",
+        )
+        db.add(row)
+        db.flush()
+        return row
+
+    def test_provider_data_never_changes_a_verified_date_timing_or_status(self, db_session):
+        day = self.TODAY + timedelta(days=2)
+        row = self._verified(db_session, "VACN", day, EarningsTiming.BMO)
+
+        provider = _FakeCalendarProvider(
+            [_entry("VACN", day, "amc", source_provider="earningsapi")], {}, name="earningsapi"
+        )
+        result = sync_earnings_calendar(db_session, provider, today=self.TODAY)
+        db_session.flush()
+        db_session.refresh(row)
+
+        assert row.earnings_time == EarningsTiming.BMO
+        assert any(c.startswith(f"VACN@{day.isoformat()}") for c in result.conflicts)
+
+    def test_a_listing_on_another_date_is_a_conflict_not_a_second_event(self, db_session):
+        verified_day = self.TODAY + timedelta(days=8)
+        self._verified(db_session, "VGIS", verified_day, EarningsTiming.BMO)
+
+        placeholder = self.TODAY + timedelta(days=1)
+        provider = _FakeCalendarProvider([_entry("VGIS", placeholder, "")], {}, name="earningsapi")
+        result = sync_earnings_calendar(db_session, provider, today=self.TODAY)
+        db_session.flush()
+
+        rows = db_session.query(EarningsCalendarEvent).filter_by(symbol="VGIS").all()
+        assert [r.earnings_date for r in rows] == [verified_day]
+        assert result.created == 0
+        assert any(c.startswith(f"VGIS@{placeholder.isoformat()}") for c in result.conflicts)
+
+    def test_a_verified_non_event_is_never_restored_or_vanished(self, db_session):
+        day = self.TODAY + timedelta(days=2)
+        row = self._verified(
+            db_session, "VFERG", day, EarningsTiming.UNKNOWN, EarningsCalendarEventStatus.SKIPPED
+        )
+
+        provider = _FakeCalendarProvider([_entry("VFERG", day, "")], {}, name="earningsapi")
+        result = sync_earnings_calendar(db_session, provider, today=self.TODAY)
+        db_session.flush()
+        db_session.refresh(row)
+
+        assert row.status == EarningsCalendarEventStatus.SKIPPED
+        assert result.restored == []
+
+
+class TestProfileReuse:
+    """Measured defect: every run re-fetched a profile for every listed symbol
+    (~80 EarningsAPI requests a day), spending the free plan's 1,000 monthly
+    requests by 2026-09-13."""
+
+    TODAY = date(2030, 8, 1)
+
+    def test_a_fresh_profile_is_reused_instead_of_requested(self, db_session):
+        entries = [_entry("PREUSE", self.TODAY + timedelta(days=2), "amc")]
+        first = _FakeCalendarProvider(entries, {"PREUSE": _profile("PREUSE")})
+        sync_earnings_calendar(db_session, first, today=self.TODAY)
+        db_session.flush()
+        assert first.profile_calls == ["PREUSE"]
+
+        second = _FakeCalendarProvider(entries, {"PREUSE": _profile("PREUSE")})
+        result = sync_earnings_calendar(db_session, second, today=self.TODAY)
+        db_session.flush()
+
+        assert second.profile_calls == []
+        assert result.profiles_reused == 1 and result.profiles_fetched == 0
+        row = db_session.query(EarningsCalendarEvent).filter_by(symbol="PREUSE").one()
+        assert row.market_cap == Decimal("3200000000000")
+
+    def test_a_stale_profile_is_refreshed(self, db_session):
+        entries = [_entry("PSTALE", self.TODAY + timedelta(days=2), "amc")]
+        sync_earnings_calendar(
+            db_session,
+            _FakeCalendarProvider(entries, {"PSTALE": _profile("PSTALE")}),
+            today=self.TODAY,
+            now=datetime(2030, 7, 1, tzinfo=UTC),
+        )
+        db_session.flush()
+
+        later = _FakeCalendarProvider(
+            entries, {"PSTALE": _profile("PSTALE", market_cap_millions=Decimal("12000"))}
+        )
+        sync_earnings_calendar(
+            db_session, later, today=self.TODAY, now=datetime(2030, 8, 1, tzinfo=UTC)
+        )
+        db_session.flush()
+
+        assert later.profile_calls == ["PSTALE"]
+        row = db_session.query(EarningsCalendarEvent).filter_by(symbol="PSTALE").one()
+        assert row.market_cap == Decimal("12000000000")
+
+    def test_a_profile_quoted_in_another_currency_has_no_dollar_market_cap(self, db_session):
+        """Finnhub quoted TCOM's market cap in CNY: $235.8B read as dollars."""
+        entries = [_entry("PCNY", self.TODAY + timedelta(days=2), "amc")]
+        provider = _FakeCalendarProvider(
+            entries,
+            {"PCNY": _profile("PCNY", market_cap_millions=Decimal("235800"), currency="CNY")},
+        )
+        sync_earnings_calendar(db_session, provider, today=self.TODAY)
+        db_session.flush()
+
+        row = db_session.query(EarningsCalendarEvent).filter_by(symbol="PCNY").one()
+        assert row.market_cap is None
 
 
 class TestEarningsDateCorrection:

@@ -221,18 +221,42 @@ class EarningsCalendarProviderChain(EarningsCalendarProvider):
     real exception rather than a silent empty result, so "any Exception"
     here is the correct, complete trigger set, not an approximation."""
 
-    def __init__(self, providers: list[tuple[str, EarningsCalendarProvider]]) -> None:
+    def __init__(
+        self,
+        providers: list[tuple[str, EarningsCalendarProvider]],
+        *,
+        profile_order: list[str] | None = None,
+    ) -> None:
         if not providers:
             raise ValueError("at least one provider is required")
         self._providers = providers
+        #: Profile lookups may walk the providers in a different order than
+        #: calendar lookups -- see providers/factory.py for why the scarce
+        #: primary quota is kept for calendar dates.
+        by_name = dict(providers)
+        order = [n for n in (profile_order or []) if n in by_name]
+        order += [n for n, _ in providers if n not in order]
+        self._profile_providers = [(n, by_name[n]) for n in order]
         self.last_requested_provider: str | None = None
         self.last_actual_provider: str | None = None
         self.last_fallback_reason: str | None = None
+        #: Providers whose plan allowance was spent during this chain's life,
+        #: by name -> the provider's own quota code. Skipped from then on.
+        #:
+        #: Measured defect (2026-09-10 .. 09-17): with EarningsAPI's quota
+        #: gone, every calendar date and every company profile still tried it
+        #: first, and each refusal was retried three times with backoff -- a
+        #: nightly sync took up to 455 seconds to learn the same fact ~100
+        #: times, and each attempt counted against the next day's allowance.
+        self.exhausted: dict[str, str] = {}
 
     def get_earnings_calendar(self, from_date: date, to_date: date) -> list[FinnhubCalendarEntry]:
         self.last_requested_provider = self._providers[0][0]
         errors: list[tuple[str, Exception]] = []
         for name, provider in self._providers:
+            if name in self.exhausted:
+                errors.append((name, RuntimeError(f"quota exhausted ({self.exhausted[name]})")))
+                continue
             try:
                 entries = provider.get_earnings_calendar(from_date, to_date)
                 self._record_success(name, errors)
@@ -245,6 +269,7 @@ class EarningsCalendarProviderChain(EarningsCalendarProvider):
                     to_date,
                     redact(str(exc)),
                 )
+                self._note_quota(name, exc)
                 errors.append((name, exc))
         raise AllProvidersFailedError(errors)
 
@@ -253,10 +278,19 @@ class EarningsCalendarProviderChain(EarningsCalendarProvider):
         OptionsProviderChain.get_underlying_quote above: a provider
         reporting "unknown symbol" honestly (None) doesn't mean no
         provider in the chain knows this symbol -- only that this one
-        doesn't. Returns None only once every provider has said so."""
-        self.last_requested_provider = self._providers[0][0]
+        doesn't. Returns None only once every provider has said so.
+
+        A profile quoted in a currency other than USD is held back while a
+        later provider is asked: its market cap is in the listing currency
+        (Finnhub reported TCOM's in CNY -- $235.8B read as dollars, roughly
+        nine times the real figure), and the $10B eligibility floor is a
+        dollar rule. It is returned only if no USD profile exists."""
+        self.last_requested_provider = self._profile_providers[0][0]
         errors: list[tuple[str, Exception]] = []
-        for name, provider in self._providers:
+        non_usd: tuple[str, FinnhubCompanyProfile] | None = None
+        for name, provider in self._profile_providers:
+            if name in self.exhausted:
+                continue
             try:
                 profile = provider.get_company_profile(symbol)
             except Exception as exc:  # noqa: BLE001 — same rationale as get_option_chain
@@ -266,14 +300,32 @@ class EarningsCalendarProviderChain(EarningsCalendarProvider):
                     symbol,
                     redact(str(exc)),
                 )
+                self._note_quota(name, exc)
                 errors.append((name, exc))
                 continue
             if profile is None:
                 errors.append((name, RuntimeError("no company profile available")))
                 continue
+            if profile.currency and profile.currency.upper() != "USD":
+                non_usd = non_usd or (name, profile)
+                continue
             self._record_success(name, errors)
             return profile
+        if non_usd is not None:
+            self._record_success(non_usd[0], errors)
+            return non_usd[1]
         return None
+
+    def _note_quota(self, name: str, exc: Exception) -> None:
+        code = getattr(exc, "quota_exhausted", None)
+        if code and name not in self.exhausted:
+            self.exhausted[name] = str(code)
+            log.warning(
+                "earnings calendar provider %s quota exhausted (%s); skipping it for the rest "
+                "of this run",
+                name,
+                code,
+            )
 
     def _record_success(self, name: str, prior_errors: list[tuple[str, Exception]]) -> None:
         self.last_actual_provider = name

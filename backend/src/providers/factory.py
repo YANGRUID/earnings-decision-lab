@@ -327,4 +327,24 @@ def build_earnings_calendar_provider(
 
     if not providers:
         return None
-    return EarningsCalendarProviderChain(providers)
+    # Company profiles are looked up fallback-first. EarningsAPI's free plan
+    # (100/day, 1,000/month) is the only source of its calendar answers, while
+    # a profile is not date-sensitive and Finnhub serves it without a daily
+    # cap. Measured (2026-09-09 .. 09-13): ~80 profile requests a day against
+    # ~10 calendar dates exhausted the month on 2026-09-13, after which the
+    # calendar ran on the less reliable provider alone.
+    return EarningsCalendarProviderChain(
+        providers, profile_order=list(reversed(KNOWN_EARNINGS_CALENDAR_PROVIDERS))
+    )
+
+
+def earnings_calendar_provider_rank(name: str | None) -> int:
+    """Authority of a calendar provider: lower is more authoritative. The
+    order of KNOWN_EARNINGS_CALENDAR_PROVIDERS is the primary/fallback order;
+    an unknown or missing name ranks below every known provider."""
+    if name is None:
+        return len(KNOWN_EARNINGS_CALENDAR_PROVIDERS)
+    try:
+        return KNOWN_EARNINGS_CALENDAR_PROVIDERS.index(name.lower())
+    except ValueError:
+        return len(KNOWN_EARNINGS_CALENDAR_PROVIDERS)
