@@ -1,3 +1,5 @@
+import hashlib
+
 from sqlalchemy.orm import Session
 
 from core.config import Settings
@@ -30,6 +32,23 @@ def resolve_secret(settings: Settings, provider: str, db: Session | None = None)
         if stored:
             return stored
     return EnvironmentSecretStore(settings).get(provider)
+
+
+def secret_fingerprint(secret: str | None) -> str | None:
+    """A stable, truncated, one-way digest of a key -- an identity for "which
+    credential is this?" that is not the credential.
+
+    Used to attribute provider usage rows to the key that sent them (see
+    models/provider_usage_event.py::credential_fingerprint). SHA-256 truncated
+    to 12 hex characters: enough that two keys in one deployment never collide
+    in practice, and it is not a password hash -- it is never compared against
+    user input and never gates access, so no salt or work factor applies. It
+    is also never displayed as, or alongside, a masked key: the point is to
+    tell two keys apart, not to describe either one.
+    """
+    if not secret:
+        return None
+    return hashlib.sha256(secret.encode("utf-8")).hexdigest()[:12]
 
 
 def resolve_extra(provider: str, settings: Settings, db: Session | None = None) -> dict:

@@ -59,3 +59,14 @@ class ProviderUsageEvent(Base):
     # services/usage_cost.py. Null means "cost unavailable", never a
     # fabricated number.
     estimated_cost: Mapped[Decimal | None] = mapped_column(Numeric(12, 6))
+
+    # WHICH CREDENTIAL sent this request -- a truncated one-way digest of the
+    # key (services/secret_store/resolver.py::secret_fingerprint), never the
+    # key itself and never anything a reader could authenticate with. It
+    # exists for exactly one question: after a key rotation, do the counts
+    # above belong to the key in use now? Measured defect (2026-09-17): a
+    # spent key's 126 refused requests were displayed as the freshly
+    # installed key's own usage ("126/100 today"). Null on every row written
+    # before this column existed -- an honest "this request's credential is
+    # unknown", and never read as "the current one".
+    credential_fingerprint: Mapped[str | None] = mapped_column(String(16))

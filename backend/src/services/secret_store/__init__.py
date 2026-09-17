@@ -25,6 +25,7 @@ from services.secret_store.resolver import (
     credential_status,
     resolve_extra,
     resolve_secret,
+    secret_fingerprint,
 )
 
 __all__ = [
@@ -36,4 +37,5 @@ __all__ = [
     "mask_secret",
     "resolve_extra",
     "resolve_secret",
+    "secret_fingerprint",
 ]

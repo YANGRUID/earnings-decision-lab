@@ -29,7 +29,7 @@ from providers.fixture_options import FixtureOptionsProvider
 from providers.ibkr_options import IBKROptionsProvider
 from providers.ibkr_tws_options import IBKRTWSProvider
 from providers.tiingo import TiingoMarketDataProvider
-from services.secret_store import resolve_secret
+from services.secret_store import resolve_secret, secret_fingerprint
 from services.usage_instrumentation import instrument_data_provider
 
 KNOWN_OPTIONS_PROVIDERS = ("alpha_vantage", "ibkr")
@@ -282,16 +282,34 @@ def _build_earnings_calendar_provider(
         if not key:
             return None
         return instrument_data_provider(
-            EarningsApiCalendarProvider(api_key=key), db, "earningsapi", "earnings_calendar"
+            EarningsApiCalendarProvider(api_key=key),
+            db,
+            "earningsapi",
+            "earnings_calendar",
+            secret_fingerprint(key),
         )
     if name == "finnhub":
         key = resolve_secret(settings, "finnhub", db)
         if not key:
             return None
         return instrument_data_provider(
-            FinnhubEarningsCalendarProvider(api_key=key), db, "finnhub", "earnings_calendar"
+            FinnhubEarningsCalendarProvider(api_key=key),
+            db,
+            "finnhub",
+            "earnings_calendar",
+            secret_fingerprint(key),
         )
     return None
+
+
+def earnings_calendar_credential_fingerprint(
+    settings: Settings, db: Session | None = None, provider: str = "earningsapi"
+) -> str | None:
+    """Which key a calendar call made right now would use, by the same
+    resolution a real provider build performs -- so the Operations page can ask
+    "do the recorded usage rows belong to the key in use?" without building a
+    provider, and without the key itself reaching the caller."""
+    return secret_fingerprint(resolve_secret(settings, provider, db))
 
 
 def build_earnings_calendar_provider(

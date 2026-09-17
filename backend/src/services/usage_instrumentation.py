@@ -78,6 +78,7 @@ def record_usage_event(
     reasoning_tokens: int | None = None,
     cache_hit_tokens: int | None = None,
     provider_units: Decimal | int | None = None,
+    credential_fingerprint: str | None = None,
 ) -> None:
     if db is None:
         return
@@ -101,6 +102,7 @@ def record_usage_event(
                 cache_hit_tokens=cache_hit_tokens,
                 provider_units=provider_units,
                 estimated_cost=None,
+                credential_fingerprint=credential_fingerprint,
             )
         )
         db.commit()
@@ -129,11 +131,19 @@ class _InstrumentedDataProvider:
     attribute is timed and recorded as one ProviderUsageEvent; non-callable
     attributes pass through untouched."""
 
-    def __init__(self, inner: Any, db: Session | None, provider: str, domain: str) -> None:
+    def __init__(  # noqa: PLR0913 -- one wrapper, one row's worth of identity
+        self,
+        inner: Any,
+        db: Session | None,
+        provider: str,
+        domain: str,
+        credential_fingerprint: str | None = None,
+    ) -> None:
         object.__setattr__(self, "_inner", inner)
         object.__setattr__(self, "_db", db)
         object.__setattr__(self, "_provider", provider)
         object.__setattr__(self, "_domain", domain)
+        object.__setattr__(self, "_credential", credential_fingerprint)
 
     def __getattr__(self, item: str) -> Any:
         attr = getattr(self._inner, item)
@@ -157,6 +167,7 @@ class _InstrumentedDataProvider:
                     status_code=status_code,
                     rate_limited=rate_limited,
                     provider_units=units,
+                    credential_fingerprint=self._credential,
                 )
                 raise
             record_usage_event(
@@ -167,18 +178,32 @@ class _InstrumentedDataProvider:
                 success=True,
                 latency_ms=int((time.monotonic() - start) * 1000),
                 provider_units=units,
+                credential_fingerprint=self._credential,
             )
             return result
 
         return wrapped
 
 
-def instrument_data_provider[T](inner: T, db: Session | None, provider: str, domain: str) -> T:
+def instrument_data_provider[T](
+    inner: T,
+    db: Session | None,
+    provider: str,
+    domain: str,
+    credential_fingerprint: str | None = None,
+) -> T:
     """Wraps any data-provider adapter instance for usage tracking. Typed
     as returning ``T`` (the caller's own provider Protocol) since the proxy
     forwards every method with the same signature -- callers keep type-
-    checking against MarketDataProvider/OptionsDataProvider/etc. unchanged."""
-    return _InstrumentedDataProvider(inner, db, provider, domain)  # type: ignore[return-value]
+    checking against MarketDataProvider/OptionsDataProvider/etc. unchanged.
+
+    ``credential_fingerprint``: which key this adapter was built with (see
+    services/secret_store/resolver.py::secret_fingerprint), so usage rows stay
+    attributable across a key rotation. Optional -- an adapter with no key
+    concept (SEC EDGAR, IBKR) passes nothing."""
+    return _InstrumentedDataProvider(  # type: ignore[return-value]
+        inner, db, provider, domain, credential_fingerprint
+    )
 
 
 class InstrumentedLLMProvider(LLMProvider):
