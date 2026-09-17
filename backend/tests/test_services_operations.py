@@ -607,6 +607,14 @@ class TestWhyAnEventWasNotDecided:
         assert result.lifecycle_state == "CALENDAR_UNCORROBORATED"
         assert "finnhub" in result.lifecycle_reason
 
+    def test_an_out_of_scope_company_reads_not_eligible_whatever_its_calendar_status(
+        self, db_session
+    ):
+        row = _event(db_session, "SMALLSK", cap=500_000_000)
+        row.status = "SKIPPED"
+        db_session.flush()
+        assert classify_event(db_session, row, NOW).lifecycle_state == "BUSINESS_INELIGIBLE"
+
     def test_a_future_window_is_ahead_not_missed(self, db_session):
         row = _event(db_session, "AHEADX", earnings_date=date(2026, 9, 10))
         result = classify_event(db_session, row, NOW)

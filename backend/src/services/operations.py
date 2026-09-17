@@ -1109,6 +1109,12 @@ def classify_event(
 ) -> V4PipelineEvent:
     """The V4 lifecycle of one calendar event, derived only from persisted rows."""
     f = _gather(db, event, now)
+    eligible, why_not = _passes_business_filters(event, us_listing)
+    if not eligible and f.decision is None:
+        # Eligibility first: a $500M company is out of scope whatever its
+        # calendar row says, and "not eligible" is the label that matters.
+        f.timeline.append(TimelineStep("Business eligibility", None, "failed", why_not))
+        return f.row(STATE_BUSINESS_INELIGIBLE, why_not)
     if f.decision is None:
         from services.v4_shadow_orchestration import (  # noqa: PLC0415 -- avoids an import cycle
             CALENDAR_UNCORROBORATED,
@@ -1125,10 +1131,6 @@ def classify_event(
                 else STATE_DUPLICATE_LISTING
             )
             return f.row(state, why)
-    eligible, why_not = _passes_business_filters(event, us_listing)
-    if not eligible and f.decision is None:
-        f.timeline.append(TimelineStep("Business eligibility", None, "failed", why_not))
-        return f.row(STATE_BUSINESS_INELIGIBLE, why_not)
     f.timeline.append(TimelineStep("Business eligibility", None, "done", None))
     _research_timeline(f)
     if f.decision is not None:
