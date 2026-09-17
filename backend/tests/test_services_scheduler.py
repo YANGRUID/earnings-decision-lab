@@ -570,3 +570,87 @@ class TestGetSchedulerStatus:
             assert sync_job.last_run_status == "error"
 
 
+class TestCalendarSyncSameDayRetry:
+    """A transient failure books one more attempt today; a settled one does
+    not. Live evidence: the 2026-09-15 20:58 ET sync died on a DNS error
+    seconds after the Mac woke and nothing retried for 23 hours, through a
+    decision window.
+    """
+
+    def _run_failing_sync(self, monkeypatch, exc, *, attempt=1):
+        """Drives the real job body with a provider build that raises, and
+        returns (recorded_run, booked_retry_job_ids)."""
+        import services.scheduler as scheduler_module
+        from services.scheduler import CALENDAR_SYNC_JOB_ID, build_scheduler
+
+        scheduler = build_scheduler()
+        monkeypatch.setattr(
+            scheduler_module,
+            "build_earnings_calendar_provider",
+            lambda settings, db: object(),
+        )
+
+        def _boom(*args, **kwargs):
+            raise exc
+
+        monkeypatch.setattr(scheduler_module, "sync_earnings_calendar", _boom)
+        scheduler_module.run_earnings_calendar_sync_job(attempt=attempt)
+
+        from db.session import SchedulerSessionLocal
+        from models.scheduler_run import SchedulerRun
+
+        db = SchedulerSessionLocal()
+        try:
+            run = (
+                db.query(SchedulerRun)
+                .filter(SchedulerRun.job_id == CALENDAR_SYNC_JOB_ID)
+                .order_by(SchedulerRun.id.desc())
+                .first()
+            )
+            booked = [
+                job.id
+                for job in scheduler.get_jobs()
+                if job.id.startswith("earnings_calendar_sync_retry")
+            ]
+            return run, booked, scheduler
+        finally:
+            db.close()
+
+    def test_a_dns_failure_books_one_more_attempt(self, monkeypatch):
+        import httpx
+
+        run, booked, scheduler = self._run_failing_sync(
+            monkeypatch, httpx.ConnectError("[Errno -2] Name or service not known")
+        )
+        try:
+            assert run.status == "error"
+            assert booked == ["earnings_calendar_sync_retry_2"]
+            # The attempt itself stays visible as its own failed run -- never
+            # hidden behind one opaque success covering several tries.
+            assert "attempt 1/3" in run.error_summary
+            assert "retrying at" in run.error_summary
+        finally:
+            for job_id in booked:
+                scheduler.remove_job(job_id)
+
+    def test_a_spent_allowance_books_nothing(self, monkeypatch):
+        from providers.earningsapi import EarningsApiError
+
+        run, booked, _ = self._run_failing_sync(
+            monkeypatch,
+            EarningsApiError("free plan limit", quota_exhausted="FREE_QUOTA_EXCEEDED"),
+        )
+        assert run.status == "error"
+        assert booked == []
+        assert "not retryable today" in run.error_summary
+
+    def test_the_last_attempt_books_nothing_and_says_so(self, monkeypatch):
+        import httpx
+
+        from services.calendar_sync_retry import MAX_SYNC_ATTEMPTS
+
+        run, booked, _ = self._run_failing_sync(
+            monkeypatch, httpx.ConnectError("dns"), attempt=MAX_SYNC_ATTEMPTS
+        )
+        assert booked == []
+        assert "no attempts left today" in run.error_summary

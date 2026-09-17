@@ -53,6 +53,11 @@ from observability.redact import redact
 from providers.factory import build_earnings_calendar_provider, build_options_provider_chain
 from providers.ibkr_tws_health import TwsHealthProbe
 from rag.embeddings import EmbeddingProvider
+from services.calendar_sync_retry import (
+    MAX_SYNC_ATTEMPTS,
+    is_transient_sync_failure,
+    retry_delay_for,
+)
 from services.earnings_calendar_sync import sync_earnings_calendar
 from services.earnings_research_preparation import (
     EnqueueResult,
@@ -271,12 +276,58 @@ def get_scheduler_status(scheduler: AsyncIOScheduler | None) -> SchedulerStatus:
     return SchedulerStatus(running=scheduler.running, jobs=jobs)
 
 
-def run_earnings_calendar_sync_job(from_date: date | None = None) -> None:
+#: Set once by build_scheduler(), read fresh when a failed sync needs to book
+#: its own retry. Same module-level-reference pattern, and the same reason, as
+#: _shared_embedder above: an AsyncIOScheduler is not picklable, so it can
+#: never be passed as a job argument.
+_scheduler: AsyncIOScheduler | None = None
+
+#: One-shot same-day retries are registered under this prefix, so they are
+#: recognisable in the job store and replaced rather than accumulated.
+CALENDAR_SYNC_RETRY_JOB_ID = "earnings_calendar_sync_retry"
+
+
+def _schedule_calendar_sync_retry(attempt: int, from_date: date | None) -> datetime | None:
+    """Books the next attempt of a failed sync and returns when it will run,
+    or None if none was booked. Never raises: a retry that cannot be scheduled
+    must not turn an already-recorded failure into a crash."""
+    delay = retry_delay_for(attempt)
+    if delay is None or _scheduler is None:
+        return None
+    run_at = datetime.now(UTC) + delay
+    try:
+        _scheduler.add_job(
+            run_earnings_calendar_sync_job,
+            trigger="date",
+            run_date=run_at,
+            kwargs={"from_date": from_date, "attempt": attempt + 1},
+            id=f"{CALENDAR_SYNC_RETRY_JOB_ID}_{attempt + 1}",
+            replace_existing=True,
+            # A retry the process missed entirely (a restart, a sleeping
+            # machine) is not run hours late: the next nightly sync is the
+            # right recovery then, not a stale catch-up.
+            misfire_grace_time=int(delay.total_seconds()),
+            coalesce=True,
+        )
+    except Exception:  # noqa: BLE001 -- see this function's own docstring
+        log.warning("could not schedule calendar sync retry %d", attempt + 1, exc_info=True)
+        return None
+    return run_at
+
+
+def run_earnings_calendar_sync_job(from_date: date | None = None, *, attempt: int = 1) -> None:
     """The actual job body -- registered under a fixed id
     (CALENDAR_SYNC_JOB_ID, ``replace_existing=True``) so a restart that
     re-registers it never ends up with two competing schedules. No
     provider configured is logged and skipped, not a crash -- an
     unconfigured deployment shouldn't take the scheduler itself down.
+
+    ``attempt`` (1-based): a transient failure books one more attempt today,
+    up to MAX_SYNC_ATTEMPTS, rather than leaving the calendar unrefreshed
+    until tomorrow's cron -- see services/calendar_sync_retry.py for what
+    counts as transient and why a spent allowance deliberately does not.
+    Every attempt writes its own scheduler_run row, so a run that failed and
+    then succeeded reads as exactly that.
 
     ``from_date``: the scheduled cron trigger never passes this (stays
     exactly today-forward); it exists so an on-demand admin call
@@ -286,6 +337,7 @@ def run_earnings_calendar_sync_job(from_date: date | None = None) -> None:
     """
     db = SessionLocal()
     run = start_scheduler_run(db, CALENDAR_SYNC_JOB_ID)
+    attempt_label = f"attempt {attempt}/{MAX_SYNC_ATTEMPTS}"
     try:
         settings = get_settings()
         provider = build_earnings_calendar_provider(settings, db)
@@ -322,11 +374,23 @@ def run_earnings_calendar_sync_job(from_date: date | None = None) -> None:
             items_evaluated=result.fetched,
             items_succeeded=result.created + result.updated + result.unchanged,
             items_failed=len(result.profile_fetch_failures),
+            error_summary=f"succeeded on {attempt_label}" if attempt > 1 else None,
         )
     except Exception as exc:
         db.rollback()
-        log.error("earnings calendar sync job failed", exc_info=True)
-        finish_scheduler_run(db, run, status=RUN_STATUS_ERROR, error_summary=_error_summary(exc))
+        log.error("earnings calendar sync job failed (%s)", attempt_label, exc_info=True)
+        summary = f"{attempt_label}: {_error_summary(exc)}"
+        if is_transient_sync_failure(exc):
+            retry_at = _schedule_calendar_sync_retry(attempt, from_date)
+            if retry_at is not None:
+                summary = f"{summary} -- retrying at {retry_at.isoformat()}"
+            elif attempt >= MAX_SYNC_ATTEMPTS:
+                summary = f"{summary} -- no attempts left today"
+        else:
+            # A spent allowance, bad credentials or a broken contract: another
+            # attempt would cost a request and learn nothing.
+            summary = f"{summary} -- not retryable today"
+        finish_scheduler_run(db, run, status=RUN_STATUS_ERROR, error_summary=summary[:500])
     finally:
         db.close()
 
@@ -556,7 +620,7 @@ def build_scheduler(
     drift on what "connected" means for TWS either. None whenever the
     caller never built one (ibkr_provider != "tws", the current, real
     default) -- the healthcheck job's WEB branch is entirely unaffected."""
-    global _shared_embedder, _shared_tws_health_probe
+    global _shared_embedder, _shared_tws_health_probe, _scheduler
     _shared_embedder = embedder
     _shared_tws_health_probe = tws_health_probe
     # Fresh per build_scheduler() call -- a new app instance (e.g. a
@@ -571,6 +635,8 @@ def build_scheduler(
         timezone="UTC",
     )
     scheduler.add_listener(_record_job_execution, EVENT_JOB_EXECUTED | EVENT_JOB_ERROR)
+    # Read by _schedule_calendar_sync_retry when a sync fails transiently.
+    _scheduler = scheduler
     scheduler.add_job(
         run_earnings_calendar_sync_job,
         trigger="cron",
