@@ -40,6 +40,16 @@ from models.provider_health_event import ProviderHealthEvent
 # wins.
 os.environ.setdefault("IBKR_PROVIDER", "web")
 
+# Same principle for a production feature flag (2026-09-17). Settings read the
+# project .env, which has enabled the V4.2 parallel challenger since
+# 2026-09-08, so every test calling run_forward_window() with get_settings()
+# silently ran the challenger phase too. It stayed invisible until the
+# fixtures' fixed windows fell behind the real clock and the challenger began
+# picking their decisions up (test_v4_forward_window_priority's idempotency
+# test, from 2026-09-11). Tests that exercise the challenger pass explicit
+# settings; everything else runs the flag's documented default.
+os.environ.setdefault("V4_2_PARALLEL_ENABLED", "false")
+
 # --------------------------------------------------------------------------
 # Pre-live hardening (2026-08-25): pytest used to import `engine` directly
 # from db.session -- the exact same engine, bound to the exact same

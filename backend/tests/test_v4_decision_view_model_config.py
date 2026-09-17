@@ -172,6 +172,10 @@ def company_and_event(db_session):
         citations=[],
         provider="deepseek",
         model="deepseek-v4-flash",
+        # Fixed, before the fixture's 2026-09-10 19:30 UTC decision moment: the
+        # view generator only reads a thesis written before that moment, and a
+        # real-clock created_at stopped qualifying once the clock passed it.
+        created_at=datetime(2026, 9, 9, 12, 0, tzinfo=UTC),
     )
     db_session.add(thesis)
     event = EarningsCalendarEvent(
