@@ -15,6 +15,7 @@ import type {
   HealthState,
   JobStaleness,
   MarketClock,
+  NextWindowReadiness,
   PipelineEvent,
   PreflightReadiness,
   PreparationProgress,
@@ -33,6 +34,7 @@ const POLL_INTERVAL_MS = 30_000;
 
 const OPS_SECTIONS = [
   { id: "ops-system", label: "System" },
+  { id: "ops-next-window", label: "Next V4 window" },
   { id: "ops-window", label: "15:30 window" },
   { id: "ops-today", label: "Today" },
   { id: "ops-readiness", label: "Readiness" },
@@ -72,6 +74,9 @@ const STATE_PILL: Record<string, string> = {
   SETTLEMENT_FAILED: "negative",
   CALENDAR_UNCORROBORATED: "neutral",
   DUPLICATE_LISTING: "neutral",
+  // Blocked, not failed -- research may be perfectly ready.
+  TIMING_UNCONFIRMED: "warning",
+  WINDOW_MISSED_TIMING_UNCONFIRMED: "neutral",
 };
 
 function usePolling(reloads: Array<() => void>) {
@@ -273,13 +278,32 @@ function ibkrDetail(h: SystemHealth["ibkr"]): string {
   return `${transport} · ${h.market_data_quality ?? "quality unknown"}`;
 }
 
-// The primary calendar provider's allowance, from this deployment's own usage
-// rows. The free plan ran out on 2026-09-13 and nothing on this page said so.
+// Request activity on the primary calendar provider, from this deployment's
+// own usage rows. Deliberately says APP REQUESTS, not quota usage: the rows
+// count what this application sent, whatever key sent it. When the free plan
+// ran out on 2026-09-13 and a new key was installed on 09-17, the two stopped
+// meaning the same thing and this line read "126/100 today" for a key that had
+// been refused nothing. The plan allowance is shown beside the count as
+// context, never subtracted into a balance this application cannot know.
 function calendarUsageDetail(calendar: SystemHealth["earnings_calendar"]): string {
   const u = calendar.primary_usage;
   if (!u) return "";
+  const plan = u.plan_daily_limit ? ` (free plan ${u.plan_daily_limit}/day)` : "";
   const state = u.quota_state === "OK" ? "" : ` · ${u.quota_state.toLowerCase().replace(/_/g, " ")}`;
-  return ` · ${providerLabel(u.provider)} ${u.requests_today}/${u.daily_limit} today, ${u.requests_this_month}/${u.monthly_limit} this month${state}`;
+  return ` · ${providerLabel(u.provider)} · ${u.requests_recorded_today} app requests today, ${u.requests_recorded_this_month} this month${plan}${state}`;
+}
+
+// The rate-limit state, kept separate from the request counts above: a refusal
+// is something the provider actually returned, and one that belongs to a
+// retired key says nothing about the key in use now.
+function calendarQuotaDetail(calendar: SystemHealth["earnings_calendar"]): string | null {
+  const u = calendar.primary_usage;
+  if (!u) return null;
+  if (!u.last_refusal_at) return "no quota refusal on record";
+  if (u.last_refusal_on_active_credential === false) {
+    return `last quota refusal ${formatDateTime(u.last_refusal_at)} — sent with the previous key; none since it was replaced`;
+  }
+  return `last quota refusal ${formatDateTime(u.last_refusal_at)}`;
 }
 
 function aiDetail(ai: AiProviderHealth): string {
@@ -289,11 +313,52 @@ function aiDetail(ai: AiProviderHealth): string {
   return `${base} · V4 view: ${ai.decision_view_model ?? "—"} · thinking ${ai.decision_view_reasoning_effort ?? ai.decision_view_thinking ?? "—"}`;
 }
 
+// Everything the NEXT natural V4 decision depends on, in one place. Both real
+// 2026-09 losses (a date the primary had stopped corroborating, an IB Gateway
+// that had lost IBKR behind a ready socket) were visible in these fields hours
+// before the window that lost them. A single failing check makes the whole
+// card NOT READY: a window with no market data produces nothing whatever else
+// is green.
+function NextWindowCard({ next: n }: { next: NextWindowReadiness }) {
+  const blocking = n.checks.filter((c) => !c.ok);
+  return (
+    <div className="card" id="ops-next-window" data-testid="next-v4-window">
+      <h2>Next V4 window</h2>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+        <div>
+          <strong>{n.symbol}</strong> · {n.company_name} · reports {n.earnings_date}{" "}
+          {TIMING_LABELS[n.earnings_timing] ?? n.earnings_timing.toUpperCase()}
+        </div>
+        <HealthPill state={n.ready ? "green" : "red"} />
+      </div>
+      <div className="text-sm text-muted">
+        decision {formatEt(n.decision_at)} · settlement {formatEt(n.settlement_at)}
+      </div>
+      <table>
+        <tbody>
+          {n.checks.map((c) => (
+            <tr key={c.name}>
+              <td style={{ width: 220 }}>{c.name}</td>
+              <td style={{ width: 90 }}><HealthPill state={c.ok ? "green" : "red"} /></td>
+              <td className="text-sm">{c.detail}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <p className="text-sm text-muted">
+        {n.ready
+          ? "Every dependency this window needs is in place."
+          : `Not ready: ${blocking.map((c) => c.name.toLowerCase()).join(", ")}.`}
+      </p>
+    </div>
+  );
+}
+
 function SystemHealthSection({ health }: { health: SystemHealth }) {
   const v4 = health.v4_shadow;
   const rows: { label: string; state: HealthState | string; detail: string; sub: string | null }[] = [
     { label: "IBKR market data", state: health.ibkr.state, detail: ibkrDetail(health.ibkr), sub: health.ibkr.last_error ?? (health.ibkr.last_heartbeat_at ? `heartbeat ${formatDateTime(health.ibkr.last_heartbeat_at)}` : null) },
-    { label: "Earnings calendar", state: health.earnings_calendar.state, detail: `${providerLabel(health.earnings_calendar.active_provider)} · ${health.earnings_calendar.events_received} events${calendarUsageDetail(health.earnings_calendar)}`, sub: health.earnings_calendar.last_error ?? `last sync ${formatDateTime(health.earnings_calendar.last_successful_sync_at)} · next ${formatDateTime(health.earnings_calendar.next_scheduled_sync_at)}` },
+    { label: "Earnings calendar", state: health.earnings_calendar.state, detail: `${providerLabel(health.earnings_calendar.active_provider)} · ${health.earnings_calendar.events_received} events${calendarUsageDetail(health.earnings_calendar)}`, sub: health.earnings_calendar.last_error ?? [`last sync ${formatDateTime(health.earnings_calendar.last_successful_sync_at)}`, `next ${formatDateTime(health.earnings_calendar.next_scheduled_sync_at)}`, calendarQuotaDetail(health.earnings_calendar)].filter(Boolean).join(" · ") },
     { label: "AI provider", state: health.ai_provider.state, detail: aiDetail(health.ai_provider), sub: health.ai_provider.last_error ?? (health.ai_provider.last_successful_generation_at ? `last generation ${formatDateTime(health.ai_provider.last_successful_generation_at)}` : null) },
     { label: "Scheduler", state: health.scheduler.state, detail: health.scheduler.running ? `running · ${health.scheduler.registered_job_count} jobs` : "NOT RUNNING", sub: `last activity ${formatDateTime(health.scheduler.last_activity_at)} · next ${formatDateTime(health.scheduler.next_activity_at)}` },
     { label: "Database", state: health.database.state, detail: health.database.database_healthy ? "healthy" : "unhealthy", sub: health.database.migration_head ? `migration ${health.database.migration_head}` : null },
@@ -740,6 +805,7 @@ export function Operations() {
 
       <MarketClockRow clock={s.market_clock} />
       <SystemHealthSection health={s.health} />
+      {s.health.next_v4_window && <NextWindowCard next={s.health.next_v4_window} />}
       {s.forward_window && <ForwardWindowCard fw={s.forward_window} now={now} />}
       <TodayCard today={s.today} v4={s.health.v4_shadow} />
       <ReadinessCard readiness={s.readiness} />

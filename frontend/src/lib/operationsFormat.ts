@@ -36,10 +36,18 @@ export const STATE_LABELS: Record<string, string> = {
   SETTLEMENT_FAILED: "SETTLEMENT FAILED",
   CALENDAR_UNCORROBORATED: "DATE NOT CORROBORATED",
   DUPLICATE_LISTING: "DUPLICATE LISTING",
+  TIMING_UNCONFIRMED: "TIMING UNCONFIRMED",
+  WINDOW_MISSED_TIMING_UNCONFIRMED: "WINDOW MISSED -- TIMING UNCONFIRMED",
 };
 
 // States deliberately outside V4 coverage: none is a failure.
-export const OUT_OF_SCOPE_STATES = new Set(["BUSINESS_INELIGIBLE", "CALENDAR_UNCORROBORATED", "DUPLICATE_LISTING"]);
+export const OUT_OF_SCOPE_STATES = new Set([
+  "BUSINESS_INELIGIBLE",
+  "CALENDAR_UNCORROBORATED",
+  "DUPLICATE_LISTING",
+  "TIMING_UNCONFIRMED",
+  "WINDOW_MISSED_TIMING_UNCONFIRMED",
+]);
 
 // A decision-window qualifier, so "waiting for a future window" and "window
 // missed" can never be confused. Only states that are still about the
@@ -56,6 +64,7 @@ const WINDOW_QUALIFIED = new Set([
   "DECISION_WINDOW_MISSED",
   "DECISION_FAILED",
   "DEADLINE_SKIPPED",
+  "TIMING_UNCONFIRMED",
 ]);
 
 export function windowQualifier(state: string, windowStatus: string | undefined): string | null {

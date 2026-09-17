@@ -1030,15 +1030,22 @@ class CalendarProviderUsageResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     provider: str
-    requests_today: int
-    requests_this_month: int
-    daily_limit: int
-    monthly_limit: int
-    daily_remaining: int
-    monthly_remaining: int
+    # Requests THIS APPLICATION recorded sending, not a quota balance -- see
+    # services/operations.py::CalendarProviderUsage for why no "remaining"
+    # figure is published.
+    requests_recorded_today: int
+    requests_recorded_this_month: int
+    plan_daily_limit: int | None
+    plan_monthly_limit: int | None
     quota_state: str
     last_success_at: datetime | None
     last_refusal_at: datetime | None
+    # Attribution of the counts above to the key in use now. The fingerprint
+    # ITSELF is deliberately not published -- it is derived from the key, and
+    # nothing outside the backend needs its value to read these three.
+    credential_first_seen_at: datetime | None
+    requests_on_active_credential: int | None
+    last_refusal_on_active_credential: bool | None
 
 
 class EarningsCalendarHealthResponse(BaseModel):
@@ -1232,6 +1239,29 @@ class V4ForwardHealthResponse(BaseModel):
     note: str
 
 
+class NextWindowCheckResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    name: str
+    ok: bool
+    detail: str
+
+
+class NextWindowReadinessResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    symbol: str
+    company_name: str
+    earnings_date: str
+    earnings_timing: str
+    decision_at: datetime
+    settlement_at: datetime
+    # The conjunction of every check below -- never a summary judgement that
+    # could read green while one dependency is degraded.
+    ready: bool
+    checks: list[NextWindowCheckResponse]
+
+
 class SystemHealthResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -1241,6 +1271,7 @@ class SystemHealthResponse(BaseModel):
     scheduler: SchedulerHealthResponse
     database: DatabaseHealthResponse
     v4_shadow: V4ForwardHealthResponse | None = None
+    next_v4_window: NextWindowReadinessResponse | None = None
 
 
 class TimelineStepResponse(BaseModel):

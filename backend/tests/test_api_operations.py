@@ -5,6 +5,7 @@ from collections.abc import Iterator
 import pytest
 from fastapi.testclient import TestClient
 
+from analytics.decision_timing_policy import V4_ACTIVE_TIMING_POLICY
 from core.config import get_settings
 
 
@@ -70,7 +71,11 @@ class TestOperationsSummary:
         }
         v4 = body["health"]["v4_shadow"]
         assert v4["decision_time_et"] == "15:30" and v4["settlement_time_et"] == "15:30"
-        assert v4["timing_policy_version"] == "v4-1530-entry-1530-t1-settlement-v2"
+        # v3 changed only the eligibility rule (an unconfirmed announcement
+        # session no longer produces a decision); the observation clock
+        # asserted above is identical, which is why both assertions hold.
+        assert v4["timing_policy_version"] == V4_ACTIVE_TIMING_POLICY.version
+        assert v4["timing_policy_version"].startswith("v4-1530-entry-1530-t1-settlement")
         assert "official_run" not in body and "execution_summary" not in body
 
 

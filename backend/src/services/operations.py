@@ -44,7 +44,7 @@ from core.config import Settings
 from models.ai_thesis_version import AIThesisVersion
 from models.company import Company
 from models.earnings_calendar_event import EarningsCalendarEvent
-from models.enums import ProviderHealthStatus
+from models.enums import EarningsCalendarEventStatus, ProviderHealthStatus
 from models.provider_health_event import ProviderHealthEvent
 from models.research_preparation_job import (
     STEP_LABELS,
@@ -115,11 +115,26 @@ STATE_SETTLEMENT_FAILED = "SETTLEMENT_FAILED"
 STATE_CALENDAR_UNCORROBORATED = "CALENDAR_UNCORROBORATED"
 #: A share-class listing of a report that is already its own event.
 STATE_DUPLICATE_LISTING = "DUPLICATE_LISTING"
+#: The announcement session is not known to be BMO or AMC, so no window can be
+#: shown to contain the release (analytics/decision_timing_policy.py::
+#: V4_TIMING_POLICY_V3). Blocked, not failed: research may be perfectly ready.
+STATE_TIMING_UNCONFIRMED = "TIMING_UNCONFIRMED"
+#: The same block, seen after the window has passed. Kept distinct from
+#: DECISION_WINDOW_MISSED so a reader can tell a blocked event from a
+#: pipeline that simply did not run -- and from RESEARCH_NOT_READY, which
+#: this never is.
+STATE_WINDOW_MISSED_TIMING_UNCONFIRMED = "WINDOW_MISSED_TIMING_UNCONFIRMED"
 
 #: States that are deliberately outside V4 coverage -- none is a failure and
 #: none belongs in an "eligible" count.
 _OUT_OF_SCOPE_STATES = frozenset(
-    {"BUSINESS_INELIGIBLE", STATE_CALENDAR_UNCORROBORATED, STATE_DUPLICATE_LISTING}
+    {
+        "BUSINESS_INELIGIBLE",
+        STATE_CALENDAR_UNCORROBORATED,
+        STATE_DUPLICATE_LISTING,
+        STATE_TIMING_UNCONFIRMED,
+        STATE_WINDOW_MISSED_TIMING_UNCONFIRMED,
+    }
 )
 
 #: Where an event's legal decision window sits relative to now -- the
@@ -191,25 +206,62 @@ CALENDAR_PRIMARY_STALE_AFTER = timedelta(hours=36)
 
 @dataclass(frozen=True)
 class CalendarProviderUsage:
-    """Requests this deployment sent to the primary calendar provider, from
-    its own usage rows. ``provider_units`` counts a multi-date calendar call as
-    one request per date (EarningsAPI has no range endpoint)."""
+    """What this deployment's own usage rows say about the primary calendar
+    provider. Every field is a measurement, never an inference about the
+    provider's own books.
+
+    The distinction that matters, and the defect it closes (2026-09-17): the
+    counts here are REQUESTS THIS APPLICATION SENT, which is the same thing as
+    "this key's quota usage" only while the key never changes. When
+    EarningsAPI's free allowance was spent and a new key was installed that
+    afternoon, this card read "126 / 100 today, 910 / 1000 this month" for a
+    key that had sent about forty requests and been refused none -- the
+    retired key's spending, presented as the new key's. The plan limits are
+    still reported (they are real, published numbers and worth seeing), but
+    they are no longer subtracted into a "remaining" figure this application
+    cannot actually know: a remaining allowance is the provider's own
+    accounting, against a key whose earlier life this deployment may never
+    have observed.
+    """
 
     provider: str
-    requests_today: int
-    requests_this_month: int
-    daily_limit: int
-    monthly_limit: int
-    daily_remaining: int
-    monthly_remaining: int
-    #: OK | DAILY_EXHAUSTED | MONTHLY_EXHAUSTED | NOT_ANSWERING
+    #: Requests this application recorded sending, whatever key sent them.
+    #: ``provider_units`` counts a multi-date calendar call as one request per
+    #: date (EarningsAPI has no range endpoint).
+    requests_recorded_today: int
+    requests_recorded_this_month: int
+    #: The provider's published free-plan allowance, for context only -- never
+    #: subtracted from the counts above to imply a remaining balance.
+    plan_daily_limit: int | None
+    plan_monthly_limit: int | None
+    #: OK | DAILY_EXHAUSTED | MONTHLY_EXHAUSTED | NOT_ANSWERING -- derived from
+    #: real refusals the provider itself returned, never from the counts.
     quota_state: str
     last_success_at: datetime | None
     last_refusal_at: datetime | None
+    #: Identity (not the value) of the key a calendar call would use now.
+    credential_fingerprint: str | None
+    #: When this application first recorded a request sent with that key.
+    #: None while the key has not been used since attribution existed.
+    credential_first_seen_at: datetime | None
+    #: Requests recorded as sent with the key in use now. None when nothing is
+    #: attributable yet -- never silently reported as zero, which would read
+    #: as "this key has sent nothing".
+    requests_on_active_credential: int | None
+    #: Whether the refusal above belongs to the key in use now. False proves
+    #: it does not (a different fingerprint, or a refusal predating this key's
+    #: first recorded use); None means the rows cannot say.
+    last_refusal_on_active_credential: bool | None
 
 
-def get_calendar_provider_usage(
-    db: Session, *, provider: str = "earningsapi", now: datetime | None = None
+def get_calendar_provider_usage(  # noqa: PLR0913 -- one provider's usage, one row
+    db: Session,
+    *,
+    provider: str = "earningsapi",
+    now: datetime | None = None,
+    credential_fingerprint: str | None = None,
+    plan_daily_limit: int | None = EARNINGSAPI_DAILY_LIMIT,
+    plan_monthly_limit: int | None = EARNINGSAPI_MONTHLY_LIMIT,
 ) -> CalendarProviderUsage:
     from models.provider_usage_event import ProviderUsageEvent  # noqa: PLC0415
 
@@ -218,16 +270,14 @@ def get_calendar_provider_usage(
     month_start = datetime(now.year, now.month, 1, tzinfo=UTC)
     units = func.coalesce(func.sum(func.coalesce(ProviderUsageEvent.provider_units, 1)), 0)
 
-    def _count(since: datetime) -> int:
-        value = (
-            db.query(units)
-            .filter(
-                ProviderUsageEvent.provider == provider,
-                ProviderUsageEvent.occurred_at >= since,
-            )
-            .scalar()
+    def _count(since: datetime, fingerprint: str | None = None) -> int:
+        query = db.query(units).filter(
+            ProviderUsageEvent.provider == provider,
+            ProviderUsageEvent.occurred_at >= since,
         )
-        return int(value or 0)
+        if fingerprint is not None:
+            query = query.filter(ProviderUsageEvent.credential_fingerprint == fingerprint)
+        return int(query.scalar() or 0)
 
     today = _count(day_start)
     month = _count(month_start)
@@ -245,11 +295,40 @@ def get_calendar_provider_usage(
         .order_by(ProviderUsageEvent.occurred_at.desc())
         .first()
     )
+
+    first_seen: datetime | None = None
+    on_active: int | None = None
+    if credential_fingerprint is not None:
+        first_seen = (
+            db.query(func.min(ProviderUsageEvent.occurred_at))
+            .filter(
+                ProviderUsageEvent.provider == provider,
+                ProviderUsageEvent.credential_fingerprint == credential_fingerprint,
+            )
+            .scalar()
+        )
+        if first_seen is not None:
+            on_active = _count(month_start, credential_fingerprint)
+
+    # Can this refusal belong to the key in use now? Two independent proofs
+    # that it cannot: the row names a different key, or it predates this key's
+    # own first recorded request. Anything else is genuinely unknown (rows
+    # written before attribution existed carry no fingerprint) and is reported
+    # as unknown rather than assumed either way.
+    refusal_on_active: bool | None = None
+    if refusal is not None and credential_fingerprint is not None:
+        if refusal.credential_fingerprint is not None:
+            refusal_on_active = refusal.credential_fingerprint == credential_fingerprint
+        elif first_seen is not None and refusal.occurred_at < first_seen:
+            refusal_on_active = False
+
     state = "OK"
     refused_after_success = refusal is not None and (
         last_success is None or refusal.occurred_at > last_success
     )
-    if refused_after_success and refusal is not None:
+    # A refusal PROVEN to belong to a retired key says nothing about the key in
+    # use now, and must not put it in an exhausted state.
+    if refused_after_success and refusal is not None and refusal_on_active is not False:
         if refusal.status_code == "FREE_QUOTA_EXCEEDED" and refusal.occurred_at >= month_start:
             state = "MONTHLY_EXHAUSTED"
         elif refusal.status_code == "DAILY_QUOTA_EXCEEDED" and refusal.occurred_at >= day_start:
@@ -262,15 +341,17 @@ def get_calendar_provider_usage(
         state = "NOT_ANSWERING"
     return CalendarProviderUsage(
         provider=provider,
-        requests_today=today,
-        requests_this_month=month,
-        daily_limit=EARNINGSAPI_DAILY_LIMIT,
-        monthly_limit=EARNINGSAPI_MONTHLY_LIMIT,
-        daily_remaining=max(EARNINGSAPI_DAILY_LIMIT - today, 0),
-        monthly_remaining=max(EARNINGSAPI_MONTHLY_LIMIT - month, 0),
+        requests_recorded_today=today,
+        requests_recorded_this_month=month,
+        plan_daily_limit=plan_daily_limit,
+        plan_monthly_limit=plan_monthly_limit,
         quota_state=state,
         last_success_at=last_success,
         last_refusal_at=refusal.occurred_at if refusal is not None else None,
+        credential_fingerprint=credential_fingerprint,
+        credential_first_seen_at=first_seen,
+        requests_on_active_credential=on_active,
+        last_refusal_on_active_credential=refusal_on_active,
     )
 
 
@@ -334,6 +415,42 @@ class SystemHealth:
     scheduler: SchedulerHealth
     database: DatabaseHealth
     v4_shadow: V4ForwardHealth | None = None
+    next_v4_window: NextWindowReadiness | None = None
+
+
+@dataclass(frozen=True)
+class NextWindowCheck:
+    """One dependency the next forward decision needs, and whether it holds."""
+
+    name: str
+    ok: bool
+    detail: str
+
+
+@dataclass(frozen=True)
+class NextWindowReadiness:
+    """Everything the NEXT natural V4 decision depends on, in one place.
+
+    Why it exists: before a window, the facts that decide whether it produces
+    evidence were spread across the calendar grid, the pipeline table and three
+    separate health rows, so the only way to know a window would fail was to
+    watch it fail. Both real 2026-09 losses were visible hours ahead in exactly
+    these fields -- a date the primary had stopped corroborating, and an IB
+    Gateway that had lost IBKR while still reporting a ready socket.
+
+    ``ready`` is the conjunction of every check, never a summary judgement: one
+    degraded dependency makes the whole window not-ready, because a window with
+    no market data produces nothing whatever else is healthy.
+    """
+
+    symbol: str
+    company_name: str
+    earnings_date: str
+    earnings_timing: str
+    decision_at: datetime
+    settlement_at: datetime
+    ready: bool
+    checks: list[NextWindowCheck]
 
 
 _LIVE_ACCOUNT_CACHE_TTL = timedelta(minutes=5)
@@ -549,7 +666,14 @@ def get_system_health(  # noqa: PLR0912, PLR0915 -- one aggregation, kept in one
         if active is not None and active.configured:
             calendar_state = _HEALTHY
             if calendar_domain.primary == "earningsapi":
-                primary_usage = get_calendar_provider_usage(db)
+                from providers.factory import (  # noqa: PLC0415 -- avoids an import cycle
+                    earnings_calendar_credential_fingerprint,
+                )
+
+                primary_usage = get_calendar_provider_usage(
+                    db,
+                    credential_fingerprint=earnings_calendar_credential_fingerprint(settings, db),
+                )
             if calendar_sync_run is not None and calendar_sync_run.status == "error":
                 calendar_state = _FAILED
                 calendar_error = calendar_sync_run.error_summary
@@ -650,6 +774,13 @@ def get_system_health(  # noqa: PLR0912, PLR0915 -- one aggregation, kept in one
             default=None,
         ),
     )
+    next_window = None
+    try:
+        next_window = get_next_window_readiness(
+            db, now=datetime.now(UTC), ibkr=ibkr, earnings_calendar=earnings_calendar
+        )
+    except Exception:  # noqa: BLE001 -- a preflight summary must never blank the page
+        log.exception("operations: could not build the next-window readiness summary")
     return SystemHealth(
         ibkr=ibkr,
         earnings_calendar=earnings_calendar,
@@ -657,6 +788,7 @@ def get_system_health(  # noqa: PLR0912, PLR0915 -- one aggregation, kept in one
         scheduler=scheduler,
         database=_get_database_health(db),
         v4_shadow=get_v4_shadow_health(db, settings),
+        next_v4_window=next_window,
     )
 
 
@@ -1064,6 +1196,13 @@ def _window_passed_row(db: Session, f: _Facts) -> V4PipelineEvent:
             return f.row(STATE_CALENDAR_UNCORROBORATED, latest.message)
         if latest.category == STATE_DUPLICATE_LISTING:
             return f.row(STATE_DUPLICATE_LISTING, latest.message)
+        if latest.category == STATE_TIMING_UNCONFIRMED:
+            # Requirement: a session corroborated only AFTER the window has
+            # passed leaves a missed window, never a late decision.
+            return f.row(
+                STATE_WINDOW_MISSED_TIMING_UNCONFIRMED,
+                f"the window passed with the announcement session unconfirmed: {latest.message}",
+            )
         if latest.category == "NOT_ELIGIBLE":
             return f.row(STATE_BUSINESS_INELIGIBLE, f"at the decision window: {latest.message}")
         if latest.category == "RESEARCH_NOT_READY":
@@ -1151,6 +1290,7 @@ def classify_event(
         from services.v4_shadow_orchestration import (  # noqa: PLC0415 -- avoids an import cycle
             CALENDAR_UNCORROBORATED,
             _calendar_identity_block,
+            _timing_confirmation_block,
         )
 
         blocked = _calendar_identity_block(db, event)
@@ -1163,6 +1303,17 @@ def classify_event(
                 else STATE_DUPLICATE_LISTING
             )
             return f.row(state, why)
+        timing_blocked = _timing_confirmation_block(event)
+        if timing_blocked is not None:
+            why = timing_blocked[1]
+            f.timeline.append(TimelineStep("Earnings timing", None, "skipped", why))
+            passed = now > f.schedule.entry_timestamp + LATE_CUTOFF_GRACE
+            return f.row(
+                STATE_WINDOW_MISSED_TIMING_UNCONFIRMED if passed else STATE_TIMING_UNCONFIRMED,
+                why,
+                None if passed else "Corroborate the earnings session (BMO or AMC)",
+                None if passed else f.schedule.entry_timestamp,
+            )
     f.timeline.append(TimelineStep("Business eligibility", None, "done", None))
     _research_timeline(f)
     if f.decision is not None:
@@ -1214,6 +1365,161 @@ def get_v4_pipeline(
         except Exception:  # noqa: BLE001 -- one event must never blank the monitor
             log.exception("operations: could not classify event %s", event.id)
     return rows
+
+
+#: How far ahead get_next_window_readiness looks for the next decision.
+NEXT_WINDOW_HORIZON_DAYS = 21
+
+
+def _timing_label(event: EarningsCalendarEvent) -> str:
+    return str(getattr(event.earnings_time, "value", event.earnings_time)).upper()
+
+
+def get_next_window_readiness(
+    db: Session,
+    *,
+    now: datetime,
+    ibkr: IbkrHealth,
+    earnings_calendar: EarningsCalendarHealth,
+    us_listing: Callable[[str], str | None] | None = None,
+) -> NextWindowReadiness | None:
+    """The next eligible event whose decision window is still ahead, with every
+    dependency that window needs. None when nothing is scheduled inside
+    NEXT_WINDOW_HORIZON_DAYS.
+
+    Research readiness is judged AT THE DECISION WINDOW, never at ``now``: a
+    thesis that is fresh today but will have aged past THESIS_FRESHNESS_DAYS by
+    the window is not readiness, it is work still to do. Reporting it as ready
+    is how a green board and a RESEARCH_NOT_READY window coexist.
+    """
+    today = now.astimezone(EASTERN).date()
+    events = (
+        db.query(EarningsCalendarEvent)
+        .filter(
+            EarningsCalendarEvent.earnings_date >= today,
+            EarningsCalendarEvent.earnings_date <= today + timedelta(days=NEXT_WINDOW_HORIZON_DAYS),
+            EarningsCalendarEvent.status == EarningsCalendarEventStatus.UPCOMING,
+        )
+        .order_by(EarningsCalendarEvent.earnings_date)
+        .all()
+    )
+    candidates = []
+    for event in events:
+        eligible, _ = _passes_business_filters(event, us_listing)
+        if not eligible:
+            continue
+        schedule = _v4_schedule(event)
+        if schedule.entry_timestamp + LATE_CUTOFF_GRACE <= now:
+            continue  # its window has already closed
+        candidates.append((schedule.entry_timestamp, event, schedule))
+    if not candidates:
+        return None
+    candidates.sort(key=lambda row: row[0])
+    _, event, schedule = candidates[0]
+    window = schedule.entry_timestamp
+
+    from services.v4_shadow_orchestration import (  # noqa: PLC0415 -- avoids an import cycle
+        _calendar_identity_block,
+        _timing_confirmation_block,
+    )
+
+    checks: list[NextWindowCheck] = []
+
+    identity = _calendar_identity_block(db, event)
+    checks.append(
+        NextWindowCheck(
+            "Calendar corroborated",
+            identity is None,
+            identity[1]
+            if identity is not None
+            else (
+                "operator-verified date and session"
+                if event.verified_at is not None
+                else f"last corroborated by {event.last_confirmed_by or event.source}"
+            ),
+        )
+    )
+
+    timing_block = _timing_confirmation_block(event)
+    checks.append(
+        NextWindowCheck(
+            "Earnings timing confirmed",
+            timing_block is None,
+            timing_block[1] if timing_block is not None else f"reports {_timing_label(event)}",
+        )
+    )
+
+    company = db.query(Company).filter_by(ticker=event.symbol).one_or_none()
+    thesis = _latest_thesis(db, company.id) if company is not None else None
+    if company is None:
+        checks.append(NextWindowCheck("Research ready at the window", False, "no Company row yet"))
+    elif thesis is None:
+        checks.append(NextWindowCheck("Research ready at the window", False, "no AI thesis yet"))
+    else:
+        age_at_window = window - thesis.created_at
+        fresh = age_at_window < _THESIS_FRESH
+        checks.append(
+            NextWindowCheck(
+                "Research ready at the window",
+                fresh,
+                f"AI thesis written {thesis.created_at.date().isoformat()}, "
+                + (
+                    f"{age_at_window.days}d old at the window"
+                    if fresh
+                    else f"{age_at_window.days}d old at the window -- past the "
+                    f"{THESIS_FRESHNESS_DAYS}d limit, so it must be refreshed before then"
+                ),
+            )
+        )
+
+    checks.append(
+        NextWindowCheck(
+            "Market data",
+            ibkr.state == _HEALTHY,
+            ibkr.last_error or ("connected" if ibkr.state == _HEALTHY else ibkr.state),
+        )
+    )
+    checks.append(
+        NextWindowCheck(
+            "Calendar provider",
+            earnings_calendar.state == _HEALTHY,
+            earnings_calendar.last_error
+            or f"{earnings_calendar.active_provider or 'none'} answering",
+        )
+    )
+
+    stuck = (
+        db.query(ResearchPreparationJob)
+        .filter(
+            ResearchPreparationJob.ticker == event.symbol,
+            ResearchPreparationJob.status.in_((JobStatus.FAILED, JobStatus.INTERRUPTED)),
+        )
+        .order_by(ResearchPreparationJob.id.desc())
+        .first()
+    )
+    latest_prep = _latest_prep_job(db, event.symbol)
+    blocked = stuck is not None and latest_prep is not None and latest_prep.id == stuck.id
+    checks.append(
+        NextWindowCheck(
+            "Research queue",
+            not blocked,
+            f"last preparation job {str(getattr(stuck.status, 'value', stuck.status))}: "
+            f"{(stuck.error or '')[:120]}"
+            if blocked and stuck is not None
+            else "no failed or interrupted job for this symbol",
+        )
+    )
+
+    return NextWindowReadiness(
+        symbol=event.symbol,
+        company_name=event.company_name,
+        earnings_date=event.earnings_date.isoformat(),
+        earnings_timing=str(getattr(event.earnings_time, "value", event.earnings_time)),
+        decision_at=window,
+        settlement_at=schedule.exit_timestamp,
+        ready=all(check.ok for check in checks),
+        checks=checks,
+    )
 
 
 @dataclass(frozen=True)

@@ -701,7 +701,7 @@ class TestCalendarProviderUsage:
 
     NOW = datetime(2031, 5, 20, 12, 0, tzinfo=UTC)
 
-    def _usage(self, db, *, at, success, status_code=None, units=None):
+    def _usage(self, db, *, at, success, status_code=None, units=None, credential=None):  # noqa: PLR0913
         from models.provider_usage_event import ProviderUsageEvent
 
         db.add(
@@ -715,6 +715,7 @@ class TestCalendarProviderUsage:
                 status_code=status_code,
                 rate_limited=not success,
                 provider_units=units,
+                credential_fingerprint=credential,
             )
         )
         db.flush()
@@ -731,8 +732,8 @@ class TestCalendarProviderUsage:
         )
 
         usage = get_calendar_provider_usage(db_session, now=self.NOW)
-        assert usage.requests_today == 9
-        assert usage.daily_remaining == 91
+        assert usage.requests_recorded_today == 9
+        assert usage.plan_daily_limit == 100
         assert usage.quota_state == "MONTHLY_EXHAUSTED"
 
     def test_a_later_success_clears_the_exhausted_state(self, db_session):
@@ -747,3 +748,349 @@ class TestCalendarProviderUsage:
         self._usage(db_session, at=self.NOW - timedelta(hours=1), success=True)
 
         assert get_calendar_provider_usage(db_session, now=self.NOW).quota_state == "OK"
+
+
+class TestUsageAfterAKeyRotation:
+    """Measured defect (2026-09-17): EarningsAPI's free allowance was spent, a
+    new key was installed the same afternoon, and the Operations card read
+    "126 / 100 today, 910 / 1000 this month" for a key that had sent about
+    forty requests and been refused none. The counts are requests THIS
+    APPLICATION sent; they only equal one key's quota usage while the key
+    never changes.
+    """
+
+    NOW = datetime(2031, 5, 20, 18, 0, tzinfo=UTC)
+    OLD_KEY = "aaaaaaaaaaaa"
+    NEW_KEY = "bbbbbbbbbbbb"
+
+    def _usage(self, db, *, at, success, status_code=None, units=None, credential=None):  # noqa: PLR0913
+        from models.provider_usage_event import ProviderUsageEvent
+
+        db.add(
+            ProviderUsageEvent(
+                provider="earningsapi",
+                domain="earnings_calendar",
+                operation="get_earnings_calendar",
+                occurred_at=at,
+                success=success,
+                latency_ms=10,
+                status_code=status_code,
+                rate_limited=not success,
+                provider_units=units,
+                credential_fingerprint=credential,
+            )
+        )
+        db.flush()
+
+    def test_a_retired_keys_refusal_does_not_exhaust_the_new_key(self, db_session):
+        from services.operations import get_calendar_provider_usage
+
+        self._usage(
+            db_session,
+            at=self.NOW - timedelta(hours=9),
+            success=False,
+            status_code="FREE_QUOTA_EXCEEDED",
+            credential=self.OLD_KEY,
+        )
+        self._usage(
+            db_session, at=self.NOW - timedelta(minutes=5), success=True, credential=self.NEW_KEY
+        )
+
+        usage = get_calendar_provider_usage(
+            db_session, now=self.NOW, credential_fingerprint=self.NEW_KEY
+        )
+        assert usage.quota_state == "OK"
+        assert usage.last_refusal_on_active_credential is False
+
+    def test_a_refusal_predating_the_new_key_is_proven_not_to_be_its_own(self, db_session):
+        """Rows written before attribution existed carry no fingerprint. A
+        refusal that predates the active key's own first recorded request still
+        cannot belong to it -- proven from the timestamps, not assumed."""
+        from services.operations import get_calendar_provider_usage
+
+        self._usage(
+            db_session,
+            at=self.NOW - timedelta(hours=9),
+            success=False,
+            status_code="FREE_QUOTA_EXCEEDED",
+            credential=None,
+        )
+        self._usage(
+            db_session, at=self.NOW - timedelta(minutes=5), success=True, credential=self.NEW_KEY
+        )
+
+        usage = get_calendar_provider_usage(
+            db_session, now=self.NOW, credential_fingerprint=self.NEW_KEY
+        )
+        assert usage.last_refusal_on_active_credential is False
+        assert usage.quota_state == "OK"
+
+    def test_the_active_keys_own_refusal_still_exhausts_it(self, db_session):
+        """The attribution must not become a way to ignore a real refusal."""
+        from services.operations import get_calendar_provider_usage
+
+        self._usage(
+            db_session, at=self.NOW - timedelta(hours=2), success=True, credential=self.NEW_KEY
+        )
+        self._usage(
+            db_session,
+            at=self.NOW - timedelta(minutes=5),
+            success=False,
+            status_code="FREE_QUOTA_EXCEEDED",
+            credential=self.NEW_KEY,
+        )
+
+        usage = get_calendar_provider_usage(
+            db_session, now=self.NOW, credential_fingerprint=self.NEW_KEY
+        )
+        assert usage.quota_state == "MONTHLY_EXHAUSTED"
+        assert usage.last_refusal_on_active_credential is True
+
+    def test_the_counts_stay_whole_app_requests_and_the_key_share_is_separate(self, db_session):
+        """Both numbers are published, and neither is presented as the other:
+        the app sent 30 requests this month, 10 of them on the key in use."""
+        from services.operations import get_calendar_provider_usage
+
+        self._usage(
+            db_session,
+            at=self.NOW - timedelta(days=2),
+            success=True,
+            units=20,
+            credential=self.OLD_KEY,
+        )
+        self._usage(
+            db_session,
+            at=self.NOW - timedelta(hours=1),
+            success=True,
+            units=10,
+            credential=self.NEW_KEY,
+        )
+
+        usage = get_calendar_provider_usage(
+            db_session, now=self.NOW, credential_fingerprint=self.NEW_KEY
+        )
+        assert usage.requests_recorded_this_month == 30
+        assert usage.requests_on_active_credential == 10
+        assert usage.credential_first_seen_at == self.NOW - timedelta(hours=1)
+
+    def test_no_remaining_allowance_is_published(self, db_session):
+        """The invented figure. A remaining balance is the provider's own
+        accounting against a key whose earlier life this deployment may never
+        have observed, so it is not derived from these counts."""
+        from services.operations import CalendarProviderUsage
+
+        fields = set(CalendarProviderUsage.__dataclass_fields__)
+        assert not {f for f in fields if "remaining" in f}
+
+    def test_nothing_derived_from_a_key_is_published_over_the_api(self, db_session):
+        """The fingerprint identifies a key; the UI never needs its value."""
+        from schemas.api import CalendarProviderUsageResponse
+
+        assert "credential_fingerprint" not in CalendarProviderUsageResponse.model_fields
+
+
+class TestNextWindowReadiness:
+    """The preflight card. Its one job is to be wrong in the safe direction:
+    never green while a dependency the window needs is degraded.
+    """
+
+    NOW = datetime(2031, 5, 18, 14, 0, tzinfo=UTC)
+
+    def _health(self, *, ibkr_green=True, calendar_green=True):
+        from services.operations import EarningsCalendarHealth, IbkrHealth
+
+        return (
+            IbkrHealth(
+                state="green" if ibkr_green else "red",
+                gateway_reachable=True,
+                authenticated=True,
+                connected=ibkr_green,
+                live_account=None,
+                market_data_quality=None,
+                last_heartbeat_at=None,
+                last_error=None if ibkr_green else "IB Gateway has lost its connection to IBKR",
+                provider="tws",
+            ),
+            EarningsCalendarHealth(
+                state="green" if calendar_green else "red",
+                active_provider="earningsapi",
+                fallback_provider="finnhub",
+                last_successful_sync_at=None,
+                events_received=10,
+                last_error=None,
+                next_scheduled_sync_at=None,
+            ),
+        )
+
+    def _event(self, db, *, symbol, timing, when, cap="50000000000"):
+        from decimal import Decimal
+
+        from models.earnings_calendar_event import EarningsCalendarEvent
+        from models.enums import EarningsCalendarEventStatus, EarningsSource
+
+        row = EarningsCalendarEvent(
+            symbol=symbol,
+            company_name=f"{symbol} Inc",
+            earnings_date=when,
+            earnings_time=timing,
+            status=EarningsCalendarEventStatus.UPCOMING,
+            source=EarningsSource.EARNINGSAPI,
+            last_confirmed_by="earningsapi",
+            market_cap=Decimal(cap),
+            country="US",
+            created_at=datetime(2031, 5, 1, tzinfo=UTC),
+        )
+        db.add(row)
+        db.flush()
+        return row
+
+    def _company_with_thesis(self, db, symbol, thesis_at):
+        from models.ai_thesis_version import AIThesisVersion
+        from models.company import Company
+
+        company = Company(ticker=symbol, name=f"{symbol} Inc")
+        db.add(company)
+        db.flush()
+        db.add(
+            AIThesisVersion(
+                company_id=company.id,
+                business_context="b",
+                historical_earnings_pattern="h",
+                guidance_trend="g",
+                key_risks="k",
+                market_setup="m",
+                disclaimer="d",
+                citations=[],
+                provider="deepseek",
+                model="deepseek-v4-flash",
+                created_at=thesis_at,
+            )
+        )
+        db.flush()
+        return company
+
+    def test_a_thesis_fresh_now_but_stale_at_the_window_is_not_ready(self, db_session):
+        """The defect this guards. Freshness judged against NOW reports a
+        window as ready that will refuse the event as RESEARCH_NOT_READY when
+        it opens -- a green board and a lost window at the same time."""
+        from datetime import date
+
+        from models.enums import EarningsTiming
+        from services.operations import get_next_window_readiness
+        from services.research_orchestration import THESIS_FRESHNESS_DAYS
+
+        symbol = "TESTFRESH"
+        window_day = date(2031, 5, 30)
+        # Written today, so fresh now -- and older than the limit by the window.
+        self._company_with_thesis(db_session, symbol, self.NOW)
+        assert (window_day - self.NOW.date()).days > THESIS_FRESHNESS_DAYS
+        self._event(db_session, symbol=symbol, timing=EarningsTiming.AMC, when=window_day)
+
+        ibkr, calendar = self._health()
+        readiness = get_next_window_readiness(
+            db_session, now=self.NOW, ibkr=ibkr, earnings_calendar=calendar
+        )
+        check = next(c for c in readiness.checks if c.name == "Research ready at the window")
+        assert check.ok is False
+        assert "must be refreshed" in check.detail
+        assert readiness.ready is False
+
+    def test_a_thesis_still_fresh_at_the_window_is_ready(self, db_session):
+        from datetime import date
+
+        from models.enums import EarningsTiming
+        from services.operations import get_next_window_readiness
+
+        symbol = "TESTREADY"
+        self._company_with_thesis(db_session, symbol, self.NOW)
+        self._event(db_session, symbol=symbol, timing=EarningsTiming.AMC, when=date(2031, 5, 21))
+
+        ibkr, calendar = self._health()
+        readiness = get_next_window_readiness(
+            db_session, now=self.NOW, ibkr=ibkr, earnings_calendar=calendar
+        )
+        assert readiness.symbol == symbol
+        assert readiness.ready is True
+        assert all(c.ok for c in readiness.checks)
+
+    def test_one_degraded_dependency_makes_the_whole_window_not_ready(self, db_session):
+        """A window with no market data produces nothing, whatever else is
+        green -- so the card must never summarise its way to READY."""
+        from datetime import date
+
+        from models.enums import EarningsTiming
+        from services.operations import get_next_window_readiness
+
+        symbol = "TESTTWS"
+        self._company_with_thesis(db_session, symbol, self.NOW)
+        self._event(db_session, symbol=symbol, timing=EarningsTiming.AMC, when=date(2031, 5, 21))
+
+        ibkr, calendar = self._health(ibkr_green=False)
+        readiness = get_next_window_readiness(
+            db_session, now=self.NOW, ibkr=ibkr, earnings_calendar=calendar
+        )
+        assert readiness.ready is False
+        assert next(c for c in readiness.checks if c.name == "Market data").ok is False
+
+    def test_an_unconfirmed_session_is_reported_as_the_blocker(self, db_session):
+        from datetime import date
+
+        from models.enums import EarningsTiming
+        from services.operations import get_next_window_readiness
+
+        symbol = "TESTNOSESS"
+        self._company_with_thesis(db_session, symbol, self.NOW)
+        self._event(
+            db_session, symbol=symbol, timing=EarningsTiming.UNKNOWN, when=date(2031, 5, 21)
+        )
+
+        ibkr, calendar = self._health()
+        readiness = get_next_window_readiness(
+            db_session, now=self.NOW, ibkr=ibkr, earnings_calendar=calendar
+        )
+        assert readiness.ready is False
+        timing = next(c for c in readiness.checks if c.name == "Earnings timing confirmed")
+        assert timing.ok is False
+
+    def test_an_event_whose_window_has_closed_is_not_the_next_one(self, db_session):
+        from datetime import date
+
+        from models.enums import EarningsTiming
+        from services.operations import get_next_window_readiness
+
+        self._company_with_thesis(db_session, "TESTPAST", self.NOW)
+        self._company_with_thesis(db_session, "TESTNEXT", self.NOW)
+        # BMO on the 18th decided at 15:30 ET on the previous trading day,
+        # which is long past at this NOW -- so it is not the next window.
+        self._event(
+            db_session, symbol="TESTPAST", timing=EarningsTiming.BMO, when=date(2031, 5, 18)
+        )
+        self._event(
+            db_session, symbol="TESTNEXT", timing=EarningsTiming.AMC, when=date(2031, 5, 21)
+        )
+
+        ibkr, calendar = self._health()
+        readiness = get_next_window_readiness(
+            db_session, now=self.NOW, ibkr=ibkr, earnings_calendar=calendar
+        )
+        assert readiness.symbol == "TESTNEXT"
+
+    def test_a_sub_threshold_company_is_never_the_next_window(self, db_session):
+        from datetime import date
+
+        from models.enums import EarningsTiming
+        from services.operations import get_next_window_readiness
+
+        self._company_with_thesis(db_session, "TESTSMALL", self.NOW)
+        self._event(
+            db_session,
+            symbol="TESTSMALL",
+            timing=EarningsTiming.AMC,
+            when=date(2031, 5, 19),
+            cap="500000000",
+        )
+        ibkr, calendar = self._health()
+        readiness = get_next_window_readiness(
+            db_session, now=self.NOW, ibkr=ibkr, earnings_calendar=calendar
+        )
+        assert readiness is None or readiness.symbol != "TESTSMALL"

@@ -886,19 +886,26 @@ export interface IbkrHealth {
   provider: string;
 }
 
-// Requests this deployment sent to the primary calendar provider (EarningsAPI),
-// counted from its own usage rows; the limits are the free plan's.
+// What this deployment's own usage rows say about the primary calendar
+// provider (EarningsAPI). The counts are REQUESTS THIS APPLICATION SENT, which
+// is only the same thing as "this key's quota usage" while the key never
+// changes -- so no remaining-allowance figure is published. See
+// services/operations.py::CalendarProviderUsage.
 export interface CalendarProviderUsage {
   provider: string;
-  requests_today: number;
-  requests_this_month: number;
-  daily_limit: number;
-  monthly_limit: number;
-  daily_remaining: number;
-  monthly_remaining: number;
+  requests_recorded_today: number;
+  requests_recorded_this_month: number;
+  // The free plan's published allowance, for context only.
+  plan_daily_limit: number | null;
+  plan_monthly_limit: number | null;
+  // Derived from real refusals the provider returned, never from the counts.
   quota_state: "OK" | "DAILY_EXHAUSTED" | "MONTHLY_EXHAUSTED" | "NOT_ANSWERING";
   last_success_at: string | null;
   last_refusal_at: string | null;
+  // Attribution to the key in use now. null means the rows cannot say.
+  credential_first_seen_at: string | null;
+  requests_on_active_credential: number | null;
+  last_refusal_on_active_credential: boolean | null;
 }
 
 export interface EarningsCalendarHealth {
@@ -910,6 +917,28 @@ export interface EarningsCalendarHealth {
   last_error: string | null;
   next_scheduled_sync_at: string | null;
   primary_usage?: CalendarProviderUsage | null;
+}
+
+// One dependency the next forward decision needs, and whether it holds.
+export interface NextWindowCheck {
+  name: string;
+  ok: boolean;
+  detail: string;
+}
+
+// Everything the NEXT natural V4 decision depends on. `ready` is the
+// conjunction of every check -- one degraded dependency makes the window
+// not-ready, because a window with no market data produces nothing whatever
+// else is healthy.
+export interface NextWindowReadiness {
+  symbol: string;
+  company_name: string;
+  earnings_date: string;
+  earnings_timing: string;
+  decision_at: string;
+  settlement_at: string;
+  ready: boolean;
+  checks: NextWindowCheck[];
 }
 
 export interface AiProviderHealth {
@@ -966,6 +995,7 @@ export interface SystemHealth {
   scheduler: SchedulerHealth;
   database: DatabaseHealth;
   v4_shadow: V4ForwardHealth | null;
+  next_v4_window?: NextWindowReadiness | null;
 }
 
 export interface TimelineStep {
@@ -1000,7 +1030,13 @@ export type V4PipelineState =
   // there is no report on it): never decided, never a failure.
   | "CALENDAR_UNCORROBORATED"
   // A share-class listing of a report that is already its own event.
-  | "DUPLICATE_LISTING";
+  | "DUPLICATE_LISTING"
+  // The announcement session is not known to be BMO or AMC, so no window can
+  // be shown to contain the release. Blocked, never failed: research may be
+  // perfectly ready.
+  | "TIMING_UNCONFIRMED"
+  // The same block, seen after the window passed.
+  | "WINDOW_MISSED_TIMING_UNCONFIRMED";
 
 // Where the legal decision window sits relative to now.
 export type PipelineWindowStatus = "AHEAD" | "OPEN" | "PASSED";
