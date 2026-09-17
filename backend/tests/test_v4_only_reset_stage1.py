@@ -316,6 +316,103 @@ class TestDeadlineGuard:
         assert summary.research_not_ready == 1
         assert summary.not_eligible == 0
 
+    def test_an_uncorroborated_calendar_date_is_never_decided(self, db_session):
+        """Proven 2026-09-09 .. 09-16: the vanished-event reconciliation marked
+        rows SKIPPED and promised they would not enter a decision window, but
+        the decision gate never read the status. Research readiness alone
+        decided whether a stale date became forward evidence."""
+        from decimal import Decimal
+
+        from models.ai_thesis_version import AIThesisVersion
+        from models.company import Company
+        from models.earnings_calendar_event import EarningsCalendarEvent
+        from models.v4_shadow import V4ShadowRunEvent
+        from services.v4_shadow_orchestration import run_shadow_decisions_for_due_events
+
+        company = Company(ticker="GHOST", name="Ghost Co")
+        db_session.add(company)
+        db_session.flush()
+        db_session.add(
+            AIThesisVersion(
+                company_id=company.id,
+                business_context="b",
+                historical_earnings_pattern="h",
+                guidance_trend="g",
+                key_risks="k",
+                market_setup="m",
+                disclaimer="d",
+                citations=[],
+                provider="deepseek",
+                model="deepseek-v4-flash",
+            )
+        )
+        ghost = EarningsCalendarEvent(
+            symbol="GHOST",
+            company_name="Ghost Co",
+            earnings_date=date(2026, 9, 10),
+            earnings_time="AMC",
+            source="FINNHUB",
+            status="SKIPPED",
+            market_cap=Decimal("50000000000"),
+            vanished_by="earningsapi",
+        )
+        db_session.add(ghost)
+        db_session.flush()
+
+        summary = run_shadow_decisions_for_due_events(
+            db_session,
+            None,
+            now=_et(2026, 9, 10, 15, 30),
+            provider=None,
+            view_generator=_must_not_be_called,
+            due_predicate=lambda e, now: True,
+            candidate_events=[ghost],
+        )
+        assert {o.status for o in summary.outcomes} == {"CALENDAR_UNCORROBORATED"}
+        assert summary.research_not_ready == 0 and summary.failed == 0
+        row = db_session.query(V4ShadowRunEvent).filter_by(ticker="GHOST").one()
+        assert row.category == "CALENDAR_UNCORROBORATED"
+        assert "earningsapi" in row.message
+        assert row.retryable is False
+
+    def test_a_share_class_duplicate_is_recorded_not_reported_as_a_research_miss(self, db_session):
+        """LEN.B, 2026-09-16: reported RESEARCH_NOT_READY beside LEN's own
+        event for the same report."""
+        from decimal import Decimal
+
+        from models.earnings_calendar_event import EarningsCalendarEvent
+        from models.v4_shadow import V4ShadowRunEvent
+        from services.v4_shadow_orchestration import run_shadow_decisions_for_due_events
+
+        for symbol in ("DUPL", "DUPL.B"):
+            db_session.add(
+                EarningsCalendarEvent(
+                    symbol=symbol,
+                    company_name="Dupl Corp",
+                    earnings_date=date(2026, 9, 16),
+                    earnings_time="AMC",
+                    source="EARNINGSAPI",
+                    status="UPCOMING",
+                    market_cap=Decimal("19000000000"),
+                )
+            )
+        db_session.flush()
+        klass = db_session.query(EarningsCalendarEvent).filter_by(symbol="DUPL.B").one()
+
+        summary = run_shadow_decisions_for_due_events(
+            db_session,
+            None,
+            now=_et(2026, 9, 16, 15, 30),
+            provider=None,
+            view_generator=_must_not_be_called,
+            due_predicate=lambda e, now: True,
+            candidate_events=[klass],
+        )
+        assert {o.status for o in summary.outcomes} == {"DUPLICATE_LISTING"}
+        assert summary.research_not_ready == 0
+        row = db_session.query(V4ShadowRunEvent).filter_by(ticker="DUPL.B").one()
+        assert row.category == "DUPLICATE_LISTING" and "DUPL" in row.message
+
     def test_before_the_deadline_evaluation_proceeds(self, db_session):
         from models.ai_thesis_version import AIThesisVersion
         from models.company import Company

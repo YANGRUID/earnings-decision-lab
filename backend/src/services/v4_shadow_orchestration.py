@@ -191,6 +191,52 @@ def _research_is_ready(
     return True, "", ""
 
 
+#: The calendar no longer corroborates this event's date: the provider that is
+#: authoritative for it stopped listing it (services/earnings_calendar_sync.py),
+#: or an operator verified that no report takes place on it.
+CALENDAR_UNCORROBORATED = "CALENDAR_UNCORROBORATED"
+#: A share-class listing of a report that is already an event of its own.
+DUPLICATE_LISTING = "DUPLICATE_LISTING"
+
+
+def _calendar_identity_block(db: Session, event: object) -> tuple[str, str] | None:
+    """Why this calendar row must not become a decision, or None.
+
+    Proven defect (2026-09-09 .. 09-16): the vanished-event reconciliation
+    marked rows SKIPPED and logged that such an event "will not enter a
+    decision window", but nothing at the decision gate ever read the status --
+    only research preparation did. A row whose date its own provider stopped
+    listing was therefore still decided whenever research happened to be
+    ready, which is exactly the ORCL failure the reconciliation was built to
+    prevent. Neither case is a failure; both are recorded, never silent.
+    """
+    from services.listing_identity import (  # noqa: PLC0415 -- local, avoids cycle
+        duplicate_listing_of,
+        duplicate_listing_reason,
+    )
+
+    status = getattr(event, "status", None)
+    if str(getattr(status, "name", status)).upper() == "SKIPPED":
+        verified_note = getattr(event, "verification_note", None)
+        if getattr(event, "verified_at", None) is not None:
+            return CALENDAR_UNCORROBORATED, (
+                "operator verified that no earnings report takes place on this date"
+                + (f": {verified_note}" if verified_note else "")
+            )
+        by = getattr(event, "vanished_by", None)
+        return CALENDAR_UNCORROBORATED, (
+            "the calendar no longer corroborates this date"
+            + (f" ({by} stopped listing it)" if by else "")
+            + "; no decision is generated against an uncorroborated date"
+        )
+    if not isinstance(event, EarningsCalendarEvent):
+        return None
+    canonical = duplicate_listing_of(db, event)
+    if canonical is not None:
+        return DUPLICATE_LISTING, duplicate_listing_reason(canonical)
+    return None
+
+
 def run_shadow_decisions_for_due_events(
     db: Session,
     settings: Settings,
@@ -259,6 +305,22 @@ def run_shadow_decisions_for_due_events(
                         existing.id,
                     )
                 )
+                continue
+
+            blocked = _calendar_identity_block(db, event)
+            if blocked is not None:
+                category, why = blocked
+                not_eligible += 1
+                _record_event(
+                    db,
+                    event_id=event.id,
+                    ticker=ticker,
+                    stage="calendar_gate",
+                    category=category,
+                    message=why,
+                    retryable=False,
+                )
+                outcomes.append(ShadowEventOutcome(event.id, ticker, category, why))
                 continue
 
             ready, why, category = _research_is_ready(db, company, event)
