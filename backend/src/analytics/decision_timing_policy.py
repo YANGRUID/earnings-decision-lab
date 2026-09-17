@@ -59,6 +59,11 @@ class DecisionTimingPolicy:
     entry_time: time
     exit_time: time
     description: str
+    #: Whether a forward decision requires the report's own session (BMO or
+    #: AMC) to be known. See V4_TIMING_POLICY_V3 for the defect this closes.
+    #: Carried on the policy rather than read from a setting, so every frozen
+    #: record says which eligibility rule produced it.
+    requires_confirmed_timing: bool = False
 
     @property
     def entry_hour(self) -> int:
@@ -119,14 +124,58 @@ V4_TIMING_POLICY_V2 = DecisionTimingPolicy(
     ),
 )
 
+#: V4-only eligibility change (2026-09-17), prospective from the first
+#: window after deployment: an event whose announcement session is not known
+#: to be BMO or AMC no longer produces a forward decision at all.
+#:
+#: The defect it closes. v1/v2 gave an UNKNOWN session the conservative
+#: BMO-SHAPED schedule (analytics/earnings_timing.py::
+#: compute_entry_exit_schedule, "never assume AMC"): decide D-1 15:30,
+#: settle D 15:30. That rule was built to protect the ENTRY, and it does --
+#: entering a trading day early is never look-ahead whatever the real
+#: session turns out to be. It does not protect the SETTLEMENT. If the
+#: company actually reports after D's close, the release happens AFTER the
+#: 15:30 settlement observation, so the whole D-1 15:30 -> D 15:30
+#: observation spans no earnings at all, and is then graded and published
+#: as an earnings result. That is the ORCL contamination shape (an
+#: observation over a window containing no report), reached from the timing
+#: field instead of from the date field.
+#:
+#: Guessing a session is therefore not the safe default it looks like, and
+#: blocking costs nothing real: measured on this deployment's own calendar
+#: (2026-09-17), every >=$10B UPCOMING event with an UNKNOWN session was a
+#: far-future fallback-provider placeholder (earliest 2027-05-10), and all
+#: 13 genuinely upcoming eligible events carried a corroborated BMO or AMC.
+#:
+#: This is a blocking rule, never a scheduling one: the entry/exit clock is
+#: identical to v2, so an event whose session becomes known simply enters
+#: its own legal window on the normal schedule (no early decision, and no
+#: decision written after the window has passed).
+V4_TIMING_POLICY_V3_VERSION = "v4-1530-entry-1530-t1-settlement-confirmed-timing-v3"
+
+V4_TIMING_POLICY_V3 = DecisionTimingPolicy(
+    version=V4_TIMING_POLICY_V3_VERSION,
+    entry_time=time(15, 30),
+    exit_time=time(15, 30),
+    description=(
+        "V4 forward-test cohort, v3: identical observation clock to v2 (decision and entry "
+        "at 15:30 ET on the legal pre-earnings trading day, settlement at 15:30 ET on the "
+        "first post-earnings trading day), with one added eligibility rule -- an event whose "
+        "announcement session is not known to be BMO or AMC produces no forward decision, "
+        "instead of being scheduled as if it were BMO."
+    ),
+    requires_confirmed_timing=True,
+)
+
 #: The policy every NEW V4 observation runs under. Historical rows resolve
 #: their own stored version through get_timing_policy().
-V4_ACTIVE_TIMING_POLICY = V4_TIMING_POLICY_V2
+V4_ACTIVE_TIMING_POLICY = V4_TIMING_POLICY_V3
 
 _BY_VERSION: dict[str, DecisionTimingPolicy] = {
     V3_TIMING_POLICY.version: V3_TIMING_POLICY,
     V4_TIMING_POLICY.version: V4_TIMING_POLICY,
     V4_TIMING_POLICY_V2.version: V4_TIMING_POLICY_V2,
+    V4_TIMING_POLICY_V3.version: V4_TIMING_POLICY_V3,
 }
 
 

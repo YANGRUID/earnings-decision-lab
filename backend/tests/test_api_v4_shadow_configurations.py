@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 
 from analytics.decision.v4_expected_move import ExpectedMoveContext
 from analytics.decision.v4_t1_valuation_context import V4T1LegInput, V4T1ValuationContext
+from analytics.decision_timing_policy import V4_ACTIVE_TIMING_POLICY
 from api.deps import get_db
 from api.main import app
 from services.v4_shadow import ShadowCandidateInput, ShadowDecisionView, generate_shadow_decision
@@ -159,7 +160,9 @@ class TestSixConfigReadModel:
         ]
         assert len(body["candidates"]) == 2
         assert body["default_configuration_key"] == "v4_2k_moderate"
-        assert body["timing_policy_version"] == "v4-1530-entry-1530-t1-settlement-v2"  # active v2
+        # The ACTIVE policy, whatever it is: a new decision records the rule it
+        # ran under, and v3 (2026-09-17) changed only eligibility, not the clock.
+        assert body["timing_policy_version"] == V4_ACTIVE_TIMING_POLICY.version
 
     def test_each_configuration_carries_its_own_identity_and_rank_1(self, client, frozen_decision):
         body = client.get(

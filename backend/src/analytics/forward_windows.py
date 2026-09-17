@@ -66,6 +66,38 @@ def announcement_session(event) -> AnnouncementTime:
     return TIMING_TO_ANNOUNCEMENT_TIME[coerce_earnings_timing(event.earnings_time)]
 
 
+#: The only two sessions whose 15:30 -> 15:30 observation is guaranteed to
+#: contain the report itself. BMO: released before the earnings day's open, so
+#: D-1 15:30 -> D 15:30 straddles it. AMC: released after the earnings day's
+#: close, so D 15:30 -> D+1 15:30 straddles it.
+CONFIRMED_TIMINGS = frozenset({EarningsTiming.BMO, EarningsTiming.AMC})
+
+
+def timing_is_confirmed(event) -> bool:
+    """Whether this event's announcement session is known well enough to
+    observe a forward window around it -- see CONFIRMED_TIMINGS, and
+    analytics/decision_timing_policy.py::V4_TIMING_POLICY_V3 for why an
+    unconfirmed session is blocked rather than guessed."""
+    return coerce_earnings_timing(event.earnings_time) in CONFIRMED_TIMINGS
+
+
+def unconfirmed_timing_reason(event) -> str:
+    """Why this event's session does not support a forward observation.
+    Never reached for a BMO/AMC event."""
+    if coerce_earnings_timing(event.earnings_time) is EarningsTiming.DMH:
+        return (
+            "the calendar reports this release during market hours, so the 15:30 ET settlement "
+            "observation may be taken before the release itself; no decision is generated until "
+            "the session is corroborated as before the open or after the close"
+        )
+    return (
+        "the calendar does not say whether this company reports before the open or after the "
+        "close; scheduling it as BMO would settle at 15:30 ET on the earnings day, which is "
+        "before an after-close release -- an observation spanning no report at all. No decision "
+        "is generated until the session is corroborated as BMO or AMC"
+    )
+
+
 def decision_deadline_for(now: datetime) -> datetime:
     """The deadline instant on ``now``'s Eastern calendar day."""
     local = now.astimezone(EASTERN)

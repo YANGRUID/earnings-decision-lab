@@ -47,6 +47,8 @@ from typing import Protocol
 
 from sqlalchemy.orm import Session
 
+from analytics.decision_timing_policy import V4_ACTIVE_TIMING_POLICY
+from analytics.forward_windows import timing_is_confirmed, unconfirmed_timing_reason
 from core.config import Settings
 from models.company import Company
 from models.earnings_calendar_event import EarningsCalendarEvent
@@ -197,6 +199,28 @@ def _research_is_ready(
 CALENDAR_UNCORROBORATED = "CALENDAR_UNCORROBORATED"
 #: A share-class listing of a report that is already an event of its own.
 DUPLICATE_LISTING = "DUPLICATE_LISTING"
+#: The report's announcement session is not known to be BMO or AMC, so no
+#: window can be shown to contain the release (V4_TIMING_POLICY_V3).
+TIMING_UNCONFIRMED = "TIMING_UNCONFIRMED"
+
+
+def _timing_confirmation_block(event: object) -> tuple[str, str] | None:
+    """Why this event's announcement session must not become a decision, or
+    None. Governed by the ACTIVE timing policy, so the rule this run applied
+    is always recoverable from the policy version frozen on its records --
+    under a policy that does not require a confirmed session (v1/v2) this
+    returns None and nothing changes.
+
+    Never a failure and never retryable in the operational sense: the block
+    is lifted the moment the calendar corroborates a session, and if that
+    only happens after the window has passed the event is recorded as missed,
+    never decided late.
+    """
+    if not V4_ACTIVE_TIMING_POLICY.requires_confirmed_timing:
+        return None
+    if timing_is_confirmed(event):
+        return None
+    return TIMING_UNCONFIRMED, unconfirmed_timing_reason(event)
 
 
 def _calendar_identity_block(db: Session, event: object) -> tuple[str, str] | None:
@@ -307,7 +331,7 @@ def run_shadow_decisions_for_due_events(
                 )
                 continue
 
-            blocked = _calendar_identity_block(db, event)
+            blocked = _calendar_identity_block(db, event) or _timing_confirmation_block(event)
             if blocked is not None:
                 category, why = blocked
                 not_eligible += 1

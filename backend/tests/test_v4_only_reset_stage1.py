@@ -31,9 +31,13 @@ def _event(earnings_date, timing):
 
 
 class TestTimingPolicyV2:
-    def test_v2_is_active_and_settles_at_1530_on_t_plus_one(self):
-        assert V4_ACTIVE_TIMING_POLICY is V4_TIMING_POLICY_V2
+    def test_v2_settles_at_1530_on_t_plus_one_and_the_active_clock_still_does(self):
+        """v3 superseded v2 as the ACTIVE policy (2026-09-17), adding an
+        eligibility rule and nothing else -- so what this test is really about,
+        the 15:30/15:30 observation clock, is asserted on both."""
         assert V4_TIMING_POLICY_V2.version == "v4-1530-entry-1530-t1-settlement-v2"
+        assert V4_ACTIVE_TIMING_POLICY.entry_time == V4_TIMING_POLICY_V2.entry_time
+        assert V4_ACTIVE_TIMING_POLICY.exit_time == V4_TIMING_POLICY_V2.exit_time
         assert (V4_TIMING_POLICY_V2.entry_time.hour, V4_TIMING_POLICY_V2.entry_time.minute) == (
             15,
             30,
@@ -154,7 +158,10 @@ class TestSettlementWindowV2:
             .filter_by(shadow_decision_id=result.decision_id)
             .all()
         )
-        assert {r.timing_policy_version for r in rows} == {V4_TIMING_POLICY_V2.version}
+        # A settlement records the policy ACTIVE when it was taken -- the same
+        # prospective-transition rule that made these rows say v2 rather than
+        # the v1 their entries were frozen under.
+        assert {r.timing_policy_version for r in rows} == {V4_ACTIVE_TIMING_POLICY.version}
         # The frozen entry/decision rows still say what they said.
         assert {e.timing_policy_version for e in entries} == frozen_entry_versions
         assert (
