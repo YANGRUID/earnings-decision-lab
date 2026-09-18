@@ -34,6 +34,26 @@ const summary = {
 
 const companies = Array.from({ length: 24 }, (_, i) => ({ id: i + 1, ticker: `T${String(i + 1).padStart(3, "0")}`, name: `Company ${i + 1}`, cik: null, sector: null, exchange: "NASDAQ", created_at: NOW, updated_at: NOW }));
 
+// An EMPTY V4 track record in the v4.1.0 contract (2026-09-05): the page asks
+// for `?view=all|executable_only` and reads `settlement_quality` directly, so a
+// fixture missing either leaves the page on its error state. Zero counts and
+// 0.0 rates are exactly what the backend returns when nothing has settled.
+const emptySettlementQuality = {
+  total: 0,
+  counts: { EXECUTABLE_BID_ASK: 0, MARKET_CLOSE_FALLBACK: 0, EXPIRATION_INTRINSIC_AT_CLOSE: 0, UNRESOLVED: 0 },
+  executable_settlement_rate: 0,
+  eod_fallback_rate: 0,
+  expiration_intrinsic_rate: 0,
+  unresolved_rate: 0,
+};
+
+function emptyTrackRecordByConfiguration(route: Route) {
+  const view = new URL(route.request().url()).searchParams.get("view") ?? "all";
+  return route.fulfill({
+    json: { notice: "V4", sample_floor: 30, view, view_note: "No settlements yet.", settlement_quality: emptySettlementQuality, metrics_note: "Counts only.", configurations: [] },
+  });
+}
+
 /** Mocks every endpoint the visited pages read. `slowOverviews` makes the
  * Company Search page's per-company reads take `slowMs` each -- the shape of
  * the production stall. */
@@ -46,7 +66,9 @@ async function mockAll(page: Page, { slowMs = 0 } = {}) {
   await page.route("**/system-status", json({ backend: { healthy: true }, database: { healthy: true }, llm: { configured: false, provider: null, model: null }, ibkr: null, tws: null, data_counts: { companies: companies.length, earnings_events: 0, price_bars: 0, filings: 0, filing_chunks: 0 }, freshness: [], providers: { domains: [] } }));
   await page.route("**/v4/shadow/decisions*", json({ notice: "V4", decisions: [] }));
   await page.route("**/v4/shadow/track-record", json({ notice: "V4", cohort: "v4", counts: { shadow_decisions: 0, ranked: 0, no_action: 0, failed: 0, entry_observed: 0, entry_not_executable: 0, settled: 0, settlement_failed: 0 }, sample_sufficiency: "INSUFFICIENT SAMPLE" }));
-  await page.route("**/v4/shadow/track-record/by-configuration", json({ notice: "V4", sample_floor: 30, metrics_note: "Counts only.", configurations: [] }));
+  // Trailing `**`: the request carries `?view=`, and a glob must match the
+  // whole URL -- without it the request escaped this mock entirely.
+  await page.route("**/v4/shadow/track-record/by-configuration**", emptyTrackRecordByConfiguration);
   await page.route("**/earnings-calendar/by-month*", json([]));
   await page.route("**/companies", json(companies));
   await page.route("**/research/overviews", json({ overviews: companies.map((c) => ({ ticker: c.ticker, company: c, latest_job: null, earnings_events_count: 0, price_bars_count: 0, filings_count: 0, filing_chunks_count: 0, latest_earnings_estimate: null, latest_volatility_snapshot: null, latest_price: null, historical_moves: null, options_market: { chain_exists: false, contract_count: 0, priceable_contract_count: 0, has_bid_ask: false, has_iv: false, has_greeks: false, bid_ask_contract_count: 0, iv_contract_count: 0, greeks_contract_count: 0, volume_coverage: 0, oi_coverage: 0, implied_move_available: false, earnings_anchored: null, expiration: null, market_data_quality: null, snapshot_timestamp: null, snapshot_tier: "none", is_fallback: false, snapshot_purpose: null, data_state: "no_chain" } })) }));

@@ -75,7 +75,13 @@ async function mockDashboard(page: Page) {
     return route.fulfill({ json: { events } });
   });
   await page.route("**/v4/shadow/decisions*", json({ notice: "V4", decisions: [] }));
-  await page.route("**/v4/shadow/track-record/by-configuration", json({ notice: "V4", sample_floor: 30, metrics_note: "Counts only.", configurations: [] }));
+  // The dashboard header asks for `?view=all`, so the glob needs the trailing
+  // `**`; the body is an EMPTY record in the v4.1.0 contract, with zero counts
+  // and 0.0 rates exactly as the backend returns them when nothing has settled.
+  await page.route("**/v4/shadow/track-record/by-configuration**", json({
+    notice: "V4", sample_floor: 30, view: "all", view_note: "No settlements yet.", metrics_note: "Counts only.", configurations: [],
+    settlement_quality: { total: 0, counts: { EXECUTABLE_BID_ASK: 0, MARKET_CLOSE_FALLBACK: 0, EXPIRATION_INTRINSIC_AT_CLOSE: 0, UNRESOLVED: 0 }, executable_settlement_rate: 0, eod_fallback_rate: 0, expiration_intrinsic_rate: 0, unresolved_rate: 0 },
+  }));
   await page.route("**/earnings-calendar/by-month*", json(monthEvents));
   await page.route("**/research/*/overview", json({ ticker: "X", company: null, latest_job: null, earnings_events_count: 0, price_bars_count: 0, filings_count: 0, filing_chunks_count: 0, latest_earnings_estimate: null, latest_volatility_snapshot: null, latest_price: null, historical_moves: null, options_market: { chain_exists: false, contract_count: 0, priceable_contract_count: 0, has_bid_ask: false, has_iv: false, has_greeks: false, bid_ask_contract_count: 0, iv_contract_count: 0, greeks_contract_count: 0, volume_coverage: 0, oi_coverage: 0, implied_move_available: false, earnings_anchored: null, expiration: null, market_data_quality: null, snapshot_timestamp: null, snapshot_tier: "none", is_fallback: false, snapshot_purpose: null, data_state: "no_chain" } }));
 }
