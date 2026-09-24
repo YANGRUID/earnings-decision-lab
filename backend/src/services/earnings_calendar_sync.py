@@ -92,6 +92,42 @@ PROFILE_REFRESH_BUDGET_PER_RUN = 25
 #: within this distance. Further apart is a different quarter's report.
 MAX_DATE_CORRECTION_DAYS = 45
 
+#: Largest magnitude ``eps_estimate``/``revenue_estimate`` can hold: both are
+#: ``numeric(18, 6)``, so Postgres refuses anything at or above 10**12.
+_MAX_STORABLE_ESTIMATE = Decimal(10) ** 12
+
+
+def _storable_estimate(value: Decimal | None, *, symbol: str, field: str) -> Decimal | None:
+    """A provider estimate, or None when it cannot be stored as it stands.
+
+    Measured defect (2026-09-19). EarningsAPI reported VinFast (VFS) with a
+    revenue estimate of 30,213,945,297,500 -- roughly 30 trillion, because
+    VinFast reports in Vietnamese dong, not dollars. That overflows
+    ``numeric(18, 6)``, and because every new event of a run is inserted in one
+    batch, ONE such row failed the whole statement: the 2026-09-19 sync created
+    nothing at all, and on other nights the same failure surfaced instead
+    inside an unrelated usage-event commit (see services/usage_instrumentation.
+    py) and was swallowed, leaving a run that reported success.
+
+    Dropping the figure is the honest repair, and the same reasoning the
+    provider chain already applies to a non-USD market cap
+    (providers/fallback.py): the number is real but in an unknown currency, so
+    storing it as dollars would be wrong, and it is informational here -- no
+    eligibility rule, and nothing in V4.1 or V4.2, reads it. The event itself
+    is kept, which is what the calendar exists to record.
+    """
+    if value is None or abs(value) < _MAX_STORABLE_ESTIMATE:
+        return value
+    log.warning(
+        "%s: dropping %s %s -- outside the storable range, most likely reported "
+        "in a non-USD currency; the event is kept without it",
+        symbol,
+        field,
+        value,
+    )
+    return None
+
+
 _SESSION_TO_TIMING = {
     "bmo": EarningsTiming.BMO,
     "amc": EarningsTiming.AMC,
@@ -611,8 +647,12 @@ def _upsert_entry(
                 logo_url=profile.logo_url if profile else None,
                 earnings_date=entry.earnings_date,
                 earnings_time=timing,
-                eps_estimate=entry.eps_estimate,
-                revenue_estimate=entry.revenue_estimate,
+                eps_estimate=_storable_estimate(
+                    entry.eps_estimate, symbol=entry.symbol, field="eps_estimate"
+                ),
+                revenue_estimate=_storable_estimate(
+                    entry.revenue_estimate, symbol=entry.symbol, field="revenue_estimate"
+                ),
                 market_cap=profile.market_cap if profile else None,
                 country=profile.country if profile else None,
                 status=EarningsCalendarEventStatus.UPCOMING,
@@ -677,13 +717,17 @@ def _upsert_entry(
             changed = True
         existing.last_confirmed_by = provider_name
         existing.last_confirmed_at = now
-    if entry.eps_estimate is not None and existing.eps_estimate != entry.eps_estimate:
+    eps = _storable_estimate(entry.eps_estimate, symbol=entry.symbol, field="eps_estimate")
+    if eps is not None and existing.eps_estimate != eps:
         if authoritative or existing.eps_estimate is None:
-            existing.eps_estimate = entry.eps_estimate
+            existing.eps_estimate = eps
             changed = True
-    if entry.revenue_estimate is not None and existing.revenue_estimate != entry.revenue_estimate:
+    revenue = _storable_estimate(
+        entry.revenue_estimate, symbol=entry.symbol, field="revenue_estimate"
+    )
+    if revenue is not None and existing.revenue_estimate != revenue:
         if authoritative or existing.revenue_estimate is None:
-            existing.revenue_estimate = entry.revenue_estimate
+            existing.revenue_estimate = revenue
             changed = True
     if profile is not None:
         if profile.name and existing.company_name != profile.name:

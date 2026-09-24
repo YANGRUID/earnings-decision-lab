@@ -789,3 +789,66 @@ class TestEarningsDateCorrection:
         assert rows[0].earnings_date == date(2030, 5, 6)
         assert rows[0].status == EarningsCalendarEventStatus.UPCOMING
         assert result.date_corrected == 1
+
+
+class TestAnUnstorableProviderEstimate:
+    """Measured defect (2026-09-19): EarningsAPI reported VinFast (VFS) with a
+    revenue estimate of 30,213,945,297,500 -- VinFast reports in Vietnamese
+    dong, not dollars. That overflows numeric(18, 6), and because every new
+    event of a run is inserted in one batch, the single bad row failed the
+    whole statement: the 2026-09-19 sync created nothing at all.
+    """
+
+    def test_a_dong_denominated_revenue_is_dropped_and_the_event_kept(self, db_session):
+        """The event is what the calendar exists to record; the figure is
+        informational and no eligibility or V4 rule reads it."""
+        provider = _FakeCalendarProvider(
+            [
+                _entry(
+                    "TESTVFS",
+                    date(2030, 1, 5),
+                    "bmo",
+                    revenue_estimate=Decimal("30213945297500"),
+                    eps_estimate=Decimal("-0.33"),
+                )
+            ],
+            {},
+        )
+
+        result = sync_earnings_calendar(db_session, provider, today=date(2030, 1, 1))
+        db_session.flush()
+
+        assert result.created == 1
+        row = db_session.query(EarningsCalendarEvent).filter_by(symbol="TESTVFS").one()
+        assert row.revenue_estimate is None
+        assert row.eps_estimate == Decimal("-0.33")
+
+    def test_one_unstorable_row_does_not_take_the_rest_of_the_batch_with_it(self, db_session):
+        """The real cost of the defect: a whole night's calendar, lost to one
+        company's reporting currency."""
+        provider = _FakeCalendarProvider(
+            [
+                _entry("TESTVFS", date(2030, 1, 5), "bmo", revenue_estimate=Decimal("30213945297500")),
+                _entry("TESTOK", date(2030, 1, 5), "bmo", revenue_estimate=Decimal("935100000")),
+            ],
+            {},
+        )
+
+        result = sync_earnings_calendar(db_session, provider, today=date(2030, 1, 1))
+        db_session.flush()
+
+        assert result.created == 2
+        assert db_session.query(EarningsCalendarEvent).filter_by(symbol="TESTOK").one().revenue_estimate == Decimal("935100000")
+
+    def test_a_large_but_storable_estimate_is_untouched(self, db_session):
+        """BABA's real 277bn revenue estimate is the largest on record here --
+        the guard must not round down honest figures."""
+        provider = _FakeCalendarProvider(
+            [_entry("TESTBABA", date(2030, 1, 5), "bmo", revenue_estimate=Decimal("277646456802"))],
+            {},
+        )
+
+        sync_earnings_calendar(db_session, provider, today=date(2030, 1, 1))
+        db_session.flush()
+        row = db_session.query(EarningsCalendarEvent).filter_by(symbol="TESTBABA").one()
+        assert row.revenue_estimate == Decimal("277646456802")
