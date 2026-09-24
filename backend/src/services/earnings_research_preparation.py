@@ -119,11 +119,27 @@ def _latest_job_for_event(
     )
 
 
-def v4_research_ready(db: Session, symbol: str, *, now: datetime) -> tuple[bool, str]:
+def v4_research_ready(
+    db: Session, symbol: str, *, now: datetime, as_of: datetime | None = None
+) -> tuple[bool, str]:
     """The V4 decision gate's own readiness definition (V4-only reset,
     2026-09-02): a Company row exists AND a fresh AI thesis is on record.
     Shared with the catch-up pass so "ready" means the same thing at 13:00
-    ET as it does at 15:30 ET."""
+    ET as it does at 15:30 ET.
+
+    ``as_of`` is the instant readiness has to HOLD AT, defaulting to ``now``.
+    The decision gate asks about now, because now is when it decides. A
+    preparation pass must ask about the event's own legal decision window
+    instead -- see enqueue_preparation_candidates.
+
+    Measured gap (2026-09-24): the catch-up ran at 13:00 ET and judged
+    freshness at 13:00, while the gate judged it again at 15:30. A thesis
+    that crossed THESIS_FRESHNESS_DAYS between those two moments was fresh
+    when the only pass that could refresh it looked, and stale when the gate
+    looked, so the window was lost as RESEARCH_NOT_READY with nothing having
+    failed. COST crossed at 05:31 that day and was caught only because the
+    crossing happened to fall before 13:00.
+    """
     from models.ai_thesis_version import AIThesisVersion  # noqa: PLC0415
     from models.company import Company  # noqa: PLC0415
     from services.research_orchestration import THESIS_FRESHNESS_DAYS  # noqa: PLC0415
@@ -139,9 +155,26 @@ def v4_research_ready(db: Session, symbol: str, *, now: datetime) -> tuple[bool,
     )
     if latest is None:
         return False, "no AI thesis"
-    if (now - latest.created_at).total_seconds() >= THESIS_FRESHNESS_DAYS * 86400:
-        return False, f"AI thesis is {(now - latest.created_at).days}d old"
+    deadline = as_of or now
+    age = deadline - latest.created_at
+    if age.total_seconds() >= THESIS_FRESHNESS_DAYS * 86400:
+        if as_of is not None and as_of > now:
+            return False, f"AI thesis will be {age.days}d old at the decision window"
+        return False, f"AI thesis is {age.days}d old"
     return True, ""
+
+
+def legal_decision_window(event: EarningsCalendarEvent) -> datetime:
+    """When this event's forward decision is legally due -- the real
+    BMO/AMC-aware instant from the active timing policy, never "today at
+    15:30"."""
+    from analytics.decision_timing_policy import V4_ACTIVE_TIMING_POLICY  # noqa: PLC0415
+    from analytics.earnings_timing import compute_entry_exit_schedule  # noqa: PLC0415
+    from analytics.forward_windows import announcement_session  # noqa: PLC0415
+
+    return compute_entry_exit_schedule(
+        event.earnings_date, announcement_session(event), policy=V4_ACTIVE_TIMING_POLICY
+    ).entry_timestamp
 
 
 def enqueue_readiness_catchup(
@@ -232,7 +265,15 @@ def enqueue_preparation_candidates(
                 # thesis (e.g. prepared before the thesis step existed) is
                 # queued again so the decision window does not meet
                 # RESEARCH_NOT_READY for a company that was, on paper, done.
-                ready, why = v4_research_ready(db, event.symbol, now=now)
+                # Judged at the event's OWN legal window, not at now: a
+                # refresh queued here is the last one that can happen before
+                # that window, so "fresh enough right now" is the wrong
+                # question to ask (see v4_research_ready's docstring). A
+                # window already in the past falls back to now.
+                window = legal_decision_window(event)
+                ready, why = v4_research_ready(
+                    db, event.symbol, now=now, as_of=window if window > now else now
+                )
                 if not ready:
                     job = ResearchPreparationJob(
                         ticker=event.symbol,
