@@ -82,33 +82,55 @@ def record_usage_event(
 ) -> None:
     if db is None:
         return
+    event = ProviderUsageEvent(
+        provider=provider,
+        domain=domain,
+        operation=operation,
+        occurred_at=datetime.now(UTC),
+        success=success,
+        latency_ms=latency_ms,
+        status_code=status_code,
+        rate_limited=rate_limited,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        total_tokens=total_tokens,
+        model=model,
+        reasoning_effort=reasoning_effort,
+        reasoning_tokens=reasoning_tokens,
+        cache_hit_tokens=cache_hit_tokens,
+        provider_units=provider_units,
+        estimated_cost=None,
+        credential_fingerprint=credential_fingerprint,
+    )
+    # Telemetry gets its OWN transaction, never the caller's.
+    #
+    # Measured defect (2026-09-18 .. 09-21). This used to add the row to the
+    # caller's session and commit it. A commit flushes everything pending in
+    # that session, so a provider call made in the middle of building something
+    # else committed that work early -- and when the flush failed, the caller's
+    # rows were rolled back and the failure was logged here as "failed to
+    # record provider usage event". The earnings calendar sync hit exactly
+    # that: one un-storable provider estimate (see services/
+    # earnings_calendar_sync.py::_storable_estimate) surfaced as a swallowed
+    # usage-recording warning while the sync itself reported success, so nights
+    # that lost calendar writes looked healthy.
+    #
+    # A short-lived session on the same connection pool keeps the two apart in
+    # both directions: telemetry can no longer commit or discard business
+    # state, and a business rollback no longer erases the telemetry.
+    session: Session | None = None
     try:
-        db.add(
-            ProviderUsageEvent(
-                provider=provider,
-                domain=domain,
-                operation=operation,
-                occurred_at=datetime.now(UTC),
-                success=success,
-                latency_ms=latency_ms,
-                status_code=status_code,
-                rate_limited=rate_limited,
-                input_tokens=input_tokens,
-                output_tokens=output_tokens,
-                total_tokens=total_tokens,
-                model=model,
-                reasoning_effort=reasoning_effort,
-                reasoning_tokens=reasoning_tokens,
-                cache_hit_tokens=cache_hit_tokens,
-                provider_units=provider_units,
-                estimated_cost=None,
-                credential_fingerprint=credential_fingerprint,
-            )
-        )
-        db.commit()
+        bind = db.get_bind()
+        session = Session(bind=bind)
+        session.add(event)
+        session.commit()
     except Exception:
         log.warning("failed to record provider usage event", exc_info=True)
-        db.rollback()
+        if session is not None:
+            session.rollback()
+    finally:
+        if session is not None:
+            session.close()
 
 
 def _request_units(operation: str, args: tuple[Any, ...]) -> int | None:
