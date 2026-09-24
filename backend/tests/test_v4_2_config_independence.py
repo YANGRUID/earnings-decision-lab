@@ -359,3 +359,54 @@ class TestNoNakedShorts:
         ):
             assert decision.status == STATUS_NO_ACTION
             assert decision.position is None
+
+
+class TestARiskCapIsNeverExceeded:
+    """The defect measured in Phase 1's own production evidence: four of its
+    twelve challenger entries hold two to three times their configuration's
+    stated cap, because the per-configuration layer was never given each
+    candidate's max loss and so the cap could never bind. Sizing then floored
+    quantity at one contract for a candidate nothing had checked would fit.
+
+    Phase 2 refuses on risk BEFORE selection, so sizing is only ever asked to
+    size a structure already known to fit at one contract.
+    """
+
+    def test_no_configuration_ever_holds_more_than_its_cap(self):
+        universe = [
+            # Exactly the shape that slipped through: good economics, and a
+            # single contract already risks more than the two smallest caps.
+            _candidate("BIGRISK", "put_credit_spread", median="0.20", entry_cash="0",
+                       max_risk="930"),
+            _candidate("SMALLRISK", "bear_put_spread", median="0.05", entry_cash="180",
+                       max_risk="180"),
+        ]
+
+        for decision in decide_all_configurations(
+            universe, V4_CONFIGURATIONS, evidence=NO_MOVE_EVIDENCE
+        ):
+            if decision.position is None:
+                continue
+            assert decision.position.max_risk_used <= decision.configuration.max_risk_dollars, (
+                f"{decision.configuration.key} holds "
+                f"${decision.position.max_risk_used} against a "
+                f"${decision.configuration.max_risk_dollars} cap"
+            )
+            assert decision.position.quantity >= 1
+
+    def test_the_small_configurations_take_the_structure_that_fits(self):
+        universe = [
+            _candidate("BIGRISK", "put_credit_spread", median="0.20", entry_cash="0",
+                       max_risk="930"),
+            _candidate("SMALLRISK", "bear_put_spread", median="0.05", entry_cash="180",
+                       max_risk="180"),
+        ]
+
+        decided = _by_key(
+            decide_all_configurations(universe, V4_CONFIGURATIONS, evidence=NO_MOVE_EVIDENCE)
+        )
+
+        assert decided["v4_2k_conservative"].selected_candidate_id == "SMALLRISK"
+        assert decided["v4_2k_moderate"].selected_candidate_id == "SMALLRISK"
+        assert decided["v4_2k_aggressive"].selected_candidate_id == "BIGRISK"
+        assert decided["v4_10k_aggressive"].selected_candidate_id == "BIGRISK"

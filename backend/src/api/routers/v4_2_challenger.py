@@ -395,6 +395,417 @@ def multi_expiry_dry_run(
     return out
 
 
+PHASE_2_NOTICE = (
+    "V4.2 PHASE 2 -- INDEPENDENT SEARCH. A separate methodology from Phase 1, with its "
+    "own activation boundary. Phase 1 judges the control's own shortlist on the one "
+    "expiry V4.1 chose; Phase 2 builds its own bounded multi-expiry universe and lets "
+    "each of the six configurations choose within it. The two are NOT one series and "
+    "must never be concatenated."
+)
+
+
+@router.get("/phase2/status")
+def get_phase2_status(db: DbSession) -> dict:
+    """Methodology identity, activation state and what Phase 2 has recorded."""
+    from datetime import UTC, datetime  # noqa: PLC0415
+
+    from analytics.decision.v4_2_phase2_methodology import (  # noqa: PLC0415
+        PHASE_2_METHODOLOGY,
+        PHASE_2_VERSIONS,
+    )
+    from analytics.decision.v4_configurations import V4_CONFIGURATIONS  # noqa: PLC0415
+    from core.config import get_settings  # noqa: PLC0415
+    from models.v4_2_challenger import (  # noqa: PLC0415
+        V42ChallengerCandidate,
+        V42ChallengerConfigResult,
+        V42ChallengerDecision,
+    )
+    from services.v4_2_phase2_evidence import phase2_activated  # noqa: PLC0415
+
+    settings = get_settings()
+    activation_at = getattr(settings, "v4_2_independent_search_activation_at", None)
+    enabled = bool(getattr(settings, "v4_2_independent_search_enabled", False))
+    now = datetime.now(UTC)
+    would_run, why = phase2_activated(
+        enabled=enabled, activation_at=activation_at, legal_decision_window_at=now
+    )
+
+    decisions = (
+        db.query(V42ChallengerDecision)
+        .filter(V42ChallengerDecision.methodology_version == PHASE_2_METHODOLOGY)
+        .all()
+    )
+    decision_ids = [d.id for d in decisions]
+    candidates = (
+        db.query(V42ChallengerCandidate)
+        .filter(V42ChallengerCandidate.challenger_decision_id.in_(decision_ids or [0]))
+        .count()
+    )
+    config_rows = (
+        db.query(V42ChallengerConfigResult)
+        .filter(V42ChallengerConfigResult.challenger_decision_id.in_(decision_ids or [0]))
+        .all()
+    )
+
+    return {
+        "notice": PHASE_2_NOTICE,
+        "methodology_version": PHASE_2_METHODOLOGY,
+        "versions": PHASE_2_VERSIONS.as_dict(),
+        "enabled": enabled,
+        "activation_at": activation_at.isoformat() if activation_at else None,
+        "would_evaluate_a_window_now": would_run,
+        "activation_state": "ACTIVE" if would_run else (why or "not activated"),
+        "max_expiries": int(
+            getattr(settings, "v4_2_independent_search_max_expiries", 3) or 3
+        ),
+        "configurations": [
+            {
+                "configuration_key": c.key,
+                "label": c.label,
+                "capital_base": str(c.capital_base),
+                "risk_profile": c.risk_profile.value,
+                "max_risk_dollars": str(c.max_risk_dollars),
+                "max_risk_utilization_pct": str(c.max_risk_utilization_pct),
+                "min_bid_ask_coverage": (
+                    None if c.min_bid_ask_coverage is None else str(c.min_bid_ask_coverage)
+                ),
+            }
+            for c in V4_CONFIGURATIONS
+        ],
+        "recorded": {
+            "decisions": len(decisions),
+            "candidates": candidates,
+            "configuration_results": len(config_rows),
+            "configurations_actioned": sum(1 for r in config_rows if r.status == "RANKED"),
+            "events_with_divergent_selections": sum(
+                1 for d in decisions if (d.distinct_selected_candidates or 0) > 1
+            ),
+            "expiries_searched": sum(d.expiries_considered or 0 for d in decisions),
+        },
+    }
+
+
+@router.get("/phase2/decisions")
+def list_phase2_decisions(db: DbSession, limit: int = 50) -> dict:
+    """Every Phase-2 event with its six-configuration grid."""
+    from analytics.decision.v4_2_phase2_methodology import PHASE_2_METHODOLOGY  # noqa: PLC0415
+    from models.v4_2_challenger import (  # noqa: PLC0415
+        V42ChallengerConfigResult,
+        V42ChallengerDecision,
+    )
+
+    decisions = (
+        db.query(V42ChallengerDecision)
+        .filter(V42ChallengerDecision.methodology_version == PHASE_2_METHODOLOGY)
+        .order_by(V42ChallengerDecision.id.desc())
+        .limit(limit)
+        .all()
+    )
+    by_decision: dict[int, list] = {}
+    if decisions:
+        for row in (
+            db.query(V42ChallengerConfigResult)
+            .filter(
+                V42ChallengerConfigResult.challenger_decision_id.in_([d.id for d in decisions])
+            )
+            .order_by(V42ChallengerConfigResult.id)
+        ):
+            by_decision.setdefault(row.challenger_decision_id, []).append(row)
+
+    return {
+        "notice": PHASE_2_NOTICE,
+        "events": [
+            {
+                "decision_id": d.id,
+                "ticker": d.ticker,
+                "observed_at": d.observed_at.isoformat() if d.observed_at else None,
+                "status": d.status,
+                "expiries_considered": d.expiries_considered,
+                "multi_expiry_status": d.multi_expiry_status,
+                "candidates_evaluated": d.candidates_evaluated,
+                "configurations_actioned": d.configurations_actioned,
+                "distinct_selected_candidates": d.distinct_selected_candidates,
+                "market_data_requests": d.market_data_request_count,
+                "unique_contracts_quoted": d.unique_contracts_quoted,
+                "total_latency_ms": (
+                    None if d.total_latency_ms is None else str(d.total_latency_ms)
+                ),
+                "failure_category": d.failure_category,
+                "configurations": [_phase2_config_row(r) for r in by_decision.get(d.id, [])],
+            }
+            for d in decisions
+        ],
+    }
+
+
+@router.get("/phase2/decisions/{decision_id}")
+def get_phase2_decision(db: DbSession, decision_id: int) -> dict:
+    """One event in full: the searched ladder, the whole candidate universe,
+    and each configuration's own eligible set, ranking and refusals."""
+    from analytics.decision.v4_2_phase2_methodology import PHASE_2_METHODOLOGY  # noqa: PLC0415
+    from models.v4_2_challenger import (  # noqa: PLC0415
+        V42ChallengerCandidate,
+        V42ChallengerConfigResult,
+        V42ChallengerDecision,
+    )
+
+    decision = (
+        db.query(V42ChallengerDecision)
+        .filter(
+            V42ChallengerDecision.id == decision_id,
+            V42ChallengerDecision.methodology_version == PHASE_2_METHODOLOGY,
+        )
+        .one_or_none()
+    )
+    if decision is None:
+        raise InvalidRequestError(f"no Phase-2 decision {decision_id}")
+
+    candidates = (
+        db.query(V42ChallengerCandidate)
+        .filter_by(challenger_decision_id=decision.id)
+        .order_by(V42ChallengerCandidate.expiration, V42ChallengerCandidate.candidate_id)
+        .all()
+    )
+    configs = (
+        db.query(V42ChallengerConfigResult)
+        .filter_by(challenger_decision_id=decision.id)
+        .order_by(V42ChallengerConfigResult.id)
+        .all()
+    )
+
+    return {
+        "notice": PHASE_2_NOTICE,
+        "decision_id": decision.id,
+        "ticker": decision.ticker,
+        "observed_at": decision.observed_at.isoformat() if decision.observed_at else None,
+        "methodology_version": decision.methodology_version,
+        "versions": {
+            "candidate_universe": decision.candidate_universe_version,
+            "expiry_ladder": decision.expiry_ladder_version,
+            "ranking": decision.ranking_version,
+            "configuration": decision.configuration_version,
+            "move_edge": decision.move_edge_version,
+            "gate": decision.gate_version,
+            "friction": decision.friction_version,
+            "strategy_registry": decision.strategy_registry_version,
+            "timing_policy": decision.timing_policy_version,
+        },
+        "evidence": {
+            "underlying_price": (
+                None if decision.underlying_price is None else str(decision.underlying_price)
+            ),
+            "market_data_quality": decision.market_data_quality,
+            "implied_move_pct": (
+                None if decision.implied_move_pct is None else str(decision.implied_move_pct)
+            ),
+            "historical_sample_n": decision.historical_sample_n,
+            "historical_evidence_quality": decision.historical_evidence_quality,
+            "historical_median_abs_move_pct": (
+                None
+                if decision.historical_median_abs_move_pct is None
+                else str(decision.historical_median_abs_move_pct)
+            ),
+        },
+        "request_budget": decision.request_budget,
+        "expiries_considered": decision.expiries_considered,
+        "multi_expiry_status": decision.multi_expiry_status,
+        "candidates": [_phase2_candidate_row(c) for c in candidates],
+        "configurations": [_phase2_config_row(r) for r in configs],
+    }
+
+
+@router.get("/phase2/replay")
+def get_phase2_replay(db: DbSession, limit: int = 100) -> dict:
+    """Zero-outcome replay classification. Reads no settlement and no P&L."""
+    from services.v4_2_phase2_replay import replay_report  # noqa: PLC0415
+
+    return replay_report(db, limit=limit)
+
+
+@router.get("/phase2/dry-run")
+def phase2_dry_run(
+    db: DbSession,
+    tws_provider: TwsProviderDep,
+    symbols: str,
+    seconds_budget: float = 180.0,
+    max_variants: int = 3,
+) -> dict:
+    """ZERO-WRITE live dry run of the FULL Phase-2 path, including the six
+    independent configuration decisions.
+
+    This opens real market-data subscriptions -- that is the point, since the
+    request budget and the latency of the real path cannot be measured without
+    paying them once. It remains bounded to at most ``max_variants`` expiries,
+    never sweeps a chain, and writes nothing: no decision, no candidate, no
+    config result, no entry, no settlement, no chain snapshot. Row counts are
+    taken before and after and reported, so 'zero writes' is verified rather
+    than asserted.
+
+    Outside market hours the quotes are delayed or absent. That is reported
+    plainly and such a run does NOT satisfy the market-hours dry-run gate.
+    """
+    import time as _time  # noqa: PLC0415
+    from datetime import UTC, datetime, timedelta  # noqa: PLC0415
+
+    from models.earnings_calendar_event import EarningsCalendarEvent  # noqa: PLC0415
+    from models.v4_shadow import V4ShadowDecision  # noqa: PLC0415
+    from services.v4_2_phase2 import run_independent_search, summarize_phase2  # noqa: PLC0415
+
+    if tws_provider is None:
+        raise InvalidRequestError("no shared TWS provider on this process")
+
+    started = _time.monotonic()
+    now = datetime.now(UTC)
+    before = _write_counts(db)
+    out: dict = {
+        "notice": PHASE_2_NOTICE,
+        "mode": "ZERO_WRITE_DRY_RUN",
+        "market_state": _market_state(now),
+        "satisfies_market_hours_gate": _market_state(now) == "open",
+        "started_at": now.isoformat(),
+        "max_variants": max_variants,
+        "events": [],
+    }
+
+    for raw in symbols.split(","):
+        ticker = raw.strip().upper()
+        if not ticker:
+            continue
+        if _time.monotonic() - started > seconds_budget:
+            out.setdefault("truncated", []).append(ticker)
+            continue
+
+        event = (
+            db.query(EarningsCalendarEvent)
+            .filter(EarningsCalendarEvent.symbol == ticker)
+            .order_by(EarningsCalendarEvent.earnings_date)
+            .first()
+        )
+        control = (
+            db.query(V4ShadowDecision)
+            .filter(V4ShadowDecision.ticker == ticker)
+            .order_by(V4ShadowDecision.id.desc())
+            .first()
+        )
+        stub = _DryRunControl(ticker, now, control)
+        earnings_date = event.earnings_date if event else now.date()
+        try:
+            evaluation = run_independent_search(
+                db,
+                provider=tws_provider,
+                decision=stub,
+                settlement_date=earnings_date + timedelta(days=1),
+                earnings_date=earnings_date,
+                as_of=now,
+                max_variants=max_variants,
+            )
+            entry = summarize_phase2(evaluation)
+            entry["earnings_date"] = earnings_date.isoformat()
+            entry["decision_view_source"] = stub.view_source
+        except Exception as exc:  # noqa: BLE001 -- a dry run must never raise here
+            entry = {"ticker": ticker, "error": f"{type(exc).__name__}: {exc}"}
+        out["events"].append(entry)
+
+    after = _write_counts(db)
+    out["total_latency_ms"] = round((_time.monotonic() - started) * 1000, 1)
+    out["writes_performed"] = {k: after[k] - before[k] for k in before}
+    out["zero_write_verified"] = all(v == 0 for v in out["writes_performed"].values())
+    return out
+
+
+class _DryRunControl:
+    """The four fields Phase 2 reads off a control decision.
+
+    A dry run does not call the language model -- Phase 2 never does, in
+    production either; it reads the control's already-frozen DecisionView for
+    the same window. Where no control decision exists for the ticker, the view
+    falls back to neutral and ``view_source`` says so, because a fabricated
+    directional view would change which geometries get built and make the
+    measured request budget mean something other than it appears to.
+    """
+
+    def __init__(self, ticker: str, now, control) -> None:
+        self.ticker = ticker
+        self.generated_at = now
+        self.earnings_calendar_event_id = None
+        self.id = None
+        self.decision_view_schema_version = None
+        if control is not None:
+            self.view_direction = control.view_direction or "neutral"
+            self.view_volatility = control.view_volatility
+            self.view_source = f"control decision {control.id} ({control.ticker})"
+        else:
+            self.view_direction = "neutral"
+            self.view_volatility = None
+            self.view_source = "neutral fallback -- no control decision exists for this ticker"
+
+
+def _phase2_config_row(row) -> dict:
+    return {
+        "configuration_key": row.configuration_key,
+        "capital_base": str(row.capital_base),
+        "risk_profile": row.risk_profile,
+        "max_risk_dollars": None if row.max_risk_dollars is None else str(row.max_risk_dollars),
+        # The persisted vocabulary is RANKED/NO_ACTION; the brief's word is
+        # ACTION. Translated here so the UI shows one word consistently.
+        "status": "ACTION" if row.status == "RANKED" else row.status,
+        "selected_candidate_id": row.selected_candidate_id,
+        "rank": row.rank,
+        "quantity": row.quantity,
+        "capital_used": None if row.capital_used is None else str(row.capital_used),
+        "max_risk_used": None if row.max_risk_used is None else str(row.max_risk_used),
+        "reason": row.no_action_reason or row.selection_explanation,
+        "rejection_summary": row.rejection_summary,
+        "ranked_candidate_ids": row.ranked_candidate_ids,
+        "ranking_version": row.ranking_version,
+    }
+
+
+def _phase2_candidate_row(row) -> dict:
+    return {
+        "candidate_id": row.candidate_id,
+        "strategy": row.strategy,
+        "expiration": row.expiration.isoformat() if row.expiration else None,
+        "expiry_ladder_position": row.expiry_ladder_position,
+        "entry_dte": row.entry_dte,
+        "dte_at_settlement": row.dte_at_settlement,
+        "settlement_risk": row.settlement_risk,
+        "expiry_implied_move_pct": (
+            None if row.expiry_implied_move_pct is None else str(row.expiry_implied_move_pct)
+        ),
+        "geometry_variant_id": row.geometry_variant_id,
+        "validity_status": row.validity_status,
+        "validity_reason": row.validity_reason,
+        "core_median_return": (
+            None if row.core_median_return is None else str(row.core_median_return)
+        ),
+        "core_worst_return": (
+            None if row.core_worst_return is None else str(row.core_worst_return)
+        ),
+        "core_best_return": None if row.core_best_return is None else str(row.core_best_return),
+        "core_positive_scenario_fraction": (
+            None
+            if row.core_positive_scenario_fraction is None
+            else str(row.core_positive_scenario_fraction)
+        ),
+        "move_edge_status": row.move_edge_status,
+        "move_edge_exposure": row.move_edge_exposure,
+        "mean_relative_spread": (
+            None if row.mean_relative_spread is None else str(row.mean_relative_spread)
+        ),
+        "entry_cash_required": (
+            None if row.entry_cash_required is None else str(row.entry_cash_required)
+        ),
+        "per_contract_max_risk": (
+            None if row.per_contract_max_risk is None else str(row.per_contract_max_risk)
+        ),
+        "n_legs": row.n_legs,
+        "n_legs_with_two_sided_quote": row.n_legs_with_two_sided_quote,
+        "rankable_somewhere": bool(row.viability_acceptable),
+        "market_data_quality": row.market_data_quality,
+    }
+
+
 def _outcomes(stats) -> dict:
     return {
         "settled": stats.settled,

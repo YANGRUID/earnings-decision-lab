@@ -55,7 +55,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
 from decimal import Decimal
-from typing import Any
+from typing import Any, Protocol
 
 from sqlalchemy.orm import Session
 
@@ -77,7 +77,6 @@ from analytics.decision.v4_4b_ranking import (
     classify_candidate_validity,
 )
 from analytics.decision.v4_configurations import V4_CONFIGURATIONS, V4Configuration
-from models.v4_shadow import V4ShadowDecision
 from services.v4_2_move_history import anchored_move_distribution_for_ticker
 from services.v4_2_multi_expiry import (
     MULTI_EXPIRY_UNAVAILABLE,
@@ -88,6 +87,22 @@ from services.v4_config_evaluation import max_defined_risk
 from services.v4_shadow import ShadowCandidateInput, evaluate_shadow_candidate
 
 log = logging.getLogger("services.v4_2_phase2")
+
+class ControlDecisionView(Protocol):
+    """What Phase 2 actually reads off the control's frozen row.
+
+    A Protocol rather than the V4ShadowDecision class, because the zero-write
+    dry run has no control decision to hand and must not fabricate one: it
+    supplies these four fields and says where the view came from. Naming the
+    real dependency also keeps it honest -- Phase 2 reads the control's
+    DecisionView and never calls the language model itself.
+    """
+
+    ticker: str
+    generated_at: datetime
+    view_direction: str | None
+    view_volatility: str | None
+
 
 PHASE2_STATUS_ACTION = "ACTION"
 PHASE2_STATUS_NO_ACTION = "NO_ACTION"
@@ -315,7 +330,7 @@ def run_independent_search(
     db: Session,
     *,
     provider: Any,
-    decision: V4ShadowDecision,
+    decision: ControlDecisionView,
     settlement_date: date,
     earnings_date: date | None = None,
     as_of: datetime | None = None,
