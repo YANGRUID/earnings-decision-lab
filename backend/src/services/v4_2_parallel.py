@@ -99,13 +99,36 @@ class ChallengerPhaseSummary:
     by_event: dict[str, str] = field(default_factory=dict)
     errors: list[str] = field(default_factory=list)
 
+    # ---- Phase 2 (independent search), counted separately on purpose.
+    # Merging the two phases' numbers would make the one question this phase
+    # exists to answer -- did searching wider change what was chosen? --
+    # unanswerable from the summary.
+    phase2_enabled: bool = False
+    phase2_evaluated: int = 0
+    phase2_action: int = 0
+    phase2_no_action: int = 0
+    phase2_failed: int = 0
+    #: Events whose legal decision window precedes the Phase-2 activation
+    #: instant. Reported, never silently skipped.
+    phase2_skipped_not_activated: int = 0
+    phase2_market_data_requests: int = 0
+    phase2_expiries_searched: int = 0
+    phase2_candidates_evaluated: int = 0
+    phase2_distinct_selections: int = 0
+    phase2_by_event: dict[str, str] = field(default_factory=dict)
+
     @property
     def health(self) -> str:
-        if not self.enabled:
+        if not (self.enabled or self.phase2_enabled):
             return CHALLENGER_HEALTH_DISABLED
         if self.failed and not (self.evaluated - self.failed):
             return CHALLENGER_HEALTH_FAILED
-        if self.failed or self.settlement_failed or self.entries_failed:
+        if (
+            self.failed
+            or self.settlement_failed
+            or self.entries_failed
+            or self.phase2_failed
+        ):
             return CHALLENGER_HEALTH_DEGRADED
         return CHALLENGER_HEALTH_READY
 
@@ -132,9 +155,10 @@ def run_challenger_phase(
     Never raises. A challenger fault is recorded and the window continues.
     """
     summary = ChallengerPhaseSummary(
-        enabled=bool(getattr(settings, "v4_2_parallel_enabled", False))
+        enabled=bool(getattr(settings, "v4_2_parallel_enabled", False)),
+        phase2_enabled=bool(getattr(settings, "v4_2_independent_search_enabled", False)),
     )
-    if not summary.enabled:
+    if not (summary.enabled or summary.phase2_enabled):
         return summary
 
     try:
@@ -151,20 +175,41 @@ def run_challenger_phase(
         summary.errors.append(f"settlement: {type(exc).__name__}: {exc}")
         summary.failed += 1
 
-    try:
-        _evaluate_new_decisions(
-            db,
-            provider=provider,
-            now=now,
-            settlement_date=settlement_date,
-            summary=summary,
-            dry_run=dry_run,
-            activation_at=getattr(settings, "v4_2_parallel_activation_at", None),
-        )
-    except Exception as exc:  # noqa: BLE001
-        log.error("challenger evaluation phase failed", exc_info=True)
-        summary.errors.append(f"evaluation: {type(exc).__name__}: {exc}")
-        summary.failed += 1
+    if summary.enabled:
+        try:
+            _evaluate_new_decisions(
+                db,
+                provider=provider,
+                now=now,
+                settlement_date=settlement_date,
+                summary=summary,
+                dry_run=dry_run,
+                activation_at=getattr(settings, "v4_2_parallel_activation_at", None),
+            )
+        except Exception as exc:  # noqa: BLE001
+            log.error("challenger evaluation phase failed", exc_info=True)
+            summary.errors.append(f"evaluation: {type(exc).__name__}: {exc}")
+            summary.failed += 1
+
+    # Phase 2 runs LAST, after Phase 1 has already returned. Ordering, not a
+    # promise: the independent search issues real market-data requests and is
+    # the most expensive thing in the window, and it must not be able to delay
+    # the control's settlement, the control's decisions, or Phase 1's record.
+    if summary.phase2_enabled:
+        try:
+            _evaluate_phase2_decisions(
+                db,
+                settings=settings,
+                provider=provider,
+                now=now,
+                settlement_date=settlement_date,
+                summary=summary,
+                dry_run=dry_run,
+            )
+        except Exception as exc:  # noqa: BLE001
+            log.error("phase-2 evaluation failed", exc_info=True)
+            summary.errors.append(f"phase2: {type(exc).__name__}: {exc}")
+            summary.phase2_failed += 1
 
     return summary
 
@@ -307,11 +352,15 @@ def _evaluate_new_decisions(
     )
     from services.v4_2_challenger_entry import freeze_challenger_entries  # noqa: PLC0415
 
+    # Scoped to Phase-1 rows. Both phases record against the same control
+    # decision by design, so an unscoped set would let whichever phase ran
+    # first suppress the other -- Phase 2 running would silently stop Phase 1
+    # producing its own evidence, which is the opposite of an overlap period.
     existing = {
         row[0]
-        for row in db.query(V42ChallengerDecision.shadow_decision_id).filter(
-            V42ChallengerDecision.shadow_decision_id.isnot(None)
-        )
+        for row in db.query(V42ChallengerDecision.shadow_decision_id)
+        .filter(V42ChallengerDecision.shadow_decision_id.isnot(None))
+        .filter(V42ChallengerDecision.methodology_version.is_(None))
     }
     # Two guards, and the stricter one wins. The lookback keeps the challenger
     # inside THIS window; the activation boundary is an absolute floor that no
@@ -378,6 +427,150 @@ def _evaluate_new_decisions(
             summary.errors.append(f"{control.ticker}: {type(exc).__name__}: {exc}")
             summary.failed += 1
 
+
+def _evaluate_phase2_decisions(
+    db: Session,
+    *,
+    settings: Any,
+    provider: Any,
+    now: datetime,
+    settlement_date: date | None,
+    summary: ChallengerPhaseSummary,
+    dry_run: bool,
+) -> None:
+    """Run the INDEPENDENT SEARCH for every control decision in this window.
+
+    Phase 2 shares the control's window and the control's DecisionView and
+    nothing else: it builds its own bounded multi-expiry universe, values it,
+    and lets the six configurations choose within it.
+
+    Three guards stand between this and retroactive evidence, and the
+    strictest wins. The window lookback keeps it inside THIS window. The
+    activation instant is an absolute floor no clock drift or restart can slip
+    beneath. And the floor is checked against the control's own LEGAL DECISION
+    WINDOW rather than the moment this code runs, so a late or retried run
+    cannot admit an event whose window opened before activation.
+    """
+    from analytics.decision.v4_2_phase2_methodology import (  # noqa: PLC0415
+        PHASE_2_METHODOLOGY,
+    )
+    from services.v4_2_challenger_entry import freeze_challenger_entries  # noqa: PLC0415
+    from services.v4_2_phase2 import (  # noqa: PLC0415
+        PHASE2_STATUS_ACTION,
+        PHASE2_STATUS_FAILED,
+        run_independent_search,
+    )
+    from services.v4_2_phase2_evidence import (  # noqa: PLC0415
+        FREEZE_FROZEN,
+        freeze_phase2_decision,
+        phase2_activated,
+    )
+
+    enabled = bool(getattr(settings, "v4_2_independent_search_enabled", False))
+    activation_at = getattr(settings, "v4_2_independent_search_activation_at", None)
+    max_variants = int(getattr(settings, "v4_2_independent_search_max_expiries", 3) or 3)
+
+    existing = {
+        row[0]
+        for row in db.query(V42ChallengerDecision.shadow_decision_id)
+        .filter(V42ChallengerDecision.shadow_decision_id.isnot(None))
+        .filter(V42ChallengerDecision.methodology_version == PHASE_2_METHODOLOGY)
+    }
+    # The lookback bounds the SWEEP; the activation instant is enforced per
+    # event below, against that event's own legal decision window. Deliberately
+    # not folded into this query: an event excluded by a WHERE clause is
+    # invisible, and a boundary that silently drops work is one nobody can
+    # audit. Enforced once, in one place, and counted.
+    window_start = now - WINDOW_LOOKBACK
+
+    controls = (
+        db.query(V4ShadowDecision)
+        .filter(V4ShadowDecision.id.notin_(existing or [0]))
+        .filter(V4ShadowDecision.generated_at >= window_start)
+        .order_by(V4ShadowDecision.id)
+        .all()
+    )
+
+    for control in controls:
+        allowed, why = phase2_activated(
+            enabled=enabled,
+            activation_at=activation_at,
+            legal_decision_window_at=control.legal_decision_window_at or control.generated_at,
+        )
+        if not allowed:
+            summary.phase2_skipped_not_activated += 1
+            summary.phase2_by_event[control.ticker] = "NOT_ACTIVATED"
+            log.info("phase 2 skipped %s: %s", control.ticker, why)
+            continue
+
+        try:
+            evaluation = run_independent_search(
+                db,
+                provider=provider,
+                decision=control,
+                settlement_date=settlement_date or now.date(),
+                as_of=now,
+                max_variants=max_variants,
+                control_contract_ids=_control_contract_ids(db, control),
+            )
+            summary.phase2_evaluated += 1
+            summary.phase2_market_data_requests += evaluation.telemetry.total_requests
+            summary.phase2_expiries_searched += evaluation.expiries_considered
+            summary.phase2_candidates_evaluated += len(evaluation.universe)
+            summary.phase2_distinct_selections += len(evaluation.selected_candidate_ids)
+
+            if evaluation.status == PHASE2_STATUS_FAILED:
+                summary.phase2_failed += 1
+                summary.phase2_by_event[control.ticker] = PHASE2_STATUS_FAILED
+            elif evaluation.status == PHASE2_STATUS_ACTION:
+                summary.phase2_action += 1
+                summary.phase2_by_event[control.ticker] = (
+                    f"{evaluation.action_count}/6 ACTION, "
+                    f"{len(evaluation.selected_candidate_ids)} distinct"
+                )
+            else:
+                summary.phase2_no_action += 1
+                summary.phase2_by_event[control.ticker] = OUTCOME_NO_ACTION
+
+            if dry_run:
+                continue
+
+            frozen = freeze_phase2_decision(
+                db,
+                control,
+                evaluation,
+                settlement_date=settlement_date,
+            )
+            if frozen.status != FREEZE_FROZEN or frozen.decision_id is None:
+                continue
+            row = db.get(V42ChallengerDecision, frozen.decision_id)
+            if row is None:  # pragma: no cover -- defensive
+                continue
+            entry = freeze_challenger_entries(
+                db, challenger=row, settlement_date=settlement_date
+            )
+            summary.entries_observed += entry.entries_observed
+            summary.entries_failed += entry.entries_failed
+        except Exception as exc:  # noqa: BLE001 -- one event never fails the phase
+            log.error("phase-2 evaluation failed for %s", control.ticker, exc_info=True)
+            summary.errors.append(f"phase2 {control.ticker}: {type(exc).__name__}: {exc}")
+            summary.phase2_failed += 1
+
+
+def _control_contract_ids(db: Session, control: V4ShadowDecision) -> set[str]:
+    """Contracts the CONTROL already observed in this same window. Used only
+    to report honestly how much of the independent search was new -- never to
+    restrict what Phase 2 may look at."""
+    from models.v4_shadow import V4ShadowCandidate, V4ShadowCandidateLeg  # noqa: PLC0415
+
+    rows = (
+        db.query(V4ShadowCandidateLeg.external_contract_id)
+        .join(V4ShadowCandidate, V4ShadowCandidateLeg.shadow_candidate_id == V4ShadowCandidate.id)
+        .filter(V4ShadowCandidate.shadow_decision_id == control.id)
+        .distinct()
+        .all()
+    )
+    return {str(r[0]) for r in rows if r[0]}
 
 __all__ = [
     "CHALLENGER_HEALTH_DEGRADED",
