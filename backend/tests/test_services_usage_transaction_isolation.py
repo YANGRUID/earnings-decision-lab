@@ -9,7 +9,7 @@ earnings calendar sync hit exactly that: one un-storable provider estimate
 surfaced as a swallowed usage warning while the sync reported success.
 """
 
-from datetime import UTC, date, datetime
+from datetime import date
 from decimal import Decimal
 
 from models.earnings_calendar_event import EarningsCalendarEvent

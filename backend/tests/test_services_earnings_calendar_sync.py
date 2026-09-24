@@ -828,8 +828,12 @@ class TestAnUnstorableProviderEstimate:
         company's reporting currency."""
         provider = _FakeCalendarProvider(
             [
-                _entry("TESTVFS", date(2030, 1, 5), "bmo", revenue_estimate=Decimal("30213945297500")),
-                _entry("TESTOK", date(2030, 1, 5), "bmo", revenue_estimate=Decimal("935100000")),
+                _entry(
+                    "TESTVFS", date(2030, 1, 5), "bmo", revenue_estimate=Decimal("30213945297500")
+                ),
+                _entry(
+                    "TESTOK", date(2030, 1, 5), "bmo", revenue_estimate=Decimal("935100000")
+                ),
             ],
             {},
         )
@@ -838,7 +842,8 @@ class TestAnUnstorableProviderEstimate:
         db_session.flush()
 
         assert result.created == 2
-        assert db_session.query(EarningsCalendarEvent).filter_by(symbol="TESTOK").one().revenue_estimate == Decimal("935100000")
+        row = db_session.query(EarningsCalendarEvent).filter_by(symbol="TESTOK").one()
+        assert row.revenue_estimate == Decimal("935100000")
 
     def test_a_large_but_storable_estimate_is_untouched(self, db_session):
         """BABA's real 277bn revenue estimate is the largest on record here --
