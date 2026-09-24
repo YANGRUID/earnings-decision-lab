@@ -422,6 +422,23 @@ def assess_viability(
     )
 
 
+def viability_ranking_key(economics: CandidateEconomics) -> tuple[Decimal, ...]:
+    """The released V4.2 ranking order, in one place.
+
+    Best modeled median first, worst case breaking ties, then the share of
+    positive scenarios, then the narrower round-trip spread. Extracted from
+    ``choose_v4_2_candidate`` when Phase 2 needed to rank the same way per
+    configuration: two copies of a ranking rule is how two phases silently
+    stop being comparable. The order itself is unchanged.
+    """
+    return (
+        economics.median_return or Decimal(0),
+        economics.worst_return or Decimal(0),
+        economics.positive_scenario_fraction or Decimal(0),
+        -(economics.mean_relative_spread or Decimal(0)),
+    )
+
+
 @dataclass
 class ChallengerDecision:
     """One event's V4.2 recommendation, alongside why every candidate that
@@ -475,16 +492,7 @@ def choose_v4_2_candidate(
             verdicts=verdicts,
         )
 
-    def sort_key(v: ViabilityVerdict):
-        econ = by_id[v.candidate_id]
-        return (
-            econ.median_return or Decimal(0),
-            econ.worst_return or Decimal(0),
-            econ.positive_scenario_fraction or Decimal(0),
-            -(econ.mean_relative_spread or Decimal(0)),
-        )
-
-    winner = max(accepted, key=sort_key)
+    winner = max(accepted, key=lambda v: viability_ranking_key(by_id[v.candidate_id]))
     return ChallengerDecision(
         status="RANKED", selected_candidate_id=winner.candidate_id, verdicts=verdicts
     )
@@ -599,16 +607,7 @@ def choose_v4_2_candidate_for_configuration(
             verdicts=verdicts,
         )
 
-    def sort_key(v: ViabilityVerdict):
-        econ = by_id[v.candidate_id]
-        return (
-            econ.median_return or Decimal(0),
-            econ.worst_return or Decimal(0),
-            econ.positive_scenario_fraction or Decimal(0),
-            -(econ.mean_relative_spread or Decimal(0)),
-        )
-
-    winner = max(accepted, key=sort_key)
+    winner = max(accepted, key=lambda v: viability_ranking_key(by_id[v.candidate_id]))
     return ChallengerDecision(
         status="RANKED", selected_candidate_id=winner.candidate_id, verdicts=verdicts
     )
