@@ -52,11 +52,41 @@ from models.v4_shadow import (
 from providers.base import OptionsDataProvider
 from providers.types import KnownContract
 from services.v4_config_evaluation import max_defined_risk
+from services.v4_settlement_fallback import PRICING_EXECUTABLE_ASK, PRICING_EXECUTABLE_BID
 
 log = logging.getLogger("services.v4_shadow_cohort")
 
 ENTRY_CONVENTION = "BUY_AT_ASK_SELL_AT_BID"
 EXIT_CONVENTION = "CLOSE_LONG_AT_BID_CLOSE_SHORT_AT_ASK"
+
+
+def _executable_pricing_method(observation) -> str | None:  # noqa: ANN001 -- ORM row
+    """Which executable sides actually priced this settlement, in the same
+    "+"-joined vocabulary the end-of-day fallback writes (services/
+    v4_settlement_fallback.py).
+
+    Why record it at all (2026-09-24 audit). This path only ever settles when
+    every required side carried a real executable value -- anything else is
+    written as OBSERVATION_FAILED -- so its settlements were correctly graded
+    EXECUTABLE by services/v4_settlement_quality.py. But they were graded that
+    way from the ABSENCE of a pricing_method, on a rule whose stated reason
+    ("written before the end-of-day fallback existed") stopped being true the
+    day the fallback shipped. Any future path that wrote a settlement without
+    a method would have inherited an executable grade it never earned.
+    Recording the sides makes the grade evidence rather than inference.
+
+    Prospective only: rows already written keep their null and keep grading
+    EXECUTABLE under the same legacy rule.
+    """
+    legs = (observation.legs_json or {}).get("legs") if observation is not None else None
+    if not legs:
+        return None
+    sides = {
+        PRICING_EXECUTABLE_BID if leg.get("required_side") == "bid" else PRICING_EXECUTABLE_ASK
+        for leg in legs
+        if leg.get("required_side") in ("bid", "ask")
+    }
+    return "+".join(sorted(sides)) or None
 
 
 @dataclass
@@ -551,6 +581,7 @@ def settle_shadow_decision_cohorts(
                     entry_observed_at=entry.observed_at,
                     settled_at=observed_at,
                     pricing_convention=EXIT_CONVENTION,
+                    pricing_method=_executable_pricing_method(cand_exit),
                     market_data_quality=cand_exit.market_data_quality,
                 )
                 summary.settled += 1
