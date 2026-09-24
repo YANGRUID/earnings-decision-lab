@@ -69,6 +69,34 @@ class Settings(BaseSettings):
     # correct default for a system that has never been activated.
     v4_2_parallel_activation_at: datetime | None = None
 
+    # V4.2 PHASE 2 (2026-09-24) -- the INDEPENDENT SEARCH challenger.
+    #
+    # Deliberately a second flag rather than a widening of
+    # v4_2_parallel_enabled. Phase 1 and Phase 2 answer different questions
+    # -- Phase 1 judges the control's own shortlist, Phase 2 builds its own
+    # multi-expiry universe -- so their evidence is not one series, and an
+    # operator must be able to run Phase 1 alone, both, or neither. Overloading
+    # one flag would make "which methodology produced this row?" unanswerable
+    # from configuration alone.
+    #
+    # Default False. With this off, no Phase-2 decision, candidate, config
+    # result, entry or settlement row is ever written, no additional
+    # market-data request is issued, and Phase 1's behaviour is byte-identical.
+    v4_2_independent_search_enabled: bool = False
+
+    # Phase 2's own prospective activation boundary, independent of Phase 1's.
+    # Only events whose legal decision window falls at or after this instant
+    # may create Phase-2 forward evidence. None means the phase has never been
+    # activated, which is the correct default and the reason no historical
+    # backfill is possible even by accident.
+    v4_2_independent_search_activation_at: datetime | None = None
+
+    # How many expiry rungs Phase 2's bounded ladder may use. Three is the
+    # tested foundation (near / next / farther). Exposed because the request
+    # budget scales with it and an operator proving capacity needs to be able
+    # to narrow it -- never widened past what the ladder itself bounds.
+    v4_2_independent_search_max_expiries: int = 3
+
     database_url: str = (
         "postgresql+psycopg://postgres:change_me@localhost:5433/earnings_decision_lab"
     )

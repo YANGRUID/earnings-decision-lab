@@ -32,16 +32,18 @@ because an economically bad trade is bad at every size.
 STAGE ORDER, AND WHY IT IS THIS ONE
 -----------------------------------
 Every rejected candidate is counted exactly once, at the FIRST stage that
-refuses it, so the per-configuration counts sum to the universe. The
-configuration-specific stages run BEFORE the shared economic gate on purpose:
-if the absolute gate ran first, Conservative's own family and liquidity
-refusals would be hidden behind an economics summary identical to
-Aggressive's, which is precisely the indistinguishable diagnostics Phase 1
-produced. Ordering the configuration's own rules first is what makes "why did
-THIS configuration decline?" answerable.
+refuses it, so the per-configuration counts sum to the universe.
 
-    data honesty -> family -> liquidity -> economics -> move edge
-                 -> capital -> risk cap -> rank
+    data honesty -> family -> capital -> risk cap -> liquidity
+                 -> economics -> move edge -> rank
+
+The configuration's OWN rules run before the shared economic gate. If the
+absolute gate went first, every configuration would report the same economics
+summary and the per-configuration diagnostics would be as indistinguishable as
+Phase 1's were -- an operator could not tell a $300 cap from a $5,000 one.
+Running capital and the risk cap early also means "this configuration could
+not hold it" is stated as such, rather than being masked by an economics
+verdict that would be irrelevant to a structure the account could never take.
 
 SIZING IS SEPARATE FROM SELECTION
 ---------------------------------
@@ -279,34 +281,6 @@ def decide_for_configuration(
             )
             continue
 
-        if not _liquidity_ok(candidate, configuration):
-            floor = MIN_BID_ASK_COVERAGE[configuration.risk_profile]
-            reject(
-                candidate,
-                STAGE_LIQUIDITY,
-                "liquidity_rejected_count",
-                f"{candidate.n_legs_with_two_sided_quote} of {candidate.n_legs} legs carry a "
-                f"two-sided market, below {configuration.risk_profile.value.title()}'s "
-                f"{floor} floor",
-            )
-            continue
-
-        verdict = verdicts.get(candidate.candidate_id)
-        stage = _classify_verdict(verdict) if verdict is not None else STAGE_ECONOMIC
-        if stage is not None:
-            detail = (
-                "; ".join(verdict.detail)
-                if verdict is not None and verdict.detail
-                else "refused by the absolute economic viability gate"
-            )
-            key = (
-                "move_edge_rejected_count"
-                if stage == STAGE_MOVE_EDGE
-                else "economic_rejected_count"
-            )
-            reject(candidate, stage, key, detail)
-            continue
-
         risk = candidate.per_contract_max_risk
         if risk is None:
             reject(
@@ -339,6 +313,34 @@ def decide_for_configuration(
                 f"({configuration.max_risk_utilization_pct}% of "
                 f"${configuration.capital_base:,.0f})",
             )
+            continue
+
+        if not _liquidity_ok(candidate, configuration):
+            floor = MIN_BID_ASK_COVERAGE[configuration.risk_profile]
+            reject(
+                candidate,
+                STAGE_LIQUIDITY,
+                "liquidity_rejected_count",
+                f"{candidate.n_legs_with_two_sided_quote} of {candidate.n_legs} legs carry a "
+                f"two-sided market, below {configuration.risk_profile.value.title()}'s "
+                f"{floor} floor",
+            )
+            continue
+
+        verdict = verdicts.get(candidate.candidate_id)
+        stage = _classify_verdict(verdict) if verdict is not None else STAGE_ECONOMIC
+        if stage is not None:
+            detail = (
+                "; ".join(verdict.detail)
+                if verdict is not None and verdict.detail
+                else "refused by the absolute economic viability gate"
+            )
+            key = (
+                "move_edge_rejected_count"
+                if stage == STAGE_MOVE_EDGE
+                else "economic_rejected_count"
+            )
+            reject(candidate, stage, key, detail)
             continue
 
         eligible.append(candidate)
