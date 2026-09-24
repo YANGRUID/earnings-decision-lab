@@ -277,6 +277,13 @@ def freeze_challenger_decision(
             gate_version=VIABILITY_GATE_VERSION,
             observed_at=observed_at,
         )
+        # Phase 1 and Phase 2 share this table and this gate version, so
+        # without the discriminator a Phase-2 row for the same event and the
+        # same instant would match here and Phase 1 would report
+        # ALREADY_FROZEN against evidence it did not write -- silently
+        # suppressing the control's own challenger. NULL is Phase 1; see
+        # services/v4_2_phase2_evidence.py for why it is never backfilled.
+        .filter(V42ChallengerDecision.methodology_version.is_(None))
         .one_or_none()
     )
     if existing is not None:

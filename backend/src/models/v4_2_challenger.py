@@ -52,13 +52,25 @@ class V42ChallengerDecision(Base):
     __tablename__ = "v4_2_challenger_decision"
     __table_args__ = (
         # Idempotency (Section 41): one challenger decision per event per
-        # methodology version per observation window. A rerun with identical
-        # inputs finds this row rather than writing a second one.
-        UniqueConstraint(
+        # METHODOLOGY per observation window. A rerun with identical inputs
+        # finds this row rather than writing a second one.
+        #
+        # The methodology term is not decoration. Phase 1 and Phase 2 share
+        # this table and deliberately share the gate version -- Phase 2 changes
+        # the search space, not the thresholds -- so a three-column constraint
+        # lets only ONE of the two phases hold a row for an event, and the
+        # overlap period in which both run on the same natural events would be
+        # impossible. COALESCE, rather than a plain fourth column, because a
+        # NULL methodology means Phase 1 and Postgres treats NULLs in a unique
+        # index as distinct: without it, two Phase-1 rows for one window would
+        # both be accepted and Phase 1 would lose the guarantee it has today.
+        Index(
+            "uq_v4_2_challenger_decision_event_methodology_window",
             "earnings_calendar_event_id",
             "gate_version",
             "observed_at",
-            name="uq_v4_2_challenger_decision_event_version_window",
+            text("coalesce(methodology_version, 'v4.2-shared-candidate-v1')"),
+            unique=True,
         ),
         Index("ix_v4_2_challenger_decision_ticker", "ticker"),
     )
@@ -139,6 +151,29 @@ class V42ChallengerDecision(Base):
     #: and could not be priced" without joining three tables.
     entry_status: Mapped[str | None] = mapped_column(String(24))
 
+    # ---- V4.2 PHASE 2 (independent search), additive and nullable.
+    #: Which V4.2 methodology produced this row. NULL means Phase 1, the
+    #: shared-candidate challenger, and every row written before Phase 2
+    #: existed reads that way -- deliberately not backfilled, because
+    #: rewriting frozen evidence to say something it did not say is exactly
+    #: what a forward test must never do. Indexed: separating the two
+    #: methodologies is the most common question asked of this table, and
+    #: they must never be concatenated into one series.
+    methodology_version: Mapped[str | None] = mapped_column(String(48), index=True)
+    candidate_universe_version: Mapped[str | None] = mapped_column(String(48))
+    configuration_version: Mapped[str | None] = mapped_column(String(48))
+    strategy_registry_version: Mapped[str | None] = mapped_column(String(48))
+    timing_policy_version: Mapped[str | None] = mapped_column(String(64))
+    #: How many of the six configurations actioned, and how many DISTINCT
+    #: structures they chose between them. The second number is the one that
+    #: says whether the six were genuinely independent on this event: Phase 1
+    #: never once exceeded 1.
+    configurations_actioned: Mapped[int | None] = mapped_column(Integer)
+    distinct_selected_candidates: Mapped[int | None] = mapped_column(Integer)
+    #: The measured per-stage request budget (Section 47/107). Measured,
+    #: never estimated.
+    request_budget: Mapped[dict | None] = mapped_column(JSON)
+
     failure_category: Mapped[str | None] = mapped_column(String(48))
     failure_detail: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(
@@ -216,6 +251,17 @@ class V42ChallengerCandidate(Base):
     entry_cash_required: Mapped[Decimal | None] = mapped_column(Numeric(18, 6))
 
     # ---- gate outcome.
+    #: The data-honesty verdict from the shared valuation, kept separate from
+    #: the economic one: "could not be valued" and "was valued and refused"
+    #: are different findings and a reader must be able to tell them apart.
+    validity_status: Mapped[str | None] = mapped_column(String(48))
+    validity_reason: Mapped[str | None] = mapped_column(Text)
+    #: Bounded max loss for ONE unit. NULL means the payoff is not bounded
+    #: below or could not be priced, in which case no configuration sizes it.
+    per_contract_max_risk: Mapped[Decimal | None] = mapped_column(Numeric(18, 2))
+    n_legs: Mapped[int | None] = mapped_column(Integer)
+    n_legs_with_two_sided_quote: Mapped[int | None] = mapped_column(Integer)
+
     viability_acceptable: Mapped[bool] = mapped_column(Boolean, nullable=False)
     viability_reason_codes: Mapped[list | None] = mapped_column(JSON)
     viability_detail: Mapped[list | None] = mapped_column(JSON)
@@ -252,6 +298,28 @@ class V42ChallengerConfigResult(Base):
     status: Mapped[str] = mapped_column(String(16), nullable=False)
     selected_candidate_id: Mapped[str | None] = mapped_column(String(128))
     no_action_reason: Mapped[str | None] = mapped_column(Text)
+
+    # ---- V4.2 PHASE 2 (independent search), additive and nullable.
+    #: This candidate's rank IN THIS CONFIGURATION'S OWN ordering. Two
+    #: configurations selecting different structures both hold rank 1.
+    rank: Mapped[int | None] = mapped_column(Integer)
+    #: Sizing, computed AFTER selection -- quantity is never a filter.
+    quantity: Mapped[int | None] = mapped_column(Integer)
+    per_contract_entry_cash: Mapped[Decimal | None] = mapped_column(Numeric(18, 2))
+    per_contract_max_risk: Mapped[Decimal | None] = mapped_column(Numeric(18, 2))
+    capital_used: Mapped[Decimal | None] = mapped_column(Numeric(18, 2))
+    max_risk_used: Mapped[Decimal | None] = mapped_column(Numeric(18, 2))
+    configuration_version: Mapped[str | None] = mapped_column(String(48))
+    ranking_version: Mapped[str | None] = mapped_column(String(64))
+    #: Where this configuration's universe went, stage by stage (Section 37).
+    #: The counts sum to the universe by construction.
+    rejection_summary: Mapped[dict | None] = mapped_column(JSON)
+    #: The candidates this configuration actually ranked, in its own order.
+    ranked_candidate_ids: Mapped[list | None] = mapped_column(JSON)
+    #: Why this structure, in words an operator can read without the raw
+    #: ranking tuple.
+    selection_explanation: Mapped[str | None] = mapped_column(Text)
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

@@ -188,6 +188,11 @@ class Phase2Evaluation:
         return self.multi_expiry.expiries_considered if self.multi_expiry else 0
 
 
+def _s(value: object) -> str | None:
+    """Decimals are stringified for JSON columns; None stays None."""
+    return None if value is None else str(value)
+
+
 def _economics_from_valuation(
     candidate_id: str, strategy: str, ranked_inputs: dict
 ) -> CandidateEconomics:
@@ -275,19 +280,30 @@ def _value_one(candidate: ShadowCandidateInput) -> tuple[SharedCandidate, dict]:
         "market_data_quality": execution.market_data_quality,
         "max_leg_timestamp_skew_seconds": rankable.max_leg_timestamp_skew_seconds,
         "tail_stress_note": getattr(stress, "note", None),
+        # JSON-safe by construction: every Decimal is stringified, matching
+        # the convention the entry and settlement evidence already use. A
+        # Decimal reaching a JSON column raises at flush time, which is a
+        # failure a forward window cannot afford.
         "legs": [
             {
                 "leg_index": leg.leg_index,
                 "action": leg.action,
                 "right": leg.right,
-                "strike": leg.strike,
+                "strike": _s(leg.strike),
                 "quantity": leg.quantity,
-                "multiplier": leg.multiplier,
+                "multiplier": _s(leg.multiplier),
                 "required_side": "ask" if leg.action == "buy" else "bid",
-                "entry_bid": leg.entry_bid,
-                "entry_ask": leg.entry_ask,
+                "bid": _s(leg.entry_bid),
+                "ask": _s(leg.entry_ask),
+                "implied_volatility": _s(leg.entry_iv),
+                "delta": _s(leg.entry_delta),
+                "bid_size": leg.entry_bid_size,
+                "ask_size": leg.entry_ask_size,
+                "volume": leg.entry_volume,
+                "open_interest": leg.entry_open_interest,
                 "external_contract_id": leg.external_contract_id,
                 "market_data_quality": leg.market_data_quality,
+                "expiration": rankable.context.expiration.isoformat(),
             }
             for leg in rankable.context.legs
         ],

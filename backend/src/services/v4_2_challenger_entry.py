@@ -52,6 +52,7 @@ from analytics.options.payoff import Action, OptionLeg, analyze
 from models.enums import OptionType
 from models.v4_2_challenger import (
     CHALLENGER_ENTRY_CONVENTION,
+    V42ChallengerCandidate,
     V42ChallengerCandidateObservation,
     V42ChallengerConfigEntry,
     V42ChallengerConfigResult,
@@ -94,7 +95,90 @@ class ChallengerEntrySummary:
         return "NO_ACTION"
 
 
-def _entry_side_price(leg: V4ShadowCandidateLeg) -> tuple[str, Decimal | None, str]:
+#: Where an entry leg's quote came from. Phase 1 reuses the control's frozen
+#: observation for every leg; Phase 2 searches structures the control never
+#: built and carries its own. Recorded per leg so a reader never has to infer
+#: provenance from which phase wrote the row.
+_SOURCE_CONTROL = "control_frozen_entry_quote"
+_SOURCE_CHALLENGER = "challenger_frozen_entry_quote"
+
+
+@dataclass(frozen=True)
+class _ChallengerOwnLeg:
+    """One leg of a structure the CONTROL never constructed.
+
+    Phase 2 searches expiries and geometries V4.1 did not, so its selected
+    candidate frequently has no ``V4ShadowCandidateLeg`` to read. Its own
+    frozen ``legs_json`` carries the identical observation -- the same quote,
+    the same conId, the same instant, taken in the same acquisition -- so the
+    entry evidence is built from that instead. This adapter presents it under
+    the attribute names the entry path already uses, so there is ONE entry
+    code path rather than two that can drift.
+
+    Nothing is reconstructed here and no price is substituted: a field absent
+    from the frozen payload stays None and the leg is refused for a missing
+    required side, exactly as a control leg would be.
+    """
+
+    leg_index: int
+    action: str
+    right: str
+    strike: Decimal | None
+    quantity: int
+    multiplier: Decimal | None
+    bid: Decimal | None
+    ask: Decimal | None
+    bid_size: int | None
+    ask_size: int | None
+    volume: int | None
+    open_interest: int | None
+    implied_volatility: Decimal | None
+    delta: Decimal | None
+    market_data_quality: str | None
+    external_contract_id: str | None
+    expiration: str | None
+    retrieved_at: datetime | None = None
+
+
+def _decimal_or_none(value: Any) -> Decimal | None:
+    if value is None:
+        return None
+    try:
+        return Decimal(str(value))
+    except (ArithmeticError, ValueError):
+        return None
+
+
+def _challenger_own_legs(candidate: Any) -> list[_ChallengerOwnLeg]:
+    """Build entry-ready legs from a challenger candidate's frozen payload."""
+    payload = (candidate.legs_json or {}).get("legs") or []
+    legs: list[_ChallengerOwnLeg] = []
+    for index, leg in enumerate(payload):
+        legs.append(
+            _ChallengerOwnLeg(
+                leg_index=int(leg.get("leg_index", index)),
+                action=str(leg.get("action") or ""),
+                right=str(leg.get("right") or ""),
+                strike=_decimal_or_none(leg.get("strike")),
+                quantity=int(leg.get("quantity") or 1),
+                multiplier=_decimal_or_none(leg.get("multiplier")) or Decimal("100"),
+                bid=_decimal_or_none(leg.get("bid")),
+                ask=_decimal_or_none(leg.get("ask")),
+                bid_size=leg.get("bid_size"),
+                ask_size=leg.get("ask_size"),
+                volume=leg.get("volume"),
+                open_interest=leg.get("open_interest"),
+                implied_volatility=_decimal_or_none(leg.get("implied_volatility")),
+                delta=_decimal_or_none(leg.get("delta")),
+                market_data_quality=leg.get("market_data_quality"),
+                external_contract_id=leg.get("external_contract_id"),
+                expiration=leg.get("expiration"),
+            )
+        )
+    return sorted(legs, key=lambda leg: leg.leg_index)
+
+
+def _entry_side_price(leg: Any) -> tuple[str, Decimal | None, str]:
     """The ONE side this leg must be opened on, and what the frozen quote
     actually said about it. Returns (side, price, pricing_source)."""
     if leg.action == "buy":
@@ -102,7 +186,9 @@ def _entry_side_price(leg: V4ShadowCandidateLeg) -> tuple[str, Decimal | None, s
     return "bid", leg.bid, PRICING_EXECUTABLE_BID
 
 
-def _leg_row(leg: V4ShadowCandidateLeg, side: str, price: Decimal | None) -> dict:
+def _leg_row(
+    leg: Any, side: str, price: Decimal | None, *, source: str = _SOURCE_CONTROL
+) -> dict:
     """One leg's complete entry evidence: what was needed, what was seen, and
     the liquidity/provenance around it (Section 9). Sizes and open interest
     are recorded as observed -- NULL stays NULL and never becomes a zero."""
@@ -133,7 +219,7 @@ def _leg_row(leg: V4ShadowCandidateLeg, side: str, price: Decimal | None) -> dic
         ),
         "delta": None if leg.delta is None else str(leg.delta),
         "market_data_quality": leg.market_data_quality,
-        "source": "control_frozen_entry_quote",
+        "source": source,
     }
 
 
@@ -188,7 +274,7 @@ def freeze_challenger_entries(
         .filter_by(shadow_decision_id=challenger.shadow_decision_id)
         .filter(V4ShadowCandidate.candidate_id.in_(selected_ids))
     }
-    legs_by_candidate: dict[str, list[V4ShadowCandidateLeg]] = {}
+    legs_by_candidate: dict[str, list[Any]] = {}
     if control_candidates:
         for leg in (
             db.query(V4ShadowCandidateLeg)
@@ -204,6 +290,32 @@ def freeze_challenger_entries(
             )
             if cid is not None:
                 legs_by_candidate.setdefault(cid, []).append(leg)
+
+    # Phase 2 selects structures the control never constructed -- other
+    # expiries, other geometries -- so those candidates have no control leg to
+    # read. Their own frozen payload carries the identical observation from the
+    # same acquisition, and is used only where the control genuinely has
+    # nothing: a candidate the control DID build keeps reading the control's
+    # legs, so Phase 1 behaviour is unchanged.
+    challenger_own: dict[str, Any] = {}
+    outstanding = [cid for cid in selected_ids if not legs_by_candidate.get(cid)]
+    if outstanding:
+        for candidate in (
+            db.query(V42ChallengerCandidate)
+            .filter_by(challenger_decision_id=challenger.id)
+            .filter(V42ChallengerCandidate.candidate_id.in_(outstanding))
+        ):
+            own_legs = _challenger_own_legs(candidate)
+            if own_legs:
+                legs_by_candidate[candidate.candidate_id] = own_legs
+                challenger_own[candidate.candidate_id] = candidate
+
+    control_contract_ids = {
+        str(leg.external_contract_id)
+        for legs in legs_by_candidate.values()
+        for leg in legs
+        if isinstance(leg, V4ShadowCandidateLeg) and leg.external_contract_id
+    }
 
     observations: dict[str, V42ChallengerCandidateObservation] = {}
     all_contracts: set[str] = set()
@@ -223,9 +335,17 @@ def freeze_challenger_entries(
             else:
                 sign = Decimal(1) if leg.action == "buy" else Decimal(-1)
                 net += sign * price * Decimal(leg.quantity) * (leg.multiplier or Decimal("100"))
-            leg_row = _leg_row(leg, side, price)
+            own_candidate = challenger_own.get(candidate_id)
+            leg_row = _leg_row(
+                leg,
+                side,
+                price,
+                source=_SOURCE_CONTROL if own_candidate is None else _SOURCE_CHALLENGER,
+            )
             if control is not None:
                 leg_row["expiration"] = control.expiration.isoformat()
+            elif own_candidate is not None:
+                leg_row["expiration"] = own_candidate.expiration.isoformat()
             rows.append(leg_row)
             if leg.market_data_quality:
                 qualities.add(leg.market_data_quality)
@@ -275,9 +395,12 @@ def freeze_challenger_entries(
                 else (Decimal(0) if stamps else None)
             ),
             unique_contract_count=len(contracts) or None,
-            # Every contract came from the control's own frozen observation:
-            # the challenger reused all of them and quoted none itself.
-            contracts_shared_with_control=len(contracts),
+            # Counted, not assumed. Under Phase 1 every contract came from the
+            # control's own frozen observation and this equals the total; under
+            # Phase 2 the challenger searched contracts the control never
+            # touched, and claiming total reuse would understate what the
+            # challenger actually costs.
+            contracts_shared_with_control=len(contracts & control_contract_ids),
             legs_json={"legs": rows, "pricing_convention": CHALLENGER_ENTRY_CONVENTION},
         )
         db.add(obs)
@@ -285,7 +408,7 @@ def freeze_challenger_entries(
         summary.unique_candidates.append(candidate_id)
     db.flush()
     summary.unique_contracts = len(all_contracts)
-    summary.contracts_shared_with_control = len(all_contracts)
+    summary.contracts_shared_with_control = len(all_contracts & control_contract_ids)
     summary.market_data_requests_issued = 0
 
     # ---- 2. ONE entry per actionable configuration, sized independently ----
@@ -299,11 +422,18 @@ def freeze_challenger_entries(
             continue
         try:
             configuration = get_configuration(config_row.configuration_key)
-            per_cash = (
-                Decimal(str(control.entry_cash_required))
-                if control is not None and control.entry_cash_required is not None
-                else Decimal(0)
+            own_candidate = challenger_own.get(selected)
+            expiration = (
+                control.expiration
+                if control is not None
+                else (own_candidate.expiration if own_candidate is not None else None)
             )
+            # The control's own frozen entry cash where it has one -- Phase 1
+            # reads exactly what it always has. Where it does not, because the
+            # challenger picked a structure the control never built, the
+            # configuration's own persisted per-contract cash is used. Falling
+            # through to zero would report a real debit as free.
+            per_cash = _per_contract_entry_cash(control, config_row)
             per_risk = max_defined_risk_from_legs(legs_by_candidate.get(selected) or [])
             if per_risk is None:
                 # An undefined-risk structure cannot be checked against a
@@ -347,18 +477,23 @@ def freeze_challenger_entries(
                     "quantity": position.quantity,
                     "multiplier": "100",
                 },
-                expiration=control.expiration if control is not None else None,
+                # Resolved once, from whichever side actually holds the
+                # structure. Left NULL for a Phase-2 candidate, settlement
+                # could not quote an outstanding contract and the comparison
+                # would report no days-to-expiry -- the same gap that was
+                # measured on the challenger side on 2026-09-24.
+                expiration=expiration,
                 expiry_ladder_position=_ladder_position(db, challenger.id, selected),
                 entry_dte=(
-                    (control.expiration - observed_at.date()).days if control is not None else None
+                    (expiration - observed_at.date()).days if expiration is not None else None
                 ),
                 dte_at_settlement=(
-                    (control.expiration - settlement_date).days
-                    if control is not None and settlement_date is not None
+                    (expiration - settlement_date).days
+                    if expiration is not None and settlement_date is not None
                     else None
                 ),
                 timing_policy_version=V4_ACTIVE_TIMING_POLICY.version,
-                methodology_version=VIABILITY_GATE_VERSION,
+                methodology_version=challenger.methodology_version or VIABILITY_GATE_VERSION,
                 configuration_version=V4_CONFIGURATION_VERSION,
             )
             db.add(entry)
@@ -375,7 +510,17 @@ def freeze_challenger_entries(
     return summary
 
 
-def max_defined_risk_from_legs(legs: list[V4ShadowCandidateLeg]) -> Decimal | None:
+def _per_contract_entry_cash(control: Any, config_row: Any) -> Decimal:
+    """Signed executable entry cash for ONE unit; positive is a debit."""
+    if control is not None and control.entry_cash_required is not None:
+        return Decimal(str(control.entry_cash_required))
+    own = getattr(config_row, "per_contract_entry_cash", None)
+    if own is not None:
+        return Decimal(str(own))
+    return Decimal(0)
+
+
+def max_defined_risk_from_legs(legs: list[Any]) -> Decimal | None:
     """Maximum loss of ONE unit, computed from the persisted legs.
 
     Identical in definition to the control's ``max_defined_risk``: the same
