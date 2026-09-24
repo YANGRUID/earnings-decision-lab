@@ -16,8 +16,10 @@ from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Any
 
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
+from analytics.market_session import EASTERN
 from models.v4_2_challenger import (
     V4ChainMetadataSnapshot,
     V42ChallengerCandidate,
@@ -134,9 +136,42 @@ def _challenger_side(db: Session, challenger: V42ChallengerDecision | None) -> M
         move_edge_ratio=_decimal(selected.move_edge_ratio) if selected else None,
         expiry_ladder_position=selected.expiry_ladder_position if selected else None,
         entry_dte=selected.entry_dte if selected else None,
-        dte_at_settlement=selected.dte_at_settlement if selected else None,
+        dte_at_settlement=_dte_at_settlement(db, challenger, selected),
         lifecycle=_challenger_lifecycle(db, challenger),
     )
+
+
+def _dte_at_settlement(db: Session, challenger: V42ChallengerDecision, selected) -> int | None:  # noqa: ANN001
+    """Days from settlement to expiry, derived from evidence when the frozen
+    candidate never carried it.
+
+    The entry path computes this at ENTRY time from a settlement date it is
+    not always given, so it stored null for every challenger ACTION to date
+    (PAYX, DRI) and the Methodology Comparison page showed a blank where the
+    control shows a number. Read-model only: the settlement row itself says
+    when it settled and the candidate says when the contract expires, so the
+    figure is recomputed from those rather than written back onto frozen
+    evidence.
+    """
+    if selected is None:
+        return None
+    if selected.dte_at_settlement is not None:
+        return selected.dte_at_settlement
+    if selected.expiration is None:
+        return None
+    from models.v4_2_challenger import V42ChallengerConfigSettlement  # noqa: PLC0415
+
+    settled_at = (
+        db.query(func.min(V42ChallengerConfigSettlement.settled_at))
+        .filter(
+            V42ChallengerConfigSettlement.challenger_decision_id == challenger.id,
+            V42ChallengerConfigSettlement.status == "SETTLED",
+        )
+        .scalar()
+    )
+    if settled_at is None:
+        return None
+    return (selected.expiration - settled_at.astimezone(EASTERN).date()).days
 
 
 def _challenger_lifecycle(db: Session, challenger: V42ChallengerDecision) -> dict:
