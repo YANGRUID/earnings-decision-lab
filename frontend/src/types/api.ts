@@ -1743,3 +1743,152 @@ export interface V4ChallengerOperations {
   no_action_is_a_failure: boolean;
   affects_v4_1_readiness: boolean;
 }
+
+// ---------------------------------------------------------------------------
+// V4.2 PHASE 2 -- INDEPENDENT SEARCH.
+//
+// A separate methodology from Phase 1 with its own activation boundary, so
+// these types are deliberately their own set rather than an extension of the
+// Phase-1 ones. Phase 1 judges the control's shortlist on the single expiry
+// V4.1 chose; Phase 2 builds its own bounded multi-expiry universe and lets
+// each of the six configurations choose within it. Their evidence is not one
+// series and the UI must never present it as one.
+// ---------------------------------------------------------------------------
+
+export interface V4Phase2RejectionSummary {
+  universe_count: number;
+  data_invalid_count: number;
+  strategy_not_permitted_count: number;
+  liquidity_rejected_count: number;
+  economic_rejected_count: number;
+  move_edge_rejected_count: number;
+  capital_rejected_count: number;
+  risk_rejected_count: number;
+  rankable_count: number;
+  rejections_total?: number;
+  rejections?: { candidate_id: string; stage: string; detail: string }[];
+}
+
+export interface V4Phase2ConfigRow {
+  configuration_key: string;
+  capital_base: string;
+  risk_profile: string;
+  max_risk_dollars: string | null;
+  status: "ACTION" | "NO_ACTION" | string;
+  selected_candidate_id: string | null;
+  rank: number | null;
+  quantity: number | null;
+  capital_used: string | null;
+  max_risk_used: string | null;
+  reason: string | null;
+  rejection_summary: V4Phase2RejectionSummary | null;
+  ranked_candidate_ids: string[] | null;
+  ranking_version: string | null;
+}
+
+export interface V4Phase2CandidateRow {
+  candidate_id: string;
+  strategy: string;
+  expiration: string | null;
+  expiry_ladder_position: number | null;
+  entry_dte: number | null;
+  dte_at_settlement: number | null;
+  settlement_risk: string | null;
+  expiry_implied_move_pct: string | null;
+  geometry_variant_id: string | null;
+  validity_status: string | null;
+  validity_reason: string | null;
+  core_median_return: string | null;
+  core_worst_return: string | null;
+  core_best_return: string | null;
+  core_positive_scenario_fraction: string | null;
+  move_edge_status: string | null;
+  move_edge_exposure: string | null;
+  mean_relative_spread: string | null;
+  entry_cash_required: string | null;
+  per_contract_max_risk: string | null;
+  n_legs: number | null;
+  n_legs_with_two_sided_quote: number | null;
+  rankable_somewhere: boolean;
+  market_data_quality: string | null;
+}
+
+export interface V4Phase2Event {
+  decision_id: number;
+  ticker: string;
+  observed_at: string | null;
+  status: string;
+  expiries_considered: number | null;
+  multi_expiry_status: string | null;
+  candidates_evaluated: number;
+  configurations_actioned: number | null;
+  distinct_selected_candidates: number | null;
+  market_data_requests: number | null;
+  unique_contracts_quoted: number | null;
+  total_latency_ms: string | null;
+  failure_category: string | null;
+  configurations: V4Phase2ConfigRow[];
+}
+
+export interface V4Phase2Status {
+  notice: string;
+  methodology_version: string;
+  versions: Record<string, string>;
+  enabled: boolean;
+  activation_at: string | null;
+  would_evaluate_a_window_now: boolean;
+  activation_state: string;
+  max_expiries: number;
+  configurations: {
+    configuration_key: string;
+    label: string;
+    capital_base: string;
+    risk_profile: string;
+    max_risk_dollars: string;
+    max_risk_utilization_pct: string;
+    min_bid_ask_coverage: string | null;
+  }[];
+  recorded: {
+    decisions: number;
+    candidates: number;
+    configuration_results: number;
+    configurations_actioned: number;
+    events_with_divergent_selections: number;
+    expiries_searched: number;
+  };
+}
+
+export interface V4Phase2Decisions {
+  notice: string;
+  events: V4Phase2Event[];
+}
+
+export interface V4Phase2Detail {
+  notice: string;
+  decision_id: number;
+  ticker: string;
+  observed_at: string | null;
+  methodology_version: string;
+  versions: Record<string, string | null>;
+  evidence: {
+    underlying_price: string | null;
+    market_data_quality: string | null;
+    implied_move_pct: string | null;
+    historical_sample_n: number | null;
+    historical_evidence_quality: string | null;
+    historical_median_abs_move_pct: string | null;
+  };
+  request_budget: {
+    stages: { stage: string; requests: number; contracts: number; latency_ms: string }[];
+    total_requests: number;
+    unique_contracts: number;
+    contracts_deduplicated: number;
+    contracts_reused_from_control: number;
+    challenger_only_contracts: number;
+    total_latency_ms: string;
+  } | null;
+  expiries_considered: number | null;
+  multi_expiry_status: string | null;
+  candidates: V4Phase2CandidateRow[];
+  configurations: V4Phase2ConfigRow[];
+}

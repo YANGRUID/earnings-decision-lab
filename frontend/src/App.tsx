@@ -9,6 +9,7 @@ import { V4DecisionLab } from "./pages/V4DecisionLab";
 import { V4ShadowTrackRecord } from "./pages/V4ShadowTrackRecord";
 import { V4ChallengerTrackRecord } from "./pages/V4ChallengerTrackRecord";
 import { V4MethodologyComparison } from "./pages/V4MethodologyComparison";
+import { V4Phase2 } from "./pages/V4Phase2";
 import { Operations } from "./pages/Operations";
 import { DataProviders } from "./pages/Settings/DataProviders";
 import { AiProvider } from "./pages/Settings/AiProvider";
@@ -44,6 +45,7 @@ export default function App() {
           <Route path="v4-shadow-track-record" element={<V4ShadowTrackRecord />} />
           <Route path="methodology-comparison" element={<V4MethodologyComparison />} />
           <Route path="challenger-track-record" element={<V4ChallengerTrackRecord />} />
+          <Route path="challenger-phase-2" element={<V4Phase2 />} />
           <Route path="settings/providers" element={<DataProviders />} />
           <Route path="settings/ai-provider" element={<AiProvider />} />
           <Route path="settings/ibkr" element={<Ibkr />} />

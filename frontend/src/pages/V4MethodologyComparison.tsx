@@ -4,6 +4,7 @@ import { ErrorState, LoadingState } from "../components/StatusStates";
 import { configLabel } from "../components/v4/shared";
 import type {
   V4ExpiryRung,
+  V4Phase2Status,
   V4MethodologyComparisonEvent,
   V4MethodologySide,
 } from "../types/api";
@@ -274,8 +275,74 @@ function EventBlock({ event }: { event: V4MethodologyComparisonEvent }) {
   );
 }
 
+// Three methodologies, kept three.
+//
+// Requirement, and the reason for it: V4.1 Control, V4.2 Phase 1 and V4.2
+// Phase 2 ask different questions of the same window, so their evidence is
+// three series and not one. Phase 2 starts at N=0 and stays there until it has
+// run live windows of its own -- which is stated here rather than left to be
+// inferred from an empty table, because an empty table reads as "found
+// nothing" and the truth is "has not run".
+function MethodologyBoundaries({ phase2 }: { phase2: V4Phase2Status | null }) {
+  const rows: [string, string, string, string][] = [
+    [
+      "V4.1 Control",
+      "The official methodology",
+      "One expiry, chosen by V4.1; candidates screened at the $2,000 standardized capital",
+      "Six configurations already select independently within that universe",
+    ],
+    [
+      "V4.2 Phase 1",
+      "Shared-candidate challenger",
+      "Reads the control's own frozen shortlist; no additional market data",
+      "An absolute viability gate over that shortlist, identical for all six configurations",
+    ],
+    [
+      "V4.2 Phase 2",
+      "Independent search",
+      "Its own bounded multi-expiry universe, each rung with its own implied move",
+      "Each configuration applies its own family, liquidity, capital and risk rules, then ranks",
+    ],
+  ];
+  return (
+    <div className="card" data-testid="methodology-boundaries">
+      <h3 style={{ marginTop: 0 }}>Three methodologies, not one series</h3>
+      <div style={{ overflowX: "auto" }}>
+        <table style={{ width: "100%" }}>
+          <thead>
+            <tr>
+              <th>Methodology</th>
+              <th>What it is</th>
+              <th>Candidate universe</th>
+              <th>Selection</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map(([name, what, universe, selection]) => (
+              <tr key={name}>
+                <td><strong>{name}</strong></td>
+                <td className="text-sm">{what}</td>
+                <td className="text-sm">{universe}</td>
+                <td className="text-sm">{selection}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <p className="text-faint text-sm" style={{ marginBottom: 0 }}>
+        {phase2
+          ? phase2.recorded.decisions === 0
+            ? `Phase 2 has recorded no forward events (N = 0). It is ${phase2.would_evaluate_a_window_now ? "active" : "not active"} and records only prospectively, from its own activation instant — nothing is backfilled. No claim that Phase 2 is better or worse than either of the others can be made until it has forward data of its own.`
+            : `Phase 2 has recorded ${phase2.recorded.decisions} forward event(s), with the six configurations choosing differently on ${phase2.recorded.events_with_divergent_selections} of them. Far too few to rank the three methodologies against each other.`
+          : "Phase 2 status is unavailable on this request."}
+      </p>
+    </div>
+  );
+}
+
 export function V4MethodologyComparison() {
   const comparison = useAsync(() => api.getV4MethodologyComparison(), []);
+  const phase2 = useAsync(() => api.getV4Phase2Status(), []);
 
   if (comparison.loading && !comparison.data) {
     return <LoadingState label="Loading methodology comparison…" />;
@@ -288,6 +355,8 @@ export function V4MethodologyComparison() {
     <div>
       <div className="page-header"><h1>Methodology Comparison</h1></div>
       <div className="notice notice-warning" data-testid="challenger-notice">{notice}</div>
+
+      <MethodologyBoundaries phase2={phase2.data ?? null} />
 
       <div className="card">
         <div className="grid grid-3" style={{ gap: 10 }}>

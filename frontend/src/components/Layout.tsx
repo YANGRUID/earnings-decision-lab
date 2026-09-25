@@ -38,6 +38,10 @@ const PERFORMANCE_NAV_ITEMS: NavItem[] = [
   // the forward record rather than in the primary decision flow.
   { to: "/methodology-comparison", label: "Methodology Comparison" },
   { to: "/challenger-track-record", label: "Challenger Track Record" },
+  // Phase 2 is its own methodology with its own activation boundary, so it
+  // gets its own entry rather than a tab inside the Phase-1 record. The two
+  // are not one series and the navigation should not imply they are.
+  { to: "/challenger-phase-2", label: "Challenger Phase 2" },
 ];
 
 const OPERATIONS_NAV_ITEMS: NavItem[] = [{ to: "/operations", label: "Live Operations" }];

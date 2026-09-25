@@ -27,6 +27,9 @@ import type {
   V4ShadowTrackRecord,
   V4ShadowConfigurationsResponse,
   V4ChallengerOperations,
+  V4Phase2Decisions,
+  V4Phase2Detail,
+  V4Phase2Status,
   V4ChallengerTrackRecord,
   V4MethodologyComparison,
   V4TrackRecordByConfiguration,
@@ -151,6 +154,13 @@ export const api = {
     request<V4ChallengerTrackRecord>("/v4-2/challenger/track-record"),
   getV4ChallengerOperations: () =>
     request<V4ChallengerOperations>("/v4-2/challenger/operations"),
+  // V4.2 PHASE 2 -- independent search. Separate endpoints, not an extension
+  // of the Phase-1 ones, because the two methodologies are separate evidence.
+  getV4Phase2Status: () => request<V4Phase2Status>("/v4-2/challenger/phase2/status"),
+  getV4Phase2Decisions: () =>
+    request<V4Phase2Decisions>("/v4-2/challenger/phase2/decisions"),
+  getV4Phase2Decision: (id: number) =>
+    request<V4Phase2Detail>(`/v4-2/challenger/phase2/decisions/${id}`),
   getV4TrackRecordByConfiguration: (view: V4TrackRecordView = "all") =>
     request<V4TrackRecordByConfiguration>(
       `/v4/shadow/track-record/by-configuration?view=${view}`,
