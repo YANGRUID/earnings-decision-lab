@@ -566,7 +566,9 @@ def run_forward_window(
     # control's settlements and decisions are already committed by the time
     # this runs, and a raised exception here would serve no purpose except to
     # make a challenger bug look like a control outage.
-    if getattr(settings, "v4_2_parallel_enabled", False):
+    if getattr(settings, "v4_2_parallel_enabled", False) or getattr(
+        settings, "v4_2_independent_search_enabled", False
+    ):
         from services.v4_2_parallel import run_challenger_phase  # noqa: PLC0415
 
         if before_phase is not None:
@@ -578,6 +580,12 @@ def run_forward_window(
                 provider=provider,
                 now=clock(),
                 shared_exit_quotes=shared_exit_quotes,
+                # The same deadline the control decision phase obeys. Phase 1
+                # issues no market-data request and could never overrun it;
+                # Phase 2 opens subscriptions across several expiries per
+                # event and can, so the guard has to reach it.
+                deadline=deadline,
+                clock=clock,
             )
         except Exception:  # noqa: BLE001 -- a challenger fault is never a control fault
             log.error("v4.2 challenger phase failed; control window unaffected", exc_info=True)

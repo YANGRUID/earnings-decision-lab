@@ -40,7 +40,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -111,6 +111,9 @@ class ChallengerPhaseSummary:
     #: Events whose legal decision window precedes the Phase-2 activation
     #: instant. Reported, never silently skipped.
     phase2_skipped_not_activated: int = 0
+    #: Events not STARTED because the forward window's deadline had passed.
+    #: An event already in flight is always finished.
+    phase2_deadline_skipped: int = 0
     phase2_market_data_requests: int = 0
     phase2_expiries_searched: int = 0
     phase2_candidates_evaluated: int = 0
@@ -142,6 +145,8 @@ def run_challenger_phase(
     shared_exit_quotes: dict[str, Any] | None = None,
     settlement_date: date | None = None,
     dry_run: bool = False,
+    deadline: datetime | None = None,
+    clock: Any = None,
 ) -> ChallengerPhaseSummary:
     """The challenger's whole turn in one window: settle what is due, then
     evaluate and freeze what is new.
@@ -205,6 +210,8 @@ def run_challenger_phase(
                 settlement_date=settlement_date,
                 summary=summary,
                 dry_run=dry_run,
+                deadline=deadline,
+                clock=clock,
             )
         except Exception as exc:  # noqa: BLE001
             log.error("phase-2 evaluation failed", exc_info=True)
@@ -437,6 +444,8 @@ def _evaluate_phase2_decisions(
     settlement_date: date | None,
     summary: ChallengerPhaseSummary,
     dry_run: bool,
+    deadline: datetime | None = None,
+    clock: Any = None,
 ) -> None:
     """Run the INDEPENDENT SEARCH for every control decision in this window.
 
@@ -491,7 +500,23 @@ def _evaluate_phase2_decisions(
         .all()
     )
 
+    tick = clock or (lambda: datetime.now(UTC))
     for control in controls:
+        # The window's own deadline, obeyed the way the control obeys it: stop
+        # STARTING new events, never abandon one already in flight. Phase 2 is
+        # the only challenger work that opens market-data subscriptions, so it
+        # is the only one that could push a window past its close.
+        if deadline is not None and tick() >= deadline:
+            summary.phase2_deadline_skipped += 1
+            summary.phase2_by_event[control.ticker] = "DEADLINE_SKIPPED"
+            log.info(
+                "phase 2 skipped %s: the %s forward-window deadline had passed before this "
+                "event was started",
+                control.ticker,
+                deadline.isoformat(),
+            )
+            continue
+
         allowed, why = phase2_activated(
             enabled=enabled,
             activation_at=activation_at,
