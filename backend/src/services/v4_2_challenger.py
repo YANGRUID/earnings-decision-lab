@@ -62,6 +62,7 @@ from models.v4_2_challenger import (
     V42ChallengerDecision,
 )
 from models.v4_shadow import V4ShadowCandidate, V4ShadowCandidateLeg, V4ShadowDecision
+from services.v4_2_challenger_entry import max_defined_risk_from_legs
 from services.v4_2_move_history import anchored_move_distribution_for_ticker
 
 CHALLENGER_STATUS_RANKED = "RANKED"
@@ -109,6 +110,53 @@ def _reused_contract_count(db: Session, candidate_ids: list[int]) -> int:
         .all()
     )
     return len({r[0] for r in rows if r[0]})
+
+
+def _max_loss_by_candidate(db: Session, rows: list[V4ShadowCandidate]) -> dict[str, Decimal]:
+    """Bounded max loss for ONE unit of each candidate, from the control's own
+    frozen legs.
+
+    Measured defect this closes (2026-09-24). The per-configuration check has
+    always asked two questions -- is the entry cash above this configuration's
+    capital base, is the max loss above its risk cap -- but the max loss was
+    never supplied, so ``assess_configuration_fit`` saw None for every
+    candidate and RISK_CAP_EXCEEDED could not fire. Across 90 production
+    configuration rows it fired zero times.
+
+    The consequence reached the evidence. ``size_configuration_position``
+    floors quantity at one contract for a candidate its own docstring calls
+    "already-ELIGIBLE (one contract is known to fit)"; nothing had checked
+    that, so four of the twelve challenger entries were frozen holding two to
+    three times their configuration's cap. With the cap binding at selection,
+    a candidate reaching sizing always fits at one contract and the floor can
+    no longer produce an over-cap position.
+
+    Computed with the same ``max_defined_risk_from_legs`` the entry path uses,
+    over the same frozen legs, so selection and sizing cannot disagree about
+    what a structure risks.
+
+    A candidate whose risk cannot be computed is OMITTED rather than assigned
+    a number. That preserves the released treatment of an absent measurement
+    -- no constraint rather than an invented one -- and is reachable only for
+    a candidate missing a required entry side, which V4.1's own validity
+    screen has already refused before it can be read here.
+    """
+    if not rows:
+        return {}
+    legs_by_candidate: dict[int, list[V4ShadowCandidateLeg]] = {}
+    for leg in (
+        db.query(V4ShadowCandidateLeg)
+        .filter(V4ShadowCandidateLeg.shadow_candidate_id.in_([r.id for r in rows]))
+        .order_by(V4ShadowCandidateLeg.leg_index)
+    ):
+        legs_by_candidate.setdefault(leg.shadow_candidate_id, []).append(leg)
+
+    out: dict[str, Decimal] = {}
+    for row in rows:
+        risk = max_defined_risk_from_legs(legs_by_candidate.get(row.id, []))
+        if risk is not None:
+            out[row.candidate_id] = risk
+    return out
 
 
 def _economics_from_control(row: V4ShadowCandidate) -> CandidateEconomics:
@@ -205,6 +253,15 @@ def evaluate_challenger(
             }
         )
 
+    # Both are configuration-independent facts about the candidates, so they
+    # are computed ONCE and read six times rather than rebuilt per loop pass.
+    entry_cash_by_candidate = {
+        r.candidate_id: Decimal(str(r.entry_cash_required))
+        for r in rows
+        if r.entry_cash_required is not None
+    }
+    max_loss_by_candidate = _max_loss_by_candidate(db, rows)
+
     config_rows: list[dict] = []
     for config in V4_CONFIGURATIONS:
         constraints = ConfigurationConstraints(
@@ -216,11 +273,8 @@ def evaluate_challenger(
             economics,
             evidence,
             constraints,
-            entry_cash_by_candidate={
-                r.candidate_id: Decimal(str(r.entry_cash_required))
-                for r in rows
-                if r.entry_cash_required is not None
-            },
+            entry_cash_by_candidate=entry_cash_by_candidate,
+            max_loss_by_candidate=max_loss_by_candidate,
             policy=policy,
         )
         config_rows.append(
