@@ -25,6 +25,7 @@ from models.v4_2_challenger import (
     V42ChallengerCandidate,
     V42ChallengerConfigResult,
     V42ChallengerDecision,
+    phase_1_rows,
 )
 from models.v4_shadow import V4ShadowCandidate, V4ShadowConfigResult, V4ShadowDecision
 from services.v4_2_move_history import anchored_move_distribution_for_ticker
@@ -325,9 +326,14 @@ def _evidence_readiness(
 
 
 def compare_event(db: Session, decision: V4ShadowDecision) -> EventComparison:
+    # Phase 1 only. Both phases record against the same control decision, so
+    # without this the newest row wins and a Phase-2 decision is shown under
+    # Phase 1's name on a page whose whole subject is which methodology said
+    # what.
     challenger = (
         db.query(V42ChallengerDecision)
         .filter_by(shadow_decision_id=decision.id)
+        .filter(phase_1_rows())
         .order_by(V42ChallengerDecision.id.desc())
         .first()
     )

@@ -12,6 +12,7 @@ from decimal import Decimal
 import pytest
 from sqlalchemy.exc import IntegrityError
 
+from analytics.decision.v4_2_phase2_methodology import PHASE_1_METHODOLOGY_V2
 from analytics.decision.v4_2_viability import VIABILITY_GATE_VERSION
 from analytics.decision_timing_policy import V4_TIMING_POLICY
 from models.earnings_calendar_event import EarningsCalendarEvent
@@ -195,10 +196,15 @@ class TestImmutabilityAndIdempotency:
     ):
         evaluate_and_freeze(db_session, control, dry_run=False)
         db_session.flush()
+        # Same methodology as the row the engine just wrote. The constraint is
+        # one decision per event per METHODOLOGY per window -- a row under a
+        # different methodology is a legitimate second record, which is how
+        # Phase 1 and Phase 2 coexist on one event.
         db_session.add(V42ChallengerDecision(
             earnings_calendar_event_id=control.earnings_calendar_event_id,
             ticker="CHLX", generated_at=OBSERVED, observed_at=OBSERVED,
             schema_version="x", gate_version=VIABILITY_GATE_VERSION, move_edge_version="x",
+            methodology_version=PHASE_1_METHODOLOGY_V2,
             status="RANKED", candidates_evaluated=0, candidates_accepted=0,
         ))
         with pytest.raises(IntegrityError):

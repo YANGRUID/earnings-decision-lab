@@ -27,6 +27,25 @@ Unchanged and deliberately untouched: DecisionView `v4-decision-view-v1`, strate
 `expected_move_v1`, strike engine `expected_move_v1`, geometry `geometry_candidate_v1`,
 valuation `t1_pricing_v1`, scenario grid `v4-t1-scenario-grid-v2-core-plus-stress`.
 
+## Methodology versions of Phase 1
+
+| Identity | Stamped on | Policy |
+|---|---|---|
+| NULL | the first 15 forward decisions (2026-09-08 &rarr; 2026-09-24) | The per-configuration risk cap **never bound**. `evaluate_challenger` did not pass `max_loss_by_candidate`, so `RISK_CAP_EXCEEDED` could not fire; it fired zero times in 90 configuration rows. `size_configuration_position`'s one-contract floor then sized structures nothing had checked would fit, and four of the twelve entries were frozen holding 2&ndash;3&times; their cap (DRI and PAYX $2K Conservative at $850 and $930 against $300; both $2K Moderate rows against $600). |
+| `v4.2-shared-candidate-v2` | decisions from 2026-09-24 onward | The cap binds at selection, computed with the same `max_defined_risk_from_legs` the entry path uses over the same frozen legs. A candidate reaching sizing always fits at one contract. |
+
+Replayed read-only against the two events that actioned: $2K Conservative now
+declines with `RISK_CAP_EXCEEDED` named, $2K Moderate takes the narrower spread
+that fits its cap ($455 and $420 rather than $930 and $850), and the four larger
+configurations are unchanged. Max loss resolved for all 41 rankable candidates,
+so the absent-measurement branch never fires on real evidence.
+
+The 15 existing rows are **not restamped**. They were taken under a policy where
+the cap could not fire and must keep saying so. Every read that reports Phase-1
+evidence filters on `models/v4_2_challenger.py::phase_1_rows`, which admits NULL,
+v1 and v2 &mdash; Phase 2 writes into the same tables, and an unfiltered read
+would concatenate two methodologies into one series.
+
 ## The three defects this responds to
 
 All established from the production database and source, none inferred from outcomes.

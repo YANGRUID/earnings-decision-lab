@@ -31,6 +31,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     func,
+    or_,
     text,
 )
 from sqlalchemy.orm import Mapped, mapped_column
@@ -323,6 +324,25 @@ class V42ChallengerConfigResult(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
+
+
+def phase_1_rows(column=None):
+    """SQL predicate for "this row belongs to Phase 1, the shared-candidate
+    challenger".
+
+    Three identities mean Phase 1 and one of them is NULL, which ``IN`` cannot
+    match, so the predicate lives here rather than being rewritten at each
+    call site. Every read that reports Phase-1 evidence must apply it: Phase 2
+    writes into these same tables, and an unfiltered query silently
+    concatenates two methodologies into one series -- which on the comparison
+    view would show a Phase-2 decision under Phase 1's name.
+    """
+    from analytics.decision.v4_2_phase2_methodology import (  # noqa: PLC0415
+        PHASE_1_METHODOLOGIES,
+    )
+
+    target = V42ChallengerDecision.methodology_version if column is None else column
+    return or_(target.is_(None), target.in_(PHASE_1_METHODOLOGIES))
 
 
 class V4ChainMetadataSnapshot(Base):

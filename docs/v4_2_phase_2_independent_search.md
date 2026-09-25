@@ -60,6 +60,13 @@ All from the production database, none inferred from realized outcomes.
    | PAYX | $2,000 Conservative | $930 | $300 |
    | PAYX | $2,000 Moderate | $930 | $600 |
 
+   **Fixed 2026-09-24**, after this document was first written. Phase 1 now
+   receives each candidate's max loss, so the cap binds at selection and a
+   candidate reaching sizing always fits at one contract. The break is versioned:
+   rows written under the fixed policy carry `v4.2-shared-candidate-v2`, the 15
+   rows taken before it keep NULL, and neither is restamped. See
+   "What was NOT changed" below for what that leaves alone.
+
 ## Architecture
 
 ```
@@ -92,7 +99,8 @@ ONE EVENT
 | Component | Value |
 |---|---|
 | Methodology | `v4.2-independent-search-v1` |
-| Phase 1 (for contrast; **NULL in the table means Phase 1**) | `v4.2-shared-candidate-v1` |
+| Phase 1, cap never bound (**NULL in the table means this**) | `v4.2-shared-candidate-v1` |
+| Phase 1, risk cap binding | `v4.2-shared-candidate-v2` |
 | Candidate universe | `v4_2_independent_universe_v1` |
 | Expiry ladder | `v4_2_expiry_ladder_v1` *(unchanged from Phase 1)* |
 | Per-configuration ranking | `v4_2_per_configuration_ranking_v1` |
@@ -198,9 +206,9 @@ No settlement, entry or realized figure is read anywhere in that path.
 - V4.2 Phase 1 evidence — untouched, not relabelled, not backfilled.
 - Every released threshold: economic viability, move edge, liquidity, friction. Phase 2 changes
   the search space and the selection unit, not what is tolerated.
-- Phase 1's risk-cap defect (defect 5 above). Correcting it changes Phase 1's **forward**
-  behaviour mid-series, which is an operator's decision and needs its own version; the four frozen
-  rows keep saying what they said.
+- The four over-cap entry rows from defect 5. They are frozen forward evidence and keep saying
+  what they said; the defect is recorded and versioned, not corrected in history. The **code** was
+  fixed the same day, under `v4.2-shared-candidate-v2`, so the boundary is in the data.
 - No naked shorts: the strategy registry contains no uncovered-short family, Phase 2 adds none,
   and a structure with no bounded maximum loss is never sized.
 - No brokerage order, no order API.

@@ -15,7 +15,10 @@ from decimal import Decimal
 from test_v4_2_multi_expiry_construction import FakeChainProvider
 from test_v4_2_parallel_isolation import _control
 
-from analytics.decision.v4_2_phase2_methodology import PHASE_2_METHODOLOGY
+from analytics.decision.v4_2_phase2_methodology import (
+    PHASE_1_METHODOLOGY_V2,
+    PHASE_2_METHODOLOGY,
+)
 from core.config import Settings, get_settings
 from models.v4_2_challenger import V42ChallengerDecision
 from services.v4_2_parallel import run_challenger_phase
@@ -178,7 +181,10 @@ class TestTheOverlapPeriod:
         assert summary.phase2_evaluated == 1
         rows = db_session.query(V42ChallengerDecision).all()
         assert len(rows) == 2
-        assert {r.methodology_version for r in rows} == {None, PHASE_2_METHODOLOGY}
+        assert {r.methodology_version for r in rows} == {
+            PHASE_1_METHODOLOGY_V2,
+            PHASE_2_METHODOLOGY,
+        }
 
     def test_phase_1_still_runs_when_phase_2_is_off(self, db_session):
         _control(db_session, "P1ONLY")
@@ -199,7 +205,7 @@ class TestTheOverlapPeriod:
         assert summary.phase2_evaluated == 0
         rows = db_session.query(V42ChallengerDecision).all()
         assert len(rows) == 1
-        assert rows[0].methodology_version is None
+        assert rows[0].methodology_version == PHASE_1_METHODOLOGY_V2
 
     def test_a_phase_2_fault_is_recorded_and_never_stops_phase_1(self, db_session):
         class Broken:
@@ -226,7 +232,7 @@ class TestTheOverlapPeriod:
         assert summary.phase2_failed == 1
         # Phase 1's own row exists and is untouched.
         rows = db_session.query(V42ChallengerDecision).all()
-        assert any(r.methodology_version is None for r in rows)
+        assert any(r.methodology_version == PHASE_1_METHODOLOGY_V2 for r in rows)
 
 
 class TestRerunsAreIdempotent:

@@ -19,7 +19,10 @@ from analytics.decision.v4_2_config_policy import (
     ConfigurationDiagnostics,
     SharedCandidate,
 )
-from analytics.decision.v4_2_phase2_methodology import PHASE_2_METHODOLOGY
+from analytics.decision.v4_2_phase2_methodology import (
+    PHASE_1_METHODOLOGY_V2,
+    PHASE_2_METHODOLOGY,
+)
 from analytics.decision.v4_2_viability import CandidateEconomics
 from analytics.decision.v4_configurations import V4_CONFIGURATIONS, size_configuration_position
 from analytics.decision_timing_policy import V4_TIMING_POLICY
@@ -285,7 +288,10 @@ class TestThePhasesDoNotCollide:
             .all()
         )
         assert len(rows) == 2
-        assert {r.methodology_version for r in rows} == {None, PHASE_2_METHODOLOGY}
+        assert {r.methodology_version for r in rows} == {
+            PHASE_1_METHODOLOGY_V2,
+            PHASE_2_METHODOLOGY,
+        }
 
 
 class TestActivationIsProspectiveOnly:
@@ -411,3 +417,59 @@ class TestPhase2EntryEvidence:
                     assert leg["price"] == leg["bid"]
             # The control never built these, so nothing was reused from it.
             assert obs.contracts_shared_with_control == 0
+
+
+class TestPhase2DoesNotLeakIntoPhase1Reads:
+    """Both phases write into the same tables, so every read that reports
+    Phase-1 evidence has to say which methodology it means. An unfiltered one
+    concatenates two series -- and on the comparison view, which exists to say
+    what each methodology decided, it would show a Phase-2 decision under
+    Phase 1's name."""
+
+    def test_the_challenger_track_record_counts_phase_1_only(self, db_session, control):
+        from services.v4_2_challenger import evaluate_and_freeze  # noqa: PLC0415
+        from services.v4_2_track_record import (  # noqa: PLC0415
+            build_challenger_track_record,
+        )
+
+        evaluate_and_freeze(db_session, control, dry_run=False)
+        db_session.flush()
+        before = build_challenger_track_record(db_session).actions.events_observed
+
+        freeze_phase2_decision(db_session, control, _evaluation())
+        db_session.flush()
+        after = build_challenger_track_record(db_session).actions.events_observed
+
+        assert after == before, "a Phase-2 event was counted in Phase 1's track record"
+
+    def test_the_comparison_shows_the_phase_1_decision(self, db_session, control):
+        from services.v4_2_challenger import evaluate_and_freeze  # noqa: PLC0415
+        from services.v4_2_comparison import compare_event  # noqa: PLC0415
+
+        evaluate_and_freeze(db_session, control, dry_run=False)
+        db_session.flush()
+        # Phase 2 writes second, so an unfiltered "newest row wins" lookup
+        # would pick it up.
+        freeze_phase2_decision(db_session, control, _evaluation())
+        db_session.flush()
+
+        comparison = compare_event(db_session, control)
+
+        assert comparison.challenger is not None
+        assert comparison.challenger.candidates_evaluated != len(_evaluation().universe), (
+            "the comparison picked up the Phase-2 decision"
+        )
+
+    def test_phase_1_stamps_its_own_methodology_version(self, db_session, control):
+        """v2 is the policy in which the per-configuration risk cap binds. The
+        15 rows written before it carry NULL and are never restamped."""
+        from analytics.decision.v4_2_phase2_methodology import (  # noqa: PLC0415
+            PHASE_1_METHODOLOGY_V2,
+        )
+        from services.v4_2_challenger import evaluate_and_freeze  # noqa: PLC0415
+
+        evaluation = evaluate_and_freeze(db_session, control, dry_run=False)
+        db_session.flush()
+
+        row = db_session.get(V42ChallengerDecision, evaluation.decision_id)
+        assert row.methodology_version == PHASE_1_METHODOLOGY_V2

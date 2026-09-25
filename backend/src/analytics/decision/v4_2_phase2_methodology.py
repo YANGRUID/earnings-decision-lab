@@ -49,6 +49,27 @@ PHASE_2_METHODOLOGY = "v4.2-independent-search-v1"
 #: see the backfill note on the migration. Nothing about those rows changes.
 PHASE_1_METHODOLOGY = "v4.2-shared-candidate-v1"
 
+#: Phase 1, after the per-configuration risk cap was made to bind (2026-09-24).
+#:
+#: Not cosmetic. Under v1 the cap could never fire -- the per-configuration
+#: check was never passed each candidate's max loss -- so every one of the 15
+#: v1 decisions was taken by a policy where a configuration could select, and
+#: size, a structure risking several times its own limit; four of the twelve
+#: entries were frozen that way. Rows written after the fix come from a policy
+#: that refuses those structures, and on the two events that actioned it
+#: changes both what was chosen and who chose anything at all.
+#:
+#: Two policies in one column with nothing marking the boundary is precisely
+#: the reading error the methodology version exists to prevent, so the boundary
+#: is written into the data rather than left to a changelog. The 15 existing
+#: rows are NOT restamped: they were taken under v1 and must keep saying so.
+PHASE_1_METHODOLOGY_V2 = "v4.2-shared-candidate-v2"
+
+#: Every identity that means "Phase 1, the shared-candidate challenger".
+#: NULL means Phase 1 too, and is handled separately at each call site because
+#: SQL cannot match it with IN.
+PHASE_1_METHODOLOGIES: tuple[str, ...] = (PHASE_1_METHODOLOGY, PHASE_1_METHODOLOGY_V2)
+
 #: The candidate-universe policy Phase 2 applies. Bumped if the universe's
 #: construction rule changes -- not for a refactor.
 CANDIDATE_UNIVERSE_VERSION = "v4_2_independent_universe_v1"
@@ -100,7 +121,9 @@ PHASE_2_VERSIONS = Phase2MethodologyVersions()
 __all__ = [
     "CANDIDATE_UNIVERSE_VERSION",
     "CONFIG_RANKING_VERSION",
+    "PHASE_1_METHODOLOGIES",
     "PHASE_1_METHODOLOGY",
+    "PHASE_1_METHODOLOGY_V2",
     "PHASE_2_METHODOLOGY",
     "PHASE_2_VERSIONS",
     "Phase2MethodologyVersions",

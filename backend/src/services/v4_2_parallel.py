@@ -351,6 +351,11 @@ def _evaluate_new_decisions(
     forward, and an event the control decided last week is simply not one of
     them.
     """
+    # Scoped to Phase-1 rows. Both phases record against the same control
+    # decision by design, so an unscoped set would let whichever phase ran
+    # first suppress the other -- Phase 2 running would silently stop Phase 1
+    # producing its own evidence, which is the opposite of an overlap period.
+    from models.v4_2_challenger import phase_1_rows  # noqa: PLC0415
     from services.v4_2_challenger import (  # noqa: PLC0415
         CHALLENGER_STATUS_ALREADY_FROZEN,
         CHALLENGER_STATUS_FAILED,
@@ -359,15 +364,11 @@ def _evaluate_new_decisions(
     )
     from services.v4_2_challenger_entry import freeze_challenger_entries  # noqa: PLC0415
 
-    # Scoped to Phase-1 rows. Both phases record against the same control
-    # decision by design, so an unscoped set would let whichever phase ran
-    # first suppress the other -- Phase 2 running would silently stop Phase 1
-    # producing its own evidence, which is the opposite of an overlap period.
     existing = {
         row[0]
         for row in db.query(V42ChallengerDecision.shadow_decision_id)
         .filter(V42ChallengerDecision.shadow_decision_id.isnot(None))
-        .filter(V42ChallengerDecision.methodology_version.is_(None))
+        .filter(phase_1_rows())
     }
     # Two guards, and the stricter one wins. The lookback keeps the challenger
     # inside THIS window; the activation boundary is an absolute floor that no

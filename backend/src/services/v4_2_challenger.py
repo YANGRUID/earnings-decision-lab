@@ -39,6 +39,7 @@ from sqlalchemy.orm import Session
 
 from analytics.decision.v4_2_earnings_friction import EARNINGS_FRICTION_VERSION
 from analytics.decision.v4_2_expiry_ladder import EXPIRY_LADDER_VERSION
+from analytics.decision.v4_2_phase2_methodology import PHASE_1_METHODOLOGY_V2
 from analytics.decision.v4_2_viability import (
     DEFAULT_POLICY,
     MOVE_EDGE_VERSION,
@@ -60,6 +61,7 @@ from models.v4_2_challenger import (
     V42ChallengerCandidate,
     V42ChallengerConfigResult,
     V42ChallengerDecision,
+    phase_1_rows,
 )
 from models.v4_shadow import V4ShadowCandidate, V4ShadowCandidateLeg, V4ShadowDecision
 from services.v4_2_challenger_entry import max_defined_risk_from_legs
@@ -335,9 +337,10 @@ def freeze_challenger_decision(
         # without the discriminator a Phase-2 row for the same event and the
         # same instant would match here and Phase 1 would report
         # ALREADY_FROZEN against evidence it did not write -- silently
-        # suppressing the control's own challenger. NULL is Phase 1; see
-        # services/v4_2_phase2_evidence.py for why it is never backfilled.
-        .filter(V42ChallengerDecision.methodology_version.is_(None))
+        # suppressing the control's own challenger. Any Phase-1 identity
+        # counts, NULL included; see services/v4_2_phase2_evidence.py for why
+        # the existing NULLs are never backfilled.
+        .filter(phase_1_rows())
         .one_or_none()
     )
     if existing is not None:
@@ -355,6 +358,11 @@ def freeze_challenger_decision(
             generated_at=datetime.now(UTC),
             observed_at=observed_at,
             schema_version=CHALLENGER_SCHEMA_VERSION,
+            # v2: the per-configuration risk cap binds from here on. The 15
+            # rows written before it carry NULL and are not restamped -- they
+            # were taken under a policy where the cap could never fire, and
+            # must keep saying so.
+            methodology_version=PHASE_1_METHODOLOGY_V2,
             gate_version=VIABILITY_GATE_VERSION,
             move_edge_version=MOVE_EDGE_VERSION,
             move_distribution_version=MOVE_DISTRIBUTION_VERSION,

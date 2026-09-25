@@ -31,6 +31,7 @@ from models.v4_2_challenger import (
     V42ChallengerConfigResult,
     V42ChallengerConfigSettlement,
     V42ChallengerDecision,
+    phase_1_rows,
 )
 from services.v4_settlement_quality import (
     GRADE_SEVERITY,
@@ -130,7 +131,16 @@ def build_challenger_track_record(db: Session) -> ChallengerTrackRecord:
     """The challenger's own forward record. Reads challenger tables only."""
     record = ChallengerTrackRecord()
 
-    decisions = db.query(V42ChallengerDecision).order_by(V42ChallengerDecision.id).all()
+    # Phase 1 only. Phase 2 writes into these same tables under its own
+    # methodology, and an unfiltered read would concatenate two methodologies
+    # into one track record -- the exact reading error the methodology version
+    # exists to prevent.
+    decisions = (
+        db.query(V42ChallengerDecision)
+        .filter(phase_1_rows())
+        .order_by(V42ChallengerDecision.id)
+        .all()
+    )
     record.actions.events_observed = len(decisions)
     for decision in decisions:
         if decision.status == "RANKED":
