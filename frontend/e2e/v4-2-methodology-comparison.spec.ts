@@ -166,7 +166,19 @@ test.describe("V4.2 methodology comparison", () => {
     const gwre = page.getByTestId("comparison-GWRE");
     await expect(gwre.getByTestId("side-control")).toContainText("V4.1 CONTROL");
     await expect(gwre.getByTestId("side-challenger")).toContainText("V4.2 CHALLENGER");
-    await expect(page.locator("body")).not.toContainText(/\b(better|winner|improved|beats)\b/i);
+    // The guard is against the page CLAIMING one methodology is superior.
+    // The methodology-boundaries panel contains the word "better" inside a
+    // sentence that explicitly refuses to make that claim ("No claim that
+    // Phase 2 is better or worse than either of the others can be made"),
+    // so the disclaimer is removed before the scan rather than the scan
+    // being weakened. Until this spec gained a predecessor that warmed the
+    // dev server, the panel simply had not mounted by the time this
+    // assertion ran, and the conflict passed unnoticed.
+    const body = (await page.locator("body").innerText()).replace(
+      /No claim that Phase 2 is better or worse[^.]*\./g,
+      "",
+    );
+    expect(body).not.toMatch(/\b(better|winner|improved|beats)\b/i);
   });
 
   test("shows the challenger's refusal reason prominently", async ({ page }) => {

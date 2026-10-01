@@ -112,6 +112,91 @@ function HealthPill({ state }: { state: HealthState | string }) {
 // a challenger failure must never contribute to production readiness, and the
 // surest way to keep that true is for its numbers never to be added to V4.1's.
 // NO ACTION is reported as a successful outcome here, not filed under failures.
+function AgentRuntimeCard() {
+  const status = useAsync(() => api.getAgentRuntimeStatus(), []);
+  if (!status.data) return null;
+  const r = status.data;
+  const isGraph = r.configured_runtime === "langgraph";
+  return (
+    <div className="card" id="ops-agent-runtime" data-testid="operations-agent-runtime">
+      <h2>
+        Agent runtime{" "}
+        <span className={`pill ${isGraph ? "pill-warning" : "pill-neutral"}`}>
+          {isGraph ? "LANGGRAPH · INTERACTIVE ONLY" : "LEGACY"}
+        </span>
+      </h2>
+      <p className="text-sm text-muted">
+        Which engine answers an interactive AI Research question. Both are implementations of the
+        same behavioural contract. Neither reaches the V4 forward decision path, which generates
+        its DecisionView directly and is unaffected by this setting.
+      </p>
+      {r.warning && (
+        <p className="text-sm" data-testid="agent-runtime-warning">
+          <span className="pill pill-warning">Configuration</span>{" "}
+          <span className="text-muted">{r.warning}</span>
+        </p>
+      )}
+      <div className="grid grid-4">
+        <Stat label="Runtime" value={r.runtime_version} />
+        <Stat label="Workflow version" value={r.graph_version} />
+        <Stat label="Steps" value={String(r.nodes.length)} mono={false} />
+        <Stat
+          label="Research tools"
+          value={String(r.tools.length)}
+          sub="read-only or pure calculation"
+          mono={false}
+        />
+      </div>
+      <div className="grid grid-4" style={{ marginTop: 10 }}>
+        <Stat label="Max tool calls" value={String(r.max_tool_calls)} mono={false} />
+        <Stat
+          label="Retry rounds"
+          value={String(r.max_retrieval_rounds)}
+          sub="targeted, per run"
+          mono={false}
+        />
+        <Stat label="Revisions" value={String(r.max_revisions)} sub="bounded" mono={false} />
+        <Stat
+          label="Resume support"
+          value={
+            r.checkpointing_enabled ? (
+              r.checkpoint_available ? (
+                <span className="pill pill-positive">Available</span>
+              ) : (
+                <span className="pill pill-warning">Not initialised</span>
+              )
+            ) : (
+              <span className="pill pill-neutral">Off</span>
+            )
+          }
+          sub={r.checkpoint_detail ?? `schema: ${r.checkpoint_schema}`}
+          mono={false}
+        />
+      </div>
+      <details style={{ marginTop: 12 }}>
+        <summary className="text-sm text-faint" style={{ cursor: "pointer" }}>
+          Workflow shape and tool classification
+        </summary>
+        <p className="text-sm mono" style={{ margin: "8px 0 0" }}>
+          {r.nodes.join(" → ")}
+        </p>
+        {Object.entries(r.conditional_routes).map(([node, targets]) => (
+          <p className="text-sm text-muted mono" key={node} style={{ margin: "4px 0 0" }}>
+            {node} → {targets.join(" | ")}
+          </p>
+        ))}
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 10 }}>
+          {r.tools.map((t) => (
+            <span className="pill pill-neutral" key={t.name}>
+              {t.name} · {t.access.replace(/_/g, " ")}
+            </span>
+          ))}
+        </div>
+      </details>
+    </div>
+  );
+}
+
 function V42ChallengerCard() {
   const ops = useAsync(() => api.getV4ChallengerOperations(), []);
   if (ops.error && !ops.data) return null;
@@ -818,6 +903,7 @@ export function Operations() {
       {failures.data ? <AttentionSection failures={failures.data.failures} /> : failures.error ? <ErrorState message={failures.error} /> : null}
       <V4EngineCard v4={s.health.v4_shadow} ai={s.health.ai_provider} jobs={jobs.data?.jobs ?? []} />
       <V42ChallengerCard />
+      <AgentRuntimeCard />
     </div>
   );
 }

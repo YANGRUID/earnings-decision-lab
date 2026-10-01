@@ -1,6 +1,7 @@
 import type {
   AIResearchHistoryItem,
   AIThesisVersion,
+  AgentRuntimeStatus,
   Company,
   EarningsCalendarEvent,
   EarningsEstimate,
@@ -21,17 +22,17 @@ import type {
   SystemStatus,
   TestConnectionResult,
   UsageSummary,
-  V4ShadowCandidatesResponse,
-  V4ShadowDecisionDetail,
-  V4ShadowDecisionsResponse,
-  V4ShadowTrackRecord,
-  V4ShadowConfigurationsResponse,
   V4ChallengerOperations,
+  V4ChallengerTrackRecord,
+  V4MethodologyComparison,
   V4Phase2Decisions,
   V4Phase2Detail,
   V4Phase2Status,
-  V4ChallengerTrackRecord,
-  V4MethodologyComparison,
+  V4ShadowCandidatesResponse,
+  V4ShadowConfigurationsResponse,
+  V4ShadowDecisionDetail,
+  V4ShadowDecisionsResponse,
+  V4ShadowTrackRecord,
   V4TrackRecordByConfiguration,
   V4TrackRecordView,
 } from "../types/api";
@@ -81,6 +82,8 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 export const api = {
   listCompanies: () => request<Company[]>("/companies"),
+  getAgentRuntimeStatus: () => request<AgentRuntimeStatus>("/research/agent-runtime"),
+
   researchQuery: (question: string, ticker?: string) =>
     request<ResearchQueryResponse>("/research/query", {
       method: "POST",

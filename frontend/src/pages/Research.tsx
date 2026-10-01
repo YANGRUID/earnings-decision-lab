@@ -4,7 +4,12 @@ import { api, ApiError } from "../api/client";
 import { useAsync } from "../hooks/useAsync";
 import { Markdown } from "../components/Markdown";
 import { dataStateLabel, formatRelativeTime, providerLabel } from "../lib/format";
-import type { AIResearchHistoryItem, ResearchOverview, ResearchQueryResponse } from "../types/api";
+import type {
+  AgentWorkflow,
+  AIResearchHistoryItem,
+  ResearchOverview,
+  ResearchQueryResponse,
+} from "../types/api";
 
 const DEFAULT_EXAMPLE_QUESTIONS = [
   "What were MU's last two earnings results?",
@@ -204,7 +209,126 @@ function filingCategory(filingType: string): string {
   return t;
 }
 
-function AnswerPanel({ item }: { item: AIResearchHistoryItem }) {
+// Requirement 64 -- plain language for the normal reader. Nobody outside
+// this repository needs to know a node is called "evidence_quality_gate";
+// they need to know the system checked whether it had enough to answer.
+// The node names themselves stay available under Advanced details.
+const WORKFLOW_STEP_LABEL: Record<string, string> = {
+  classify_intent: "Understanding the question",
+  window_context: "Checking research freshness",
+  plan_research: "Choosing sources",
+  execute_tools: "Collecting evidence",
+  merge_evidence: "Assembling evidence",
+  evidence_quality_gate: "Checking evidence coverage",
+  targeted_retrieve: "Retrying missing evidence",
+  synthesize: "Writing the answer",
+  verify: "Verification",
+  revise: "Revising unsupported claims",
+};
+
+const EVIDENCE_CATEGORY_LABEL: Record<string, string> = {
+  filing: "SEC filings",
+  earnings_history: "earnings history",
+  estimates: "analyst estimates",
+  guidance: "guidance",
+  options_context: "options data",
+  derived: "calculations",
+};
+
+function categoryList(categories: string[]): string {
+  const readable = categories.map((c) => EVIDENCE_CATEGORY_LABEL[c] ?? c.replace(/_/g, " "));
+  if (readable.length <= 1) return readable.join("");
+  return `${readable.slice(0, -1).join(", ")} and ${readable[readable.length - 1]}`;
+}
+
+const QUALITY_PILL: Record<string, { cls: string; label: string }> = {
+  sufficient: { cls: "pill pill-positive", label: "Evidence covered the question" },
+  partial: { cls: "pill pill-neutral", label: "Partial evidence" },
+  insufficient: { cls: "pill pill-warning", label: "Not enough evidence on record" },
+};
+
+function WorkflowPanel({ workflow }: { workflow: AgentWorkflow }) {
+  const quality = workflow.evidence_quality;
+  // Deduplicated in order: a node that ran twice (the gate, or verify
+  // after a revision) is one step that happened twice, not two steps.
+  const steps: { label: string; runs: typeof workflow.node_runs }[] = [];
+  for (const run of workflow.node_runs) {
+    const label = WORKFLOW_STEP_LABEL[run.node] ?? run.node.replace(/_/g, " ");
+    const existing = steps.find((s) => s.label === label);
+    if (existing) existing.runs.push(run);
+    else steps.push({ label, runs: [run] });
+  }
+  return (
+    <div className="card" data-testid="research-workflow">
+      <h2>How this answer was reached</h2>
+      {quality && (
+        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+          <span className={QUALITY_PILL[quality.status].cls} data-testid="evidence-quality-status">
+            {QUALITY_PILL[quality.status].label}
+          </span>
+          <span className="text-muted text-sm">{quality.explanation}</span>
+        </div>
+      )}
+      {workflow.retrieval_rounds > 0 && (
+        <p className="text-sm text-muted" style={{ margin: "10px 0 0" }}>
+          The first pass left a gap, so {categoryList(quality?.recommended_retrieval ?? [])} was
+          searched again before the answer was written.
+        </p>
+      )}
+      {quality?.conflicts.map((c, i) => (
+        <p className="text-sm" key={i} style={{ margin: "8px 0 0" }} data-testid="evidence-conflict">
+          <span className="pill pill-warning">Evidence disagrees</span>{" "}
+          <span className="text-muted">{c.description}</span>
+        </p>
+      ))}
+      {workflow.warnings.map((w, i) => (
+        <p className="text-sm text-muted" key={i} style={{ margin: "8px 0 0" }}>{w}</p>
+      ))}
+      <div style={{ marginTop: 14 }}>
+        {steps.map((step) => (
+          <div className="trace-step" key={step.label}>
+            <div className="trace-step-header">
+              <span className="trace-step-name">
+                {step.label}
+                {step.runs.length > 1 ? ` · ran ${step.runs.length}×` : ""}
+              </span>
+              <span className={`pill ${stepPill(step.runs)}`}>
+                {stepLabel(step.runs)} ·{" "}
+                {step.runs.reduce((total, r) => total + r.duration_ms, 0).toFixed(0)}ms
+              </span>
+            </div>
+          </div>
+        ))}
+      </div>
+      {workflow.errors.length > 0 && (
+        <>
+          <h3 style={{ marginTop: 14 }}>What did not work</h3>
+          {workflow.errors.map((e, i) => (
+            <p className="text-sm text-muted" key={i} style={{ margin: "4px 0 0" }}>
+              {WORKFLOW_STEP_LABEL[e.node] ?? e.node}: {e.message}
+            </p>
+          ))}
+        </>
+      )}
+    </div>
+  );
+}
+
+function stepPill(runs: { status: string }[]): string {
+  if (runs.some((r) => r.status === "failed")) return "pill-negative";
+  if (runs.some((r) => r.status === "degraded")) return "pill-warning";
+  if (runs.every((r) => r.status === "skipped")) return "pill-neutral";
+  return "pill-positive";
+}
+
+function stepLabel(runs: { status: string }[]): string {
+  if (runs.some((r) => r.status === "failed")) return "failed";
+  if (runs.some((r) => r.status === "degraded")) return "degraded";
+  if (runs.every((r) => r.status === "skipped")) return "not needed";
+  return "done";
+}
+
+function AnswerPanel({ item, workflow }: { item: AIResearchHistoryItem; workflow?: AgentWorkflow | null }) {
   const filingCats = Array.from(new Set(item.citations.map((c) => filingCategory(c.filing_type))));
   const toolCats = Array.from(new Set(item.tool_calls.filter((t) => t.success).map((t) => TOOL_CATEGORY[t.tool_name] ?? t.tool_name.replace(/_/g, " "))));
   const grounding = item.verification_ran
@@ -258,6 +382,8 @@ function AnswerPanel({ item }: { item: AIResearchHistoryItem }) {
         )}
       </div>
 
+      {workflow && <WorkflowPanel workflow={workflow} />}
+
       <details className="card">
         <summary style={{ cursor: "pointer", fontWeight: 600 }}>Advanced details</summary>
         <div className="grid grid-3" style={{ marginTop: 14, marginBottom: 14 }}>
@@ -268,6 +394,32 @@ function AnswerPanel({ item }: { item: AIResearchHistoryItem }) {
           <div className="stat"><span className="stat-label">Tokens (in/out)</span><span className="stat-value small">{item.total_input_tokens} / {item.total_output_tokens}</span></div>
           <div className="stat"><span className="stat-label">Est. cost</span><span className="stat-value small">{item.estimated_cost_usd ? `$${Number(item.estimated_cost_usd).toFixed(4)}` : "n/a"}</span></div>
         </div>
+        {workflow && (
+          <div className="grid grid-3" style={{ marginBottom: 14 }} data-testid="workflow-diagnostics">
+            <div className="stat"><span className="stat-label">Agent runtime</span><span className="stat-value small mono">{workflow.runtime_version}</span></div>
+            <div className="stat"><span className="stat-label">Graph version</span><span className="stat-value small mono">{workflow.graph_version}</span></div>
+            <div className="stat"><span className="stat-label">Run id</span><span className="stat-value small mono">{workflow.run_id}</span></div>
+            <div className="stat"><span className="stat-label">LLM calls</span><span className="stat-value small">{workflow.llm_calls}</span></div>
+            <div className="stat"><span className="stat-label">Retrieval rounds</span><span className="stat-value small">{workflow.retrieval_rounds}</span></div>
+            <div className="stat"><span className="stat-label">Revisions</span><span className="stat-value small">{workflow.revision_count}</span></div>
+          </div>
+        )}
+        {workflow && (
+          <details style={{ marginBottom: 14 }}>
+            <summary className="text-sm text-faint" style={{ cursor: "pointer" }}>Workflow node timings</summary>
+            {workflow.node_runs.map((n, i) => (
+              <div className="trace-step" key={i}>
+                <div className="trace-step-header">
+                  <span className="trace-step-name mono">{n.node}{n.attempt > 1 ? ` (attempt ${n.attempt})` : ""}</span>
+                  <span className="pill pill-neutral">{n.status} · {n.duration_ms.toFixed(0)}ms · {n.llm_calls} llm · {n.tool_calls} tools</span>
+                </div>
+              </div>
+            ))}
+            <p className="text-faint text-sm" style={{ margin: "8px 0 0" }}>
+              Checkpoint: {workflow.checkpoint_thread_id ?? "not persisted for this run"}
+            </p>
+          </details>
+        )}
         {item.tool_calls.length === 0 ? (
           <p className="text-sm text-muted">No tools were needed for this question.</p>
         ) : (
@@ -351,6 +503,11 @@ export function Research() {
     : DEFAULT_EXAMPLE_QUESTIONS;
   const [question, setQuestion] = useState(contextTicker ? `About ${contextTicker}: ` : "");
   const [activeItem, setActiveItem] = useState<AIResearchHistoryItem | null>(null);
+  // The workflow belongs to the live run, not to the persisted row (which
+  // predates Phase LG-1 and is unchanged). Held separately and cleared the
+  // moment a different answer is selected, so a workflow is never shown
+  // next to an answer it did not produce.
+  const [activeWorkflow, setActiveWorkflow] = useState<AgentWorkflow | null>(null);
   const [statusNotice, setStatusNotice] = useState<ResearchQueryResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -373,12 +530,14 @@ export function Research() {
           limit: 1,
         });
         if (items[0]) setActiveItem(items[0]);
+        setActiveWorkflow(response.workflow);
         setHistoryKey((k) => k + 1);
       } else {
         // preparing / company_not_found / research_failed -- nothing was
         // persisted (see api/routers/research.py::research_query), so
         // there's no history row to show; only the honest status notice.
         setActiveItem(null);
+        setActiveWorkflow(null);
         setStatusNotice(response);
       }
     } catch (err) {
@@ -441,13 +600,19 @@ export function Research() {
         key={historyKey}
         ticker={contextTicker}
         activeId={activeItem?.id ?? null}
-        onSelect={setActiveItem}
+        onSelect={(item) => {
+          setActiveItem(item);
+          setActiveWorkflow(null);
+        }}
         onDeleted={(id) => {
-          if (activeItem?.id === id) setActiveItem(null);
+          if (activeItem?.id === id) {
+            setActiveItem(null);
+            setActiveWorkflow(null);
+          }
         }}
       />
 
-      {activeItem && <AnswerPanel item={activeItem} />}
+      {activeItem && <AnswerPanel item={activeItem} workflow={activeWorkflow} />}
     </div>
   );
 }

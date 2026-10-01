@@ -120,6 +120,88 @@ export interface ResearchQueryResponse {
   trace: ExecutionTrace | null;
   preparing: PreparingCompany[];
   unresolved_tickers: string[];
+  // Which runtime answered. Always present, so provenance never has to be
+  // inferred from whether `workflow` happens to be set.
+  agent_runtime: string;
+  // Phase LG-1 (2026-10-01). Present only on a LangGraph answer; `null`
+  // on a legacy one, because legacy has no evidence-quality gate and a
+  // defaulted verdict would be a fabrication.
+  workflow: AgentWorkflow | null;
+}
+
+export interface EvidenceConflict {
+  category: string;
+  description: string;
+}
+
+export interface EvidenceQuality {
+  status: "sufficient" | "partial" | "insufficient";
+  missing_categories: string[];
+  weak_categories: string[];
+  conflicts: EvidenceConflict[];
+  recommended_retrieval: string[];
+  explanation: string;
+}
+
+// Operational trace for one workflow step. Timings, counts and status
+// only -- no prompt, no model output, no hidden reasoning.
+export interface AgentNodeRun {
+  node: string;
+  started_at: string;
+  finished_at: string;
+  duration_ms: number;
+  status: "ok" | "degraded" | "failed" | "skipped";
+  llm_calls: number;
+  tool_calls: number;
+  attempt: number;
+}
+
+export interface AgentGraphError {
+  node: string;
+  category: string;
+  message: string;
+  recoverable: boolean;
+  checkpointed: boolean;
+  occurred_at: string;
+}
+
+export interface AgentWorkflow {
+  runtime_version: string;
+  graph_version: string;
+  run_id: string;
+  retrieval_rounds: number;
+  revision_count: number;
+  llm_calls: number;
+  evidence_quality: EvidenceQuality | null;
+  node_runs: AgentNodeRun[];
+  errors: AgentGraphError[];
+  warnings: string[];
+  checkpoint_thread_id: string | null;
+  needs_refresh_for_window: boolean | null;
+  legal_decision_at: string | null;
+}
+
+export interface AgentRuntimeTool {
+  name: string;
+  access: string;
+  evidence_category: string;
+}
+
+export interface AgentRuntimeStatus {
+  configured_runtime: string;
+  runtime_version: string;
+  graph_version: string;
+  nodes: string[];
+  conditional_routes: Record<string, string[]>;
+  max_retrieval_rounds: number;
+  max_revisions: number;
+  max_tool_calls: number;
+  tools: AgentRuntimeTool[];
+  checkpointing_enabled: boolean;
+  checkpoint_available: boolean;
+  checkpoint_schema: string;
+  checkpoint_detail: string | null;
+  warning: string | null;
 }
 
 // A real, persisted AI Research answer -- see models/ai_research_query.py.
