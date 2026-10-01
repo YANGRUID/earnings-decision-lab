@@ -33,6 +33,26 @@ dependencies = [
     # own setup.py (`install_requires=["protobuf==5.29.5"]`) -- the old
     # 9.81 PyPI package had no such requirement. Pinned to match exactly.
     "protobuf==5.29.5",
+    # Agentic research runtime (Phase LG-0/LG-1, 2026-10-01). Deliberately
+    # THREE packages, not the `langchain` meta-package: this project keeps
+    # its own LLMProvider abstraction, its own SEC-aware RAG stack and its
+    # own deterministic financial engine, so none of the community
+    # loaders/splitters/vector-store adapters are wanted. What is wanted is
+    # langchain-core's Runnable/BaseChatModel/StructuredTool protocols (so
+    # our adapters are real LangChain citizens) and LangGraph's state
+    # machine, conditional routing and checkpointing.
+    #
+    # Majors are declared as installed, not optimistically low: langchain-core
+    # 1.x and langgraph 1.x are the post-0.x API, and a resolver that picked
+    # 0.3/0.2 here would hand us a different Runnable contract than the one
+    # src/agents/graph/ is written against.
+    "langchain-core>=1.6,<2",
+    "langgraph>=1.2,<2",
+    # Postgres checkpointer (requirement 37): this stack already runs
+    # Postgres and already depends on psycopg[binary]; a Redis checkpointer
+    # would add an operational dependency for no capability we need. Adds
+    # psycopg-pool as its only new transitive runtime requirement.
+    "langgraph-checkpoint-postgres>=3.1,<4",
 ]
 
 [tool.uv.sources]
