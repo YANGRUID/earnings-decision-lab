@@ -97,6 +97,27 @@ class Settings(BaseSettings):
     # to narrow it -- never widened past what the ladder itself bounds.
     v4_2_independent_search_max_expiries: int = 3
 
+    # Agentic research runtime (Phase LG-1, 2026-10-01). Which engine
+    # answers an interactive AI Research question.
+    #
+    # Default "legacy" and it stays there until the parity harness and the
+    # evaluation corpus have both been read by a person. This flag selects
+    # between two implementations of the SAME behavioural contract -- it is
+    # not a methodology switch, and it deliberately has no effect on the V4
+    # forward path, which does not go through either orchestrator (see
+    # services/v4_shadow_orchestration.py::default_view_generator, which
+    # calls the provider directly). Keeping "legacy" reachable is the
+    # rollback (requirement 51).
+    agent_runtime: Literal["legacy", "langgraph"] = "legacy"
+
+    # Whether the LangGraph runtime persists checkpoints at all. Separate
+    # from agent_runtime because the two questions are genuinely separate:
+    # a graph run is useful without checkpointing, and checkpointing adds
+    # real writes to the `langgraph` schema that an operator may want to
+    # hold off until the schema has been reviewed. With this off, a failed
+    # run simply cannot be resumed -- it is never silently retried instead.
+    agent_graph_checkpointing_enabled: bool = False
+
     database_url: str = (
         "postgresql+psycopg://postgres:change_me@localhost:5433/earnings_decision_lab"
     )
