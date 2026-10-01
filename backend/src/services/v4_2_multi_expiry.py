@@ -163,6 +163,12 @@ class MultiExpiryResult:
     latency_ms: Decimal = Decimal(0)
     metadata_latency_ms: Decimal = Decimal(0)
     quote_latency_ms: Decimal = Decimal(0)
+    #: Measured, like the two above. Previously the Phase-2 telemetry
+    #: reported these two stages as a hardcoded 0, which put 77-86% of a
+    #: real run's wall clock in no stage at all -- and the window-capacity
+    #: estimate is built on exactly this breakdown.
+    underlying_latency_ms: Decimal = Decimal(0)
+    chain_discovery_latency_ms: Decimal = Decimal(0)
     truncation_note: str | None = None
     failure_category: str | None = None
     failure_detail: str | None = None
@@ -196,6 +202,7 @@ def build_multi_expiry_universe(
     result = MultiExpiryResult()
 
     # ---- 1. underlying, once ---------------------------------------------
+    underlying_started = time.monotonic()
     try:
         underlying = provider.get_underlying_quote(ticker)
         result.budget.underlying_quotes += 1
@@ -207,6 +214,7 @@ def build_multi_expiry_universe(
         result.failure_category = "MARKET_DATA_UNAVAILABLE"
         result.failure_detail = f"no underlying quote returned for {ticker}"
         return result
+    result.underlying_latency_ms = Decimal(str((time.monotonic() - underlying_started) * 1000))
     result.underlying_price = underlying.price
     result.underlying_quote_at = underlying.timestamp
     result.market_data_quality = underlying.market_data_quality
@@ -257,6 +265,7 @@ def build_multi_expiry_universe(
     )
 
     # ---- 4. per expiry: its OWN chain, implied move and geometry ---------
+    chain_started = time.monotonic()
     flat: list[tuple[str, StrategyCategory, str, tuple, ExpiryVariant, ExpectedMoveContext]] = []
     for variant in ladder:
         cset = ExpiryCandidateSet(variant=variant)
@@ -334,6 +343,8 @@ def build_multi_expiry_universe(
         result.failure_detail = "no expiry on the ladder produced a constructable geometry"
         result.status = MULTI_EXPIRY_UNAVAILABLE
         return result
+
+    result.chain_discovery_latency_ms = Decimal(str((time.monotonic() - chain_started) * 1000))
 
     if len(flat) > MAX_TOTAL_CANDIDATES:
         result.truncation_note = (
@@ -512,7 +523,9 @@ def summarize_multi_expiry(result: MultiExpiryResult) -> dict:
             "total_requests": result.budget.total,
         },
         "latency_ms": {
+            "underlying": str(result.underlying_latency_ms),
             "metadata": str(result.metadata_latency_ms),
+            "chain_discovery": str(result.chain_discovery_latency_ms),
             "quotes": str(result.quote_latency_ms),
             "total": str(result.latency_ms),
         },

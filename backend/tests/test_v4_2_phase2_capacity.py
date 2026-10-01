@@ -176,3 +176,91 @@ class TestTheDeadlineIsBinding:
         rows = db_session.query(V42ChallengerDecision).all()
         assert len(rows) == 2
         assert all(r.expiries_considered and r.candidates_evaluated for r in rows)
+
+
+# --- the dry-run's own instrumentation (live findings, 2026-10-01) -------
+#
+# Found during the market-hours activation dry run. Both defects are in the
+# measurement, not the methodology -- but the activation gate is read OFF the
+# measurement, so a wrong measurement is a wrong gate.
+
+
+class TestTheDryRunMeasuresWhatItReports:
+    def test_the_market_hours_gate_is_true_when_the_market_is_open(self):
+        """``satisfies_market_hours_gate`` compared _market_state(now) against
+        the literal "open", which that function never returns -- so the flag
+        was False at every instant, including the middle of a trading day.
+        A dry run that ran at 11:30 ET reported that it had not."""
+        from api.routers.v4_2_challenger import MARKET_STATE_OPEN, _market_state
+
+        open_tick = datetime(2026, 10, 1, 15, 30, tzinfo=UTC)  # 11:30 ET, Thursday
+        assert _market_state(open_tick) == MARKET_STATE_OPEN
+        assert (_market_state(open_tick) == MARKET_STATE_OPEN) is True
+
+        for closed in (
+            datetime(2026, 10, 1, 12, 0, tzinfo=UTC),   # 08:00 ET -- pre-market
+            datetime(2026, 10, 1, 21, 0, tzinfo=UTC),   # 17:00 ET -- after close
+            datetime(2026, 10, 3, 15, 30, tzinfo=UTC),  # Saturday
+        ):
+            assert _market_state(closed) != MARKET_STATE_OPEN
+
+    def test_every_stage_latency_is_measured_not_hardcoded(self, db_session):
+        """The underlying and chain-discovery stages were constructed with a
+        literal Decimal(0), in a dataclass whose docstring says "Measured,
+        never estimated". On a real AAPL run that put 66.7s of an 86.5s
+        universe build into no stage at all -- and the window-capacity
+        estimate is built on exactly this breakdown."""
+        from services.v4_2_multi_expiry import build_multi_expiry_universe
+
+        provider = FakeChainProvider(LADDER)
+        result = build_multi_expiry_universe(
+            provider=provider,
+            ticker="ZZP2",
+            as_of=WINDOW,
+            direction="neutral",
+            volatility_view=None,
+            earnings_date=WINDOW.date(),
+            settlement_date=WINDOW.date() + timedelta(days=1),
+            max_variants=3,
+        )
+
+        assert result.candidates, "fixture must actually build a universe"
+        # Measured means "a real elapsed span", which on any real clock is
+        # strictly positive once work has happened.
+        assert result.underlying_latency_ms > 0
+        assert result.chain_discovery_latency_ms > 0
+        assert result.metadata_latency_ms > 0
+        assert result.quote_latency_ms > 0
+
+        staged = (
+            result.underlying_latency_ms
+            + result.metadata_latency_ms
+            + result.chain_discovery_latency_ms
+            + result.quote_latency_ms
+        )
+        assert staged <= result.latency_ms, "stages cannot exceed the whole build"
+        # The four stages must account for the bulk of the build, not a sliver.
+        assert staged >= result.latency_ms * Decimal("0.5"), (
+            f"stages account for only {staged} of {result.latency_ms}ms -- "
+            "the capacity estimate reads this breakdown"
+        )
+
+    def test_the_telemetry_states_what_the_stages_do_not_cover(self, db_session):
+        """Rather than leaving a reader to subtract and guess."""
+        from services.v4_2_phase2 import Phase2Stage, Phase2Telemetry
+
+        t = Phase2Telemetry()
+        t.stages = [
+            Phase2Stage("underlying", 1, 0, Decimal("10")),
+            Phase2Stage("metadata", 1, 0, Decimal("20")),
+            Phase2Stage("chain_discovery", 3, 0, Decimal("30")),
+            Phase2Stage("quotes", 3, 5, Decimal("40")),
+        ]
+        t.universe_build_latency_ms = Decimal("250")
+        assert t.unattributed_latency_ms == Decimal("150")
+        assert t.as_dict()["stage_latency_unattributed_ms"] == "150"
+
+        # Never negative, even if a caller leaves the total unset.
+        t2 = Phase2Telemetry()
+        t2.stages = [Phase2Stage("quotes", 1, 1, Decimal("99"))]
+        assert t2.unattributed_latency_ms == Decimal(0)

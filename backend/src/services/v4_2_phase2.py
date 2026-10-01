@@ -143,6 +143,10 @@ class Phase2Telemetry:
     challenger_only_contracts: int = 0
     valuation_latency_ms: Decimal = Decimal(0)
     selection_latency_ms: Decimal = Decimal(0)
+    #: The whole universe build, measured end to end. Reported alongside the
+    #: stages so a reader can see what the four stages do NOT account for,
+    #: rather than having to subtract and guess.
+    universe_build_latency_ms: Decimal = Decimal(0)
     total_latency_ms: Decimal = Decimal(0)
 
     @property
@@ -152,6 +156,16 @@ class Phase2Telemetry:
     @property
     def unique_contracts(self) -> int:
         return sum(s.contracts for s in self.stages if s.name == "quotes")
+
+    @property
+    def unattributed_latency_ms(self) -> Decimal:
+        """Universe-build wall clock the four stages do not cover.
+
+        Stated rather than hidden: a capacity estimate built on stages that
+        silently omit most of the run is worse than no estimate.
+        """
+        staged = sum((s.latency_ms for s in self.stages), Decimal(0))
+        return max(Decimal(0), self.universe_build_latency_ms - staged)
 
     def as_dict(self) -> dict:
         return {
@@ -163,6 +177,8 @@ class Phase2Telemetry:
             "challenger_only_contracts": self.challenger_only_contracts,
             "valuation_latency_ms": str(self.valuation_latency_ms),
             "selection_latency_ms": str(self.selection_latency_ms),
+            "universe_build_latency_ms": str(self.universe_build_latency_ms),
+            "stage_latency_unattributed_ms": str(self.unattributed_latency_ms),
             "total_latency_ms": str(self.total_latency_ms),
         }
 
@@ -385,13 +401,18 @@ def run_independent_search(
 
     budget = universe_result.budget
     evaluation.telemetry.stages = [
-        Phase2Stage("underlying", budget.underlying_quotes, 0, Decimal(0)),
+        Phase2Stage(
+            "underlying",
+            budget.underlying_quotes,
+            0,
+            universe_result.underlying_latency_ms,
+        ),
         Phase2Stage("metadata", budget.metadata_calls, 0, universe_result.metadata_latency_ms),
         Phase2Stage(
             "chain_discovery",
             budget.chain_discovery_calls,
             len(universe_result.listed_strikes),
-            Decimal(0),
+            universe_result.chain_discovery_latency_ms,
         ),
         Phase2Stage(
             "quotes",
@@ -401,6 +422,7 @@ def run_independent_search(
         ),
     ]
     evaluation.telemetry.contracts_deduplicated = budget.contracts_deduplicated
+    evaluation.telemetry.universe_build_latency_ms = universe_result.latency_ms
 
     if universe_result.status == MULTI_EXPIRY_UNAVAILABLE and not universe_result.candidates:
         evaluation.failure_category = universe_result.failure_category or "NO_VALID_CANDIDATE"
@@ -462,6 +484,101 @@ def run_independent_search(
     return evaluation
 
 
+def _strategy_family_census(evaluation: Phase2Evaluation) -> list[dict]:
+    """Which canonical strategy families the independent search actually
+    built, plus how many of each survived to a valuable candidate.
+
+    The classification (directional / volatility intent) is taken FROM
+    ``analytics.decision.v4_strategy_semantics`` rather than restated here,
+    so this reports the taxonomy the decision engine itself uses instead of
+    standing up a second one beside it.
+    """
+    from collections import Counter  # noqa: PLC0415
+
+    from analytics.decision.v4_strategy_semantics import (  # noqa: PLC0415
+        StrategyCategory,
+        get_strategy_semantics,
+    )
+
+    built: Counter[str] = Counter()
+    valid: Counter[str] = Counter()
+    for candidate in evaluation.universe:
+        built[candidate.strategy] += 1
+        if candidate.data_valid:
+            valid[candidate.strategy] += 1
+
+    rows: list[dict] = []
+    for strategy in sorted(built):
+        semantics = None
+        try:
+            semantics = get_strategy_semantics(StrategyCategory(strategy))
+        except Exception:  # noqa: BLE001 -- a census must never fail a dry run
+            semantics = None
+        rows.append(
+            {
+                "strategy": strategy,
+                "candidates_built": built[strategy],
+                "data_valid": valid[strategy],
+                "directional_intent": getattr(semantics, "directional_intent", None),
+                "move_intent": getattr(semantics, "move_intent", None),
+                "volatility_intent": getattr(semantics, "volatility_intent", None),
+                "payoff_shape": getattr(semantics, "payoff_shape", None),
+            }
+        )
+    return rows
+
+
+#: Enough contracts to show the real book on both sides without turning the
+#: dry-run response into a chain dump.
+QUOTE_SAMPLE_LIMIT = 12
+
+
+def _quote_sample(evaluation: Phase2Evaluation) -> list[dict]:
+    """Real, per-contract entry books as they were actually observed.
+
+    Reports the executable side the entry rule will use (BUY -> ASK,
+    SELL -> BID; see V4T1LegInput.entry_executable_price) beside the raw
+    bid/ask, so required-side semantics can be checked rather than taken on
+    trust. Deduplicated by contract and bounded.
+    """
+    if evaluation.multi_expiry is None:
+        return []
+    seen: set[tuple] = set()
+    rows: list[dict] = []
+    for cset in evaluation.multi_expiry.per_expiry:
+        for candidate in cset.candidates:
+            for leg in candidate.context.legs:
+                key = (candidate.context.expiration, leg.strike, str(leg.right), leg.action)
+                if key in seen:
+                    continue
+                seen.add(key)
+                observed = candidate.leg_retrieved_at.get(leg.leg_index)
+                rows.append(
+                    {
+                        "contract_id": candidate.external_contract_ids.get(leg.leg_index),
+                        "expiration": candidate.context.expiration.isoformat(),
+                        "strike": str(leg.strike),
+                        "right": getattr(leg.right, "value", str(leg.right)),
+                        "action": leg.action,
+                        "bid": None if leg.entry_bid is None else str(leg.entry_bid),
+                        "ask": None if leg.entry_ask is None else str(leg.entry_ask),
+                        "bid_size": leg.entry_bid_size,
+                        "ask_size": leg.entry_ask_size,
+                        "required_side": "ask" if leg.action == "buy" else "bid",
+                        "executable_price": (
+                            None
+                            if leg.entry_executable_price is None
+                            else str(leg.entry_executable_price)
+                        ),
+                        "market_data_quality": leg.market_data_quality,
+                        "observed_at": observed.isoformat() if observed else None,
+                    }
+                )
+                if len(rows) >= QUOTE_SAMPLE_LIMIT:
+                    return rows
+    return rows
+
+
 def summarize_phase2(evaluation: Phase2Evaluation) -> dict:
     """An operator-facing view: what was searched, and what each of the six
     decided. Deliberately reports all six rows even when they agree, so a
@@ -493,6 +610,8 @@ def summarize_phase2(evaluation: Phase2Evaluation) -> dict:
             for s in (evaluation.multi_expiry.per_expiry if evaluation.multi_expiry else [])
         ],
         "candidate_universe": len(evaluation.universe),
+        "strategy_families": _strategy_family_census(evaluation),
+        "quote_sample": _quote_sample(evaluation),
         "distinct_selected_candidates": len(evaluation.selected_candidate_ids),
         "telemetry": evaluation.telemetry.as_dict(),
         "historical_sample_n": int(getattr(evaluation.move_distribution, "sample_n", 0) or 0),
