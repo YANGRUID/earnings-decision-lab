@@ -440,3 +440,60 @@ def test_targeted_retrieval_refuses_rather_than_searching_every_company(db_sessi
         "the reason the retry was skipped must be stated, not silent"
     )
 
+
+# --- degraded verification must not borrow the previous verdict --------
+#
+# Live defect, 2026-10-01. On the revise path verify runs twice. DeepSeek's
+# VerificationResult structured output fails intermittently, so the second
+# verify can exhaust both attempts -- and the degraded branch used to
+# return without touching ``verification``, leaving verdict #1 in state.
+# Verdict #1 is always "unsupported" (that is what triggered the
+# revision), so the run reported verification_supported=False, plus
+# unsupported_claims, AGAINST an answer the revision had already rewritten.
+
+
+def test_double_verification_failure_reports_unverified_not_the_stale_verdict(db_session):
+    company = _seed_filing(
+        db_session, "ZZLG24", "0009991024", "Gross margin expanded on mix", chunks=4
+    )
+    llm = _llm(
+        intent=IntentCategory.FILING_RESEARCH,
+        plan=ToolPlan(
+            items=[ToolPlanItem(tool_name="search_filings", arguments={"query": "margin"})]
+        ),
+        generate=[
+            GenerateResult(content="Margins expanded 40% [1]."),
+            GenerateResult(content="Margins expanded [1]."),
+        ],
+        verification=[
+            # verify #1 -- succeeds, rejects the draft, triggers the revision.
+            VerificationResult(
+                supported=False, unsupported_claims=["the 40% figure is not in the evidence"]
+            ),
+            # verify #2 -- both bounded attempts fail.
+            StructuredOutputError("malformed VerificationResult"),
+            StructuredOutputError("malformed VerificationResult"),
+        ],
+    )
+
+    result = run_research_graph(
+        db_session, llm, _StubEmbedder(), "what happened to margins?",
+        resolved_tickers=[company.ticker], company_id=company.id,
+    )
+
+    trace = result.response.trace
+    assert trace.revised, "the revision did happen"
+    assert result.response.answer == "Margins expanded [1].", "the revised answer is returned"
+    assert not trace.verification_ran, (
+        "the answer being returned was never checked, so verification did not run"
+    )
+    assert trace.verification_supported is None, (
+        "a stale verdict about a replaced draft must not be reported as this answer's"
+    )
+    assert any("not checked" in w for w in result.warnings), (
+        "the reader is told verification was unavailable"
+    )
+    verify_runs = [n for n in result.node_runs if n["node"] == "verify"]
+    assert [n["status"] for n in verify_runs] == ["ok", "degraded"], (
+        "both verify passes are still visible in the trace"
+    )

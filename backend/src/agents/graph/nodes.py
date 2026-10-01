@@ -833,10 +833,25 @@ def verify(state: ResearchState, deps: GraphDeps) -> ResearchState:
     if not outcome.ok:
         # Best-effort, exactly as before: an unavailable verifier leaves the
         # draft standing and says so, rather than failing the run.
+        #
+        # ``verification=None`` CLEARS any earlier verdict rather than
+        # leaving it standing (live defect, 2026-10-01). On the revise path
+        # this node runs twice: a first verdict of "unsupported" is what
+        # triggered the revision, so leaving it in place reported that
+        # verdict -- and its ``unsupported_claims`` -- against the REVISED
+        # answer, describing claims the revision had already removed. That
+        # is the same misattribution this runtime was built to stop legacy
+        # doing (see DECLARED_DIFFERENCES in evaluation/agent_parity.py).
+        # Cleared, the result reads verification_ran=False, which is the
+        # truth: the answer being returned was not checked. Routing is
+        # unaffected -- route_after_verify sends a None verdict to END.
         return ResearchState(
+            verification=None,
             llm_calls=state.get("llm_calls", 0) + outcome.attempts,
             node_runs=[timer.done("degraded")],
-            warnings=["Verification was unavailable, so this answer was not checked."],
+            warnings=[
+                "Verification was unavailable, so the answer returned was not checked."
+            ],
             errors=[
                 GraphError(
                     node="verify",
