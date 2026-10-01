@@ -26,6 +26,7 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from agents.cost import estimate_cost_usd
+from agents.evidence import apply_deterministic_defaults, assemble_evidence
 from agents.tools.base import Tool
 from agents.tools.registry import build_tool_registry
 from agents.tools.types import ToolOutcome
@@ -37,7 +38,6 @@ from prompts.agent_synthesis import SYSTEM_PROMPT as SYNTHESIS_SYSTEM_PROMPT
 from prompts.agent_synthesis import build_synthesis_user_prompt
 from prompts.agent_verification import SYSTEM_PROMPT as VERIFICATION_SYSTEM_PROMPT
 from prompts.agent_verification import build_verification_user_prompt
-from rag.context import Citation
 from rag.embeddings import EmbeddingProvider
 from schemas.agent import IntentCategory, IntentClassification, ToolPlan, VerificationResult
 from services.llm.base import LLMProvider
@@ -95,7 +95,7 @@ class AgentOrchestrator:
         input_tokens += tokens[0]
         output_tokens += tokens[1]
 
-        evidence_text, citations = _assemble_evidence(tool_results)
+        evidence_text, citations = assemble_evidence(tool_results)
         tool_records = [record for record, _outcome in tool_results]
 
         verification, revised_answer, verify_tokens = self._verify_and_maybe_revise(
@@ -175,7 +175,7 @@ class AgentOrchestrator:
             self._execute_tool(tc.name, tc.arguments, resolved_tickers, as_of)
             for tc in result.tool_calls[:MAX_TOOL_CALLS]
         ]
-        evidence_text, _ = _assemble_evidence(tool_results)
+        evidence_text, _ = assemble_evidence(tool_results)
         draft_answer, synth_tokens = self._synthesize(question, evidence_text)
         return (
             tool_results,
@@ -214,7 +214,7 @@ class AgentOrchestrator:
             self._execute_tool(item.tool_name, item.arguments, resolved_tickers, as_of)
             for item in plan.items[:MAX_TOOL_CALLS]
         ]
-        evidence_text, _ = _assemble_evidence(tool_results)
+        evidence_text, _ = assemble_evidence(tool_results)
         draft_answer, synth_tokens = self._synthesize(question, evidence_text)
         return tool_results, draft_answer, synth_tokens
 
@@ -242,7 +242,7 @@ class AgentOrchestrator:
                 ),
                 None,
             )
-        arguments = _apply_deterministic_defaults(tool, arguments, resolved_tickers, as_of)
+        arguments = apply_deterministic_defaults(tool, arguments, resolved_tickers, as_of)
         try:
             args_obj = tool.args_schema.model_validate(arguments)
             outcome = tool.run(args_obj)
@@ -329,72 +329,3 @@ class AgentOrchestrator:
 
         usage = (result.usage.input_tokens, result.usage.output_tokens) if result.usage else (0, 0)
         return verification, (result.content or None), usage
-
-
-def _apply_deterministic_defaults(
-    tool: Tool[Any],
-    arguments: dict,
-    resolved_tickers: list[str] | None,
-    as_of: date | None,
-) -> dict:
-    """Post-live correction (2026-08-25) Part A5/A8 -- a real, deterministic
-    safety net, not just a prompt hint: if this question was already
-    resolved to exactly one real company, a tool call that takes a
-    ``ticker`` argument but the LLM left blank is scoped to that company
-    rather than silently searching unscoped (which is exactly how a
-    single-company question could otherwise let semantically-similar
-    documents from an unrelated company become primary evidence -- the
-    real Part A5 concern). Deliberately does NOT override a ticker the
-    LLM DID supply, even if it differs from the resolved one -- a
-    genuinely multi-company question (Part A6) must still let the LLM
-    call the same tool once per company. Same mechanism for ``as_of``
-    (Part A8), applied whenever the tool schema has that field, since a
-    missing point-in-time cutoff is never itself evidence of intent to
-    ignore it -- an omitted arg and an intentional "no cutoff" look
-    identical to the LLM either way, so this project's own real caller
-    (not the LLM) is the source of truth for whether one applies at all.
-    """
-    fields = tool.args_schema.model_fields
-    result = dict(arguments)
-    if (
-        resolved_tickers
-        and len(resolved_tickers) == 1
-        and "ticker" in fields
-        and not result.get("ticker")
-    ):
-        result["ticker"] = resolved_tickers[0]
-    if as_of is not None and "as_of" in fields and not result.get("as_of"):
-        result["as_of"] = as_of.isoformat()
-    return result
-
-
-def _assemble_evidence(
-    tool_results: list[tuple[ToolCallRecord, ToolOutcome | None]],
-) -> tuple[str, list[Citation]]:
-    """Builds the evidence text handed to synthesis/verification, and the
-    final citation list. Filing-search results keep their [N] markers as
-    produced by rag.context.assemble_context; if more than one filing-search
-    call happens in a single query (uncommon but possible), each is kept in
-    its own clearly-labeled block rather than globally renumbered — a
-    documented simplification, see docs/ai_architecture.md.
-    """
-    blocks: list[str] = []
-    citations: list[Citation] = []
-    for record, outcome in tool_results:
-        if outcome is None:
-            blocks.append(f"### {record.tool_name} — FAILED\n{record.error}")
-            continue
-        if not outcome.success:
-            blocks.append(f"### {record.tool_name}\n{outcome.error or outcome.summary}")
-            continue
-        if outcome.citations:
-            blocks.append(
-                f"### {record.tool_name}\n{outcome.summary}\n{outcome.data.get('context_text', '')}"
-            )
-            citations.extend(outcome.citations)
-        else:
-            blocks.append(
-                f"### {record.tool_name}\n{outcome.summary}\n"
-                f"Data: {json.dumps(outcome.data, default=str)}"
-            )
-    return "\n\n".join(blocks), citations

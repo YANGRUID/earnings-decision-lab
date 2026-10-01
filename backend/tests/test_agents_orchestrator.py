@@ -4,12 +4,10 @@ collection, synthesis, verification/revision, execution traces, and
 failure recovery at every stage.
 """
 
-from collections import defaultdict
-from collections.abc import Iterator
 from datetime import UTC, date, datetime
 from decimal import Decimal
 
-from pydantic import BaseModel
+from _agent_fakes import _ScriptedLLM, _StubEmbedder
 
 from agents.orchestrator import MAX_TOOL_CALLS, AgentOrchestrator
 from models.company import Company
@@ -23,75 +21,9 @@ from schemas.agent import (
     ToolPlanItem,
     VerificationResult,
 )
-from services.llm.base import LLMProvider
-from services.llm.errors import LLMRequestError
-from services.llm.types import Capabilities, GenerateResult, TokenUsage, ToolCall
+from services.llm.types import GenerateResult, TokenUsage, ToolCall
 
 NOW = datetime.now(UTC)
-
-
-class _StubEmbedder:
-    model_name = "stub"
-    dimension = EMBEDDING_DIM
-
-    def embed(self, texts):
-        return [[1.0] + [0.0] * (EMBEDDING_DIM - 1) for _ in texts]
-
-
-class _ScriptedLLM(LLMProvider):
-    """Returns pre-scripted responses in call order, separately queued per
-    schema for generate_structured and in a flat queue for generate. Raises
-    LLMRequestError once a queue is exhausted (or if a queued item is
-    itself an exception instance) — used to test failure recovery.
-    """
-
-    name = "scripted"
-
-    def __init__(
-        self,
-        model: str = "deepseek-v4-flash",
-        supports_tool_calling: bool = True,
-        structured_responses: dict | None = None,
-        generate_responses: list | None = None,
-    ) -> None:
-        self.model = model
-        self.capabilities = Capabilities(
-            supports_structured_output=True,
-            supports_tool_calling=supports_tool_calling,
-            supports_streaming=False,
-        )
-        self._structured_queue: dict = defaultdict(list)
-        for schema, items in (structured_responses or {}).items():
-            self._structured_queue[schema] = list(items)
-        self._generate_queue = list(generate_responses or [])
-        self.generate_calls: list = []
-        self.generate_structured_calls: list = []
-
-    def generate(self, messages, *, tools=None, temperature=0.0, max_tokens=1024):
-        self.generate_calls.append((messages, tools))
-        if not self._generate_queue:
-            raise LLMRequestError("scripted generate() queue exhausted")
-        item = self._generate_queue.pop(0)
-        if isinstance(item, Exception):
-            raise item
-        return item
-
-    def generate_structured(
-        self, messages, schema: type[BaseModel], *, temperature=0.0, max_tokens=1024
-    ):
-        self.generate_structured_calls.append((messages, schema))
-        queue = self._structured_queue[schema]
-        if not queue:
-            raise LLMRequestError(
-                f"scripted generate_structured({schema.__name__}) queue exhausted"
-            )
-        item = queue.pop(0)
-        if isinstance(item, Exception):
-            raise item
-        return item
-
-    def stream(self, messages, *, temperature=0.0, max_tokens=1024) -> Iterator[str]:
-        raise NotImplementedError
 
 
 def _default_intent():
