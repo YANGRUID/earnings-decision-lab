@@ -37,13 +37,18 @@ Two deliberate non-features:
 """
 
 from functools import partial
-from typing import Final, Literal
+from typing import Final, Literal, TypedDict
 
 from langgraph.graph import END, START, StateGraph
 
 from agents.graph import nodes
 from agents.graph.deps import GraphDeps
-from agents.graph.state import MAX_RETRIEVAL_ROUNDS, MAX_REVISIONS, ResearchState
+from agents.graph.state import (
+    MAX_RETRIEVAL_ROUNDS,
+    MAX_REVISIONS,
+    RESEARCH_GRAPH_VERSION,
+    ResearchState,
+)
 from schemas.agent import EvidenceQualityStatus
 
 NODE_CLASSIFY_INTENT: Final = "classify_intent"
@@ -136,14 +141,23 @@ def build_research_graph(deps: GraphDeps, *, checkpointer: object | None = None)
     return graph.compile(checkpointer=checkpointer)  # type: ignore[arg-type]
 
 
-def graph_shape() -> dict[str, object]:
+class GraphShape(TypedDict):
+    graph_version: str
+    nodes: list[str]
+    conditional_routes: dict[str, list[str]]
+    max_retrieval_rounds: int
+    max_revisions: int
+
+
+def graph_shape() -> GraphShape:
     """The graph's declared shape, for the report and the diagnostics UI.
 
     Derived from the constants above rather than typed out again, so a
     documented bound cannot drift from the enforced one.
     """
-    return {
-        "nodes": [
+    return GraphShape(
+        graph_version=RESEARCH_GRAPH_VERSION,
+        nodes=[
             NODE_CLASSIFY_INTENT,
             NODE_WINDOW_CONTEXT,
             NODE_PLAN,
@@ -155,10 +169,10 @@ def graph_shape() -> dict[str, object]:
             NODE_VERIFY,
             NODE_REVISE,
         ],
-        "conditional_routes": {
+        conditional_routes={
             NODE_QUALITY_GATE: [NODE_TARGETED_RETRIEVE, NODE_SYNTHESIZE],
             NODE_VERIFY: [NODE_REVISE, "end"],
         },
-        "max_retrieval_rounds": MAX_RETRIEVAL_ROUNDS,
-        "max_revisions": MAX_REVISIONS,
-    }
+        max_retrieval_rounds=MAX_RETRIEVAL_ROUNDS,
+        max_revisions=MAX_REVISIONS,
+    )

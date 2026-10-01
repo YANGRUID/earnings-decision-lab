@@ -265,6 +265,73 @@ class PreparingCompanyResponse(BaseModel):
     job_status: str
 
 
+class EvidenceConflictResponse(BaseModel):
+    category: str
+    description: str
+
+
+class EvidenceQualityResponse(BaseModel):
+    """What the evidence-quality gate concluded (Phase LG-1).
+
+    Present only on a LangGraph answer. Absent -- not defaulted to
+    "sufficient" -- when the legacy runtime answered, because legacy has no
+    gate and claiming a verdict it never reached would be a fabrication.
+    """
+
+    status: str
+    missing_categories: list[str] = []
+    weak_categories: list[str] = []
+    conflicts: list[EvidenceConflictResponse] = []
+    recommended_retrieval: list[str] = []
+    explanation: str = ""
+
+
+class AgentNodeRunResponse(BaseModel):
+    """Operational trace for one workflow step (requirement 41).
+
+    Timings, counts and status only. No prompt, no model output, no hidden
+    reasoning -- see docs/agentic_research_architecture.md.
+    """
+
+    node: str
+    started_at: str
+    finished_at: str
+    duration_ms: float
+    status: str
+    llm_calls: int
+    tool_calls: int
+    attempt: int
+
+
+class AgentGraphErrorResponse(BaseModel):
+    node: str
+    category: str
+    message: str
+    recoverable: bool
+    checkpointed: bool
+    occurred_at: str
+
+
+class AgentWorkflowResponse(BaseModel):
+    """The LangGraph-only half of an answer's provenance."""
+
+    runtime_version: str
+    graph_version: str
+    run_id: str
+    retrieval_rounds: int
+    revision_count: int
+    llm_calls: int
+    evidence_quality: EvidenceQualityResponse | None = None
+    node_runs: list[AgentNodeRunResponse] = []
+    errors: list[AgentGraphErrorResponse] = []
+    warnings: list[str] = []
+    checkpoint_thread_id: str | None = None
+    #: Set only when this run names a real calendar event. Carries the
+    #: "fresh now, stale by the window" answer (Part R).
+    needs_refresh_for_window: bool | None = None
+    legal_decision_at: str | None = None
+
+
 class ResearchQueryResponse(BaseModel):
     question: str
     status: ResearchQueryStatus = "completed"
@@ -273,6 +340,29 @@ class ResearchQueryResponse(BaseModel):
     trace: ExecutionTraceResponse | None = None
     preparing: list[PreparingCompanyResponse] = []
     unresolved_tickers: list[str] = []
+    #: Which runtime answered. Always set, so an answer's provenance never
+    #: has to be inferred from whether `workflow` happens to be present.
+    agent_runtime: str = "legacy-agent-v1"
+    workflow: AgentWorkflowResponse | None = None
+
+
+class AgentRuntimeStatusResponse(BaseModel):
+    """What Operations needs about the agent runtime, and nothing more."""
+
+    configured_runtime: str
+    runtime_version: str
+    graph_version: str
+    nodes: list[str]
+    conditional_routes: dict[str, list[str]]
+    max_retrieval_rounds: int
+    max_revisions: int
+    max_tool_calls: int
+    tools: list[dict]
+    checkpointing_enabled: bool
+    checkpoint_available: bool
+    checkpoint_schema: str
+    checkpoint_detail: str | None = None
+    warning: str | None = None
 
 
 class AIResearchHistoryItemResponse(BaseModel):

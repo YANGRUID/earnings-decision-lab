@@ -108,7 +108,16 @@ class Settings(BaseSettings):
     # services/v4_shadow_orchestration.py::default_view_generator, which
     # calls the provider directly). Keeping "legacy" reachable is the
     # rollback (requirement 51).
-    agent_runtime: Literal["legacy", "langgraph"] = "legacy"
+    #
+    # Deliberately `str`, not Literal["legacy", "langgraph"]. get_settings()
+    # is read by essentially every request, so a Literal turns a typo in an
+    # EXPERIMENTAL flag into a 422 on every endpoint in the API -- the
+    # health check and the V4 operations pages included, which have nothing
+    # to do with agent orchestration. That failure mode is wildly out of
+    # proportion to the mistake. agents/runtime.py is the ONE place that
+    # interprets this value; an unrecognised one falls back to legacy and
+    # says so through GET /research/agent-runtime.
+    agent_runtime: str = "legacy"
 
     # Whether the LangGraph runtime persists checkpoints at all. Separate
     # from agent_runtime because the two questions are genuinely separate:

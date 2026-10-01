@@ -1,9 +1,14 @@
 import logging
+from contextlib import ExitStack
 from datetime import UTC, datetime
 from typing import TypedDict
 
 from fastapi import APIRouter, BackgroundTasks, Query, Request
 
+from agents.graph.runtime import GraphRunResult, run_research_graph
+from agents.graph.state import MAX_TOOL_CALLS
+from agents.graph.workflow import graph_shape
+from agents.runtime import AgentRuntime, resolve_agent_runtime, runtime_warning
 from api.deps import LLM, DbSession, Embedder, Orchestrator
 from api.exceptions import InvalidRequestError, NotFoundError, RateLimitedError
 from core.config import get_settings
@@ -25,12 +30,18 @@ from rag.context import assemble_context
 from rag.embeddings import EmbeddingProvider
 from rag.retrieval import RetrievalFilters, hybrid_search
 from schemas.api import (
+    AgentGraphErrorResponse,
+    AgentNodeRunResponse,
+    AgentRuntimeStatusResponse,
+    AgentWorkflowResponse,
     AIResearchHistoryItemResponse,
     AIThesisVersionResponse,
     CitationResponse,
     CompanyResponse,
     EarningsEstimateResponse,
     EarningsThesisResponse,
+    EvidenceConflictResponse,
+    EvidenceQualityResponse,
     ExecutionTraceResponse,
     FilingSearchResponse,
     HistoricalMoveStatsResponse,
@@ -168,6 +179,7 @@ def research_query(
     request: Request,
     db: DbSession,
     llm: LLM,
+    embedder: Embedder,
     orchestrator: Orchestrator,
 ) -> ResearchQueryResponse:
     if not request.app.state.research_rate_limiter.allow():
@@ -227,9 +239,39 @@ def research_query(
             unresolved_tickers=resolution.unresolved,
         )
 
-    result = orchestrator.run(
-        body.question, resolved_tickers=ready_tickers or None, as_of=body.as_of
-    )
+    # Phase LG-1 (2026-10-01). Which runtime answers an interactive
+    # question is a configuration choice between two implementations of one
+    # behavioural contract -- see agents/runtime.py. Default legacy. This
+    # branch cannot reach the official V4 forward DecisionView, which does
+    # not pass through either orchestrator.
+    configured = get_settings().agent_runtime
+    runtime = resolve_agent_runtime(configured)
+    graph_run: GraphRunResult | None = None
+    if runtime is AgentRuntime.LANGGRAPH:
+        company_for_scope = (
+            db.query(Company).filter(Company.ticker == ready_tickers[0]).one_or_none()
+            if len(ready_tickers) == 1
+            else None
+        )
+        # ExitStack, not a bare __enter__: the checkpointer holds a real
+        # psycopg connection, so it must be released when this request
+        # ends rather than leaked once per query.
+        with ExitStack() as stack:
+            graph_run = run_research_graph(
+                db,
+                llm,
+                embedder,
+                body.question,
+                resolved_tickers=ready_tickers or None,
+                as_of=body.as_of,
+                company_id=company_for_scope.id if company_for_scope else None,
+                checkpointer=_checkpointer_if_enabled(stack),
+            )
+        result = graph_run.response
+    else:
+        result = orchestrator.run(
+            body.question, resolved_tickers=ready_tickers or None, as_of=body.as_of
+        )
     trace = result.trace
 
     ticker = normalize_ticker(body.ticker) if body.ticker else None
@@ -287,6 +329,101 @@ def research_query(
         ),
         preparing=preparing,
         unresolved_tickers=resolution.unresolved,
+        agent_runtime=runtime.version,
+        workflow=_workflow_response(graph_run) if graph_run is not None else None,
+    )
+
+
+def _checkpointer_if_enabled(stack: ExitStack):
+    """A checkpointer only when the operator asked for one, scoped to
+    ``stack`` so its connection is released with the request.
+
+    Deliberately separate from AGENT_RUNTIME: a graph run is useful without
+    checkpointing, and checkpointing adds real writes to the `langgraph`
+    schema. With it off a failed run simply cannot be resumed -- it is
+    never silently retried instead. Returns None on any setup failure,
+    because an unavailable checkpointer must degrade the resume capability,
+    not the answer.
+    """
+    settings = get_settings()
+    if not settings.agent_graph_checkpointing_enabled:
+        return None
+    try:
+        from agents.graph.checkpoint import postgres_checkpointer  # noqa: PLC0415
+
+        return stack.enter_context(postgres_checkpointer(settings.database_url, setup=False))
+    except Exception:
+        log.exception("agent graph checkpointer unavailable; running without resume support")
+        return None
+
+
+def _workflow_response(run: GraphRunResult) -> AgentWorkflowResponse:
+    quality = run.evidence_quality
+    return AgentWorkflowResponse(
+        runtime_version=run.runtime_version,
+        graph_version=run.graph_version,
+        run_id=run.run_id,
+        retrieval_rounds=run.retrieval_rounds,
+        revision_count=run.revision_count,
+        llm_calls=run.llm_calls,
+        evidence_quality=(
+            EvidenceQualityResponse(
+                status=quality["status"],
+                missing_categories=quality.get("missing_categories", []),
+                weak_categories=quality.get("weak_categories", []),
+                conflicts=[
+                    EvidenceConflictResponse(**c) for c in quality.get("conflicts", [])
+                ],
+                recommended_retrieval=quality.get("recommended_retrieval", []),
+                explanation=quality.get("explanation", ""),
+            )
+            if quality
+            else None
+        ),
+        node_runs=[AgentNodeRunResponse(**n) for n in run.node_runs],
+        errors=[AgentGraphErrorResponse(**e) for e in run.errors],
+        warnings=run.warnings,
+        checkpoint_thread_id=run.checkpoint_thread_id,
+    )
+
+
+@router.get("/agent-runtime", response_model=AgentRuntimeStatusResponse)
+def get_agent_runtime_status(db: DbSession) -> AgentRuntimeStatusResponse:
+    """Read-only. The Agent Runtime panel in Operations (requirement 43).
+
+    Reports the declared graph shape and the enforced bounds from the same
+    constants the graph is built from, so a documented limit cannot drift
+    from the one in force.
+    """
+    from agents.adapters.tools import TOOL_ACCESS, TOOL_EVIDENCE_CATEGORY  # noqa: PLC0415
+    from agents.graph.checkpoint import checkpoint_status  # noqa: PLC0415
+
+    settings = get_settings()
+    runtime = resolve_agent_runtime(settings.agent_runtime)
+    shape = graph_shape()
+    status = checkpoint_status(settings.database_url)
+    return AgentRuntimeStatusResponse(
+        configured_runtime=runtime.value,
+        runtime_version=runtime.version,
+        graph_version=shape["graph_version"],
+        nodes=shape["nodes"],
+        conditional_routes=shape["conditional_routes"],
+        max_retrieval_rounds=shape["max_retrieval_rounds"],
+        max_revisions=shape["max_revisions"],
+        max_tool_calls=MAX_TOOL_CALLS,
+        tools=[
+            {
+                "name": name,
+                "access": TOOL_ACCESS[name].value,
+                "evidence_category": TOOL_EVIDENCE_CATEGORY[name].value,
+            }
+            for name in sorted(TOOL_ACCESS)
+        ],
+        checkpointing_enabled=settings.agent_graph_checkpointing_enabled,
+        checkpoint_available=status.available,
+        checkpoint_schema=status.schema,
+        checkpoint_detail=status.reason,
+        warning=runtime_warning(settings.agent_runtime),
     )
 
 
