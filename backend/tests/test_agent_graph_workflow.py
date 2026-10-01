@@ -351,3 +351,92 @@ def test_quota_exhaustion_does_not_loop(db_session):
     assert result.retrieval_rounds == 0
     assert result.revision_count == 0
     assert result.response.trace.verification_ran is False
+
+
+# --- targeted retrieval scope (live defect, 2026-10-01) ----------------
+#
+# Every test above passes BOTH resolved_tickers AND company_id, which is
+# why the unscoped path survived: company_id is populated by
+# api/routers/research.py only when a question resolved to exactly ONE
+# ticker, so a two-company question -- or any caller that does not do that
+# lookup -- reached _retry_filing_search with company_id=None and searched
+# the ENTIRE corpus. Found in the pre-activation live comparison: a
+# guidance question scoped to MU came back citing ACN, AFRM, AMD and CASY
+# filings.
+
+
+def test_targeted_retrieval_scopes_by_ticker_when_company_id_is_absent(db_session):
+    """The subject company's filings are reachable; another company's are
+    not, even though both are in the same corpus and the OTHER company's
+    text is the better lexical match for the question."""
+    subject = _seed_filing(
+        db_session, "ZZLG20", "0009991020", "Capex guidance unchanged", chunks=2
+    )
+    _seed_filing(
+        db_session,
+        "ZZLG21",
+        "0009991021",
+        "Capex guidance was raised sharply on datacenter demand",
+        chunks=8,
+    )
+    llm = _llm(
+        intent=IntentCategory.GUIDANCE_COMPARISON,
+        plan=ToolPlan(
+            items=[
+                ToolPlanItem(tool_name="compare_guidance", arguments={"ticker": subject.ticker})
+            ]
+        ),
+        generate=[GenerateResult(content="Guidance is unchanged [1].")],
+        verification=[VerificationResult(supported=True)],
+    )
+
+    result = run_research_graph(
+        db_session,
+        llm,
+        _StubEmbedder(),
+        "compare the latest capex guidance with prior guidance",
+        resolved_tickers=[subject.ticker],
+        # Deliberately omitted -- this is the defect's precondition.
+        company_id=None,
+    )
+
+    assert result.retrieval_rounds == 1, "the gate asked for filing evidence"
+    cited = {c.ticker for c in result.response.citations}
+    assert cited == {subject.ticker}, (
+        f"targeted retrieval leaked other issuers' filings: {sorted(cited)}"
+    )
+
+
+def test_targeted_retrieval_refuses_rather_than_searching_every_company(db_session):
+    """A named company that resolves to no row must NOT fall back to an
+    unscoped search. rag.retrieval treats an empty company_ids list as "no
+    filter", so returning [] would have widened the search to everything."""
+    _seed_filing(
+        db_session, "ZZLG22", "0009991022", "Capex guidance was raised sharply", chunks=8
+    )
+    llm = _llm(
+        intent=IntentCategory.GUIDANCE_COMPARISON,
+        plan=ToolPlan(
+            items=[ToolPlanItem(tool_name="compare_guidance", arguments={"ticker": "ZZLG23"})]
+        ),
+        generate=[GenerateResult(content="No guidance is on record.")],
+        verification=[VerificationResult(supported=True)],
+    )
+
+    result = run_research_graph(
+        db_session,
+        llm,
+        _StubEmbedder(),
+        "compare the latest capex guidance with prior guidance",
+        resolved_tickers=["ZZLG23"],  # never seeded
+        company_id=None,
+    )
+
+    assert not result.response.citations, "refused scope must cite nothing, not everything"
+    retried = [tc for tc in result.response.trace.tool_calls if tc.tool_name == "search_filings"]
+    assert retried, "the retry was still attempted and recorded"
+    assert all(not tc.success for tc in retried), "an unscopeable retry is a failure, not a pass"
+    assert any("could not resolve" in (tc.error or "") for tc in retried), (
+        "the reason the retry was skipped must be stated, not silent"
+    )
+

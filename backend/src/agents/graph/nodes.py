@@ -652,18 +652,68 @@ def targeted_retrieve(state: ResearchState, deps: GraphDeps) -> ResearchState:
 RETRY_RETRIEVAL_K = 10
 
 
+def _targeted_scope_company_ids(
+    state: ResearchState, deps: GraphDeps
+) -> tuple[list[int] | None, str | None]:
+    """Which companies the targeted retry may read filings from.
+
+    Returns ``(company_ids, refusal)``. ``company_ids`` of None means
+    genuinely unscoped -- a question that named no company at all. A
+    ``refusal`` string means a company WAS named but could not be scoped,
+    and the retry must not run: an unscoped hybrid search over the whole
+    corpus would answer a question about one issuer with another issuer's
+    filings.
+
+    ``company_id`` cannot be the only scope. It is populated only when a
+    question resolved to exactly one ticker (see api/routers/research.py),
+    so a question naming two companies -- or one reaching the graph without
+    that lookup -- previously retried against the entire corpus. Found live
+    on 2026-10-01: a guidance question scoped to MU came back citing ACN,
+    AFRM, AMD and CASY filings. ``resolved_tickers`` is the authoritative
+    scope, is already in state, and is resolved to ids here exactly as the
+    ``search_filings`` tool does it.
+    """
+    company_id = state.get("company_id")
+    if company_id is not None:
+        return [company_id], None
+    tickers = sorted({t.upper() for t in (state.get("resolved_tickers") or []) if t})
+    if not tickers:
+        return None, None
+
+    from models.company import Company  # noqa: PLC0415
+
+    ids = [row[0] for row in deps.db.query(Company.id).filter(Company.ticker.in_(tickers)).all()]
+    if not ids:
+        # Fail closed. rag.retrieval treats an empty company_ids list as
+        # "no filter" (``if filters.company_ids:``), so passing [] through
+        # would silently widen the search to every company rather than
+        # narrow it to none.
+        return None, f"could not resolve {', '.join(tickers)} to a covered company"
+    return ids, None
+
+
 def _retry_filing_search(
     state: ResearchState, deps: GraphDeps, *, round_number: int, as_of: date | None
 ) -> ToolRecord:
     start = time.monotonic()
-    company_id = state.get("company_id")
+    company_ids, refusal = _targeted_scope_company_ids(state, deps)
+    if refusal is not None:
+        return ToolRecord(
+            tool_name="search_filings",
+            arguments={"query": state["question"], "k": RETRY_RETRIEVAL_K},
+            success=False,
+            duration_ms=(time.monotonic() - start) * 1000,
+            summary="",
+            error=f"targeted filing retrieval skipped -- {refusal}",
+            query_description=None,
+            evidence_category=EvidenceCategory.FILING.value,
+            retrieval_round=round_number,
+        )
     retriever = EDLHybridRetriever(
         db=deps.db,
         embedder=deps.embedder,
         k=RETRY_RETRIEVAL_K,
-        scope=RetrievalScope(
-            company_ids=[company_id] if company_id is not None else None, as_of=as_of
-        ),
+        scope=RetrievalScope(company_ids=company_ids, as_of=as_of),
     )
     try:
         documents = retriever.invoke(state["question"])
