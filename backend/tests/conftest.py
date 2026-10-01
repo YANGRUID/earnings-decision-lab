@@ -50,6 +50,18 @@ os.environ.setdefault("IBKR_PROVIDER", "web")
 # settings; everything else runs the flag's documented default.
 os.environ.setdefault("V4_2_PARALLEL_ENABLED", "false")
 
+# Same principle again for the LG-1 interactive runtime flag (2026-10-01).
+# The project .env sets AGENT_RUNTIME=langgraph in production, so every test
+# that builds the real app through get_settings() -- the status endpoint, the
+# research query route -- silently answered as the GRAPH while asserting
+# legacy behaviour, and the suite went red the moment the flag was activated
+# for real. A test suite whose result depends on the operator's deployed
+# configuration is not isolated. Tests that exercise the graph set the
+# variable explicitly (monkeypatch.setenv beats this default); everything
+# else runs the flag's documented default.
+os.environ.setdefault("AGENT_RUNTIME", "legacy")
+os.environ.setdefault("AGENT_GRAPH_CHECKPOINTING_ENABLED", "false")
+
 # --------------------------------------------------------------------------
 # Pre-live hardening (2026-08-25): pytest used to import `engine` directly
 # from db.session -- the exact same engine, bound to the exact same

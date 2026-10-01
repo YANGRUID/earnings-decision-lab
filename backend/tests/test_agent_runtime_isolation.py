@@ -136,13 +136,24 @@ def test_the_forward_view_generator_still_calls_the_provider_directly():
     assert "AgentOrchestrator" not in text
 
 
-def test_the_runtime_flag_defaults_to_legacy():
+def test_the_runtime_flag_defaults_to_legacy(monkeypatch):
+    """The CODE default, not the ambient one.
+
+    ``Settings()`` reads the project .env and the process environment, so a
+    bare ``Settings()`` here asserted "this operator has not switched the
+    flag on" rather than "the default is legacy" -- and went red the moment
+    the flag was genuinely activated in production (2026-10-01). Both
+    sources are removed so the assertion is about the code.
+    """
     from agents.runtime import DEFAULT_AGENT_RUNTIME, AgentRuntime
     from core.config import Settings
 
+    monkeypatch.delenv("AGENT_RUNTIME", raising=False)
+    monkeypatch.delenv("AGENT_GRAPH_CHECKPOINTING_ENABLED", raising=False)
+
     assert DEFAULT_AGENT_RUNTIME is AgentRuntime.LEGACY
-    assert Settings().agent_runtime == "legacy"
-    assert Settings().agent_graph_checkpointing_enabled is False
+    assert Settings(_env_file=None).agent_runtime == "legacy"
+    assert Settings(_env_file=None).agent_graph_checkpointing_enabled is False
 
 
 def test_an_unknown_runtime_falls_back_to_legacy_and_says_so():
