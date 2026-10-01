@@ -29,6 +29,55 @@ config.set_main_option("sqlalchemy.url", get_settings().database_url)
 target_metadata = Base.metadata
 assert models  # keep the import from being flagged as unused
 
+# --- Objects this application does NOT own in Base.metadata -------------
+#
+# Each of these is created and owned by something other than a migration,
+# so `alembic revision --autogenerate` sees it in the database, cannot find
+# it in the metadata, and proposes a DROP. That has happened repeatedly and
+# been caught by hand every time (see docs/engineering_decisions.md). The
+# hook below makes the protection structural instead of a review habit --
+# autogenerate now simply never considers these objects in either
+# direction, so it can neither drop nor recreate them.
+#
+# This filter only affects what autogenerate WRITES. It does not change any
+# existing revision, and a hand-written migration can still touch these
+# objects deliberately.
+_EXTERNALLY_MANAGED_TABLES = frozenset(
+    {
+        # APScheduler creates and migrates its own job store at runtime.
+        "apscheduler_jobs",
+        # LangGraph's Postgres checkpointer runs its own migrations via
+        # PostgresSaver.setup() (Phase LG-1, 2026-10-01). These normally
+        # live in the dedicated `langgraph` schema, which autogenerate
+        # already ignores; named here as well so a future include_schemas
+        # change cannot quietly reintroduce the drop.
+        "checkpoints",
+        "checkpoint_blobs",
+        "checkpoint_writes",
+        "checkpoint_migrations",
+    }
+)
+_EXTERNALLY_MANAGED_INDEXES = frozenset(
+    {
+        # pgvector HNSW and Postgres full-text indexes, both created by
+        # hand-written migrations using raw DDL that SQLAlchemy's Index
+        # construct cannot express, so neither appears in the metadata.
+        "ix_document_chunk_embedding_hnsw",
+        "ix_document_chunk_text_fts",
+    }
+)
+_EXTERNALLY_MANAGED_SCHEMAS = frozenset({"langgraph"})
+
+
+def include_object(object_, name, type_, reflected, compare_to):  # noqa: ANN001, ANN201
+    if getattr(object_, "schema", None) in _EXTERNALLY_MANAGED_SCHEMAS:
+        return False
+    if type_ == "table" and name in _EXTERNALLY_MANAGED_TABLES:
+        return False
+    if type_ == "index" and name in _EXTERNALLY_MANAGED_INDEXES:
+        return False
+    return True
+
 # other values from the config, defined by the needs of env.py,
 # can be acquired:
 # my_important_option = config.get_main_option("my_important_option")
@@ -53,6 +102,7 @@ def run_migrations_offline() -> None:
         target_metadata=target_metadata,
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
+        include_object=include_object,
     )
 
     with context.begin_transaction():
@@ -74,7 +124,9 @@ def run_migrations_online() -> None:
 
     with connectable.connect() as connection:
         context.configure(
-            connection=connection, target_metadata=target_metadata
+            connection=connection,
+            target_metadata=target_metadata,
+            include_object=include_object,
         )
 
         with context.begin_transaction():
