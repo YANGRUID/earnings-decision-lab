@@ -661,7 +661,7 @@ def phase2_dry_run(
         "notice": PHASE_2_NOTICE,
         "mode": "ZERO_WRITE_DRY_RUN",
         "market_state": _market_state(now),
-        "satisfies_market_hours_gate": _market_state(now) == "open",
+        "satisfies_market_hours_gate": _market_state(now) == MARKET_STATE_OPEN,
         "started_at": now.isoformat(),
         "max_variants": max_variants,
         "events": [],
@@ -887,6 +887,12 @@ def _write_counts(db) -> dict[str, int]:
     }
 
 
+#: The one value _market_state returns when US options are open. Named so a
+#: caller cannot compare against a string the function never produces -- which
+#: is exactly what made ``satisfies_market_hours_gate`` permanently False.
+MARKET_STATE_OPEN = "OPEN_REGULAR_HOURS"
+
+
 def _market_state(now) -> str:
     """Whether US options are open right now, stated plainly.
 
@@ -901,5 +907,5 @@ def _market_state(now) -> str:
         return "CLOSED_WEEKEND"
     minutes = local.hour * 60 + local.minute
     if 9 * 60 + 30 <= minutes < 16 * 60:
-        return "OPEN_REGULAR_HOURS"
+        return MARKET_STATE_OPEN
     return "CLOSED_OUTSIDE_REGULAR_HOURS"
