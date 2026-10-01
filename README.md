@@ -120,6 +120,19 @@ quantity, final position and therefore realized result. Each may independently p
 The DecisionView model is one explicitly configured model (`V4_DECISION_VIEW_MODEL`). There is no
 fallback: a missing or invalid configuration produces a recorded failure, never a substitute view.
 
+Three layers, with one job each:
+
+- **LangChain** — model, tool and schema integration. The adapters wrap this project's own
+  provider layer and SEC-aware RAG rather than replacing them.
+- **LangGraph** — stateful research orchestration: explicit steps, an evidence-quality gate,
+  bounded retries, and checkpoints a failed run can resume from.
+- **Python (V4)** — the deterministic financial decision engine. No agent chooses a strike, a
+  size, a price or a rank.
+
+Interactive AI Research can run on either the legacy orchestrator or the LangGraph runtime
+(`AGENT_RUNTIME`, default `legacy`). The V4 forward decision path uses neither: it generates its
+DecisionView directly. See [docs/agentic_research_architecture.md](docs/agentic_research_architecture.md).
+
 ## Point-in-time evidence
 
 - **No look-ahead.** A decision sees only what existed at its 15:30 ET window; research is
@@ -187,7 +200,8 @@ delayed. Credentials live only in `.env` (never committed); provider keys are sh
 ## Technology
 
 Python 3.12 · FastAPI · PostgreSQL + pgvector · SQLAlchemy 2.0 · Alembic · APScheduler ·
-React · TypeScript · Vite · Playwright · Interactive Brokers TWS API · DeepSeek · SEC EDGAR + RAG.
+LangChain · LangGraph · React · TypeScript · Vite · Playwright · Interactive Brokers TWS API ·
+DeepSeek · SEC EDGAR + RAG.
 
 ## Setup
 
@@ -228,6 +242,7 @@ performance is statistically established. See [CHANGELOG.md](CHANGELOG.md) and
 | [docs/v4_forward_testing.md](docs/v4_forward_testing.md) | Evidence rules, timing, windows, settlement priority, model provenance |
 | [docs/ibkr_architecture.md](docs/ibkr_architecture.md) | TWS integration and runtime |
 | [docs/ai_architecture.md](docs/ai_architecture.md) · [docs/llm_providers.md](docs/llm_providers.md) | RAG pipeline, agent, provider layer |
+| [docs/agentic_research_architecture.md](docs/agentic_research_architecture.md) | LangChain/LangGraph boundary, evidence-quality gate, checkpoints |
 | [docs/options_methodology.md](docs/options_methodology.md) · [docs/earnings_methodology.md](docs/earnings_methodology.md) | Shared payoff, pricing, implied-move and earnings analytics |
 | [docs/data_model.md](docs/data_model.md) · [docs/data_sources.md](docs/data_sources.md) | Tables and providers |
 | [docs/evaluation.md](docs/evaluation.md) · [docs/deployment.md](docs/deployment.md) · [docs/limitations.md](docs/limitations.md) | Evaluation, Docker, known gaps |

@@ -151,6 +151,18 @@ compare_commentary_themes` is a *separate* LLM call, with its own versioned prom
 genuinely requiring semantic judgment that arithmetic can't do. Neither function calls the
 other; a numeric midpoint change is always exact, never a model's paraphrase.
 
+## Two agent runtimes (Phase LG-1, 2026-10-01)
+
+The pipeline described below is `legacy-agent-v1` and remains the default. A second
+implementation of the same behavioural contract, `langgraph-agent-v1`, runs the same stages as
+an explicit LangGraph state machine and adds an evidence-quality gate with one bounded targeted
+retrieval round. `AGENT_RUNTIME` selects between them; neither is reachable from the V4 forward
+decision path. Both import the same deterministic argument defaulting and the same evidence-block
+format from `agents/evidence.py`, so the two cannot drift apart.
+
+See [agentic_research_architecture.md](agentic_research_architecture.md). The rest of this
+section describes the stages both runtimes implement.
+
 ## Agent orchestration (Phase 7)
 
 `agents/orchestrator.py::AgentOrchestrator` — an explicit multi-stage pipeline, not a single LLM
