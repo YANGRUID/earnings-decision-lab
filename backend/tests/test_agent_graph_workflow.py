@@ -497,3 +497,83 @@ def test_double_verification_failure_reports_unverified_not_the_stale_verdict(db
     assert [n["status"] for n in verify_runs] == ["ok", "degraded"], (
         "both verify passes are still visible in the trace"
     )
+
+
+# --- the retry must not re-ask a question already answered -------------
+#
+# Live defect, 2026-10-01 soak. The gate marks a category "weak" when its
+# tool ran, SUCCEEDED and reported nothing. targeted_retrieve then re-ran
+# that tool with the same empty arguments, which asks the same rows the
+# same question. A SUNB guidance run produced two identical
+# compare_guidance blocks and an answer that told the reader "This result
+# was returned twice, consistently".
+
+
+def test_a_weak_category_whose_tool_already_succeeded_is_not_refetched(db_session):
+    """compare_guidance ran and honestly reported zero extractions. The
+    gate still reports the guidance gap, but the retry spends its budget
+    only on the filing search, whose second pass is a genuinely different
+    query (widened k)."""
+    company = _seed_filing(
+        db_session, "ZZLG25", "0009991025", "Revenue grew on volume", chunks=6
+    )
+    llm = _llm(
+        intent=IntentCategory.GUIDANCE_COMPARISON,
+        plan=ToolPlan(
+            items=[
+                ToolPlanItem(tool_name="compare_guidance", arguments={"ticker": company.ticker})
+            ]
+        ),
+        generate=[GenerateResult(content="No guidance is on record [1].")],
+        verification=[VerificationResult(supported=True)],
+    )
+
+    result = run_research_graph(
+        db_session, llm, _StubEmbedder(), "compare the latest guidance with prior guidance",
+        resolved_tickers=[company.ticker], company_id=company.id,
+    )
+
+    assert result.retrieval_rounds == 1, "the gate did ask for a second pass"
+    guidance_calls = [
+        tc for tc in result.response.trace.tool_calls if tc.tool_name == "compare_guidance"
+    ]
+    assert len(guidance_calls) == 1, (
+        "an already-successful non-filing tool must not be re-run identically; "
+        f"got {len(guidance_calls)} compare_guidance calls"
+    )
+    assert any(tc.tool_name == "search_filings" for tc in result.response.trace.tool_calls), (
+        "the filing retry still runs -- its second pass is a different query"
+    )
+    # The gap is still reported, just not re-fetched.
+    assert result.evidence_quality is not None
+    assert "guidance" in (result.evidence_quality["recommended_retrieval"] or []), (
+        "the gate still names the guidance gap for the reader"
+    )
+
+
+def test_a_missing_category_is_still_retried(db_session):
+    """The complement: a category whose tool never ran at all IS worth a
+    retry -- otherwise this fix would disable the gate's whole purpose."""
+    company = _seed_filing(
+        db_session, "ZZLG26", "0009991026", "Revenue grew on volume", chunks=6
+    )
+    llm = _llm(
+        intent=IntentCategory.GUIDANCE_COMPARISON,
+        plan=ToolPlan(
+            items=[
+                ToolPlanItem(tool_name="search_filings", arguments={"query": "revenue"})
+            ]
+        ),
+        generate=[GenerateResult(content="Revenue grew [1].")],
+        verification=[VerificationResult(supported=True)],
+    )
+
+    result = run_research_graph(
+        db_session, llm, _StubEmbedder(), "compare the latest guidance with prior guidance",
+        resolved_tickers=[company.ticker], company_id=company.id,
+    )
+
+    assert result.retrieval_rounds == 1
+    assert any(
+        tc.tool_name == "compare_guidance" for tc in result.response.trace.tool_calls
+    ), "a category whose tool never ran must still be fetched once"

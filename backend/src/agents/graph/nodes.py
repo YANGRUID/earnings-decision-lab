@@ -618,14 +618,35 @@ def targeted_retrieve(state: ResearchState, deps: GraphDeps) -> ResearchState:
     tickers = state.get("resolved_tickers") or None
     as_of = _as_of_date(state)
 
+    already_succeeded = {
+        record["tool_name"] for record in (state.get("tool_records") or []) if record["success"]
+    }
+
     for category in categories:
         tool_name = _RETRY_TOOL_BY_CATEGORY.get(category)
         if tool_name is None:
             continue
         if tool_name == "search_filings":
+            # Always worth a second pass: this one goes through the
+            # retriever with a widened k, so it is a different query.
             records.append(
                 _retry_filing_search(state, deps, round_number=round_number, as_of=as_of)
             )
+            continue
+        if tool_name in already_succeeded:
+            # The gate marks a category "weak" when its tool RAN, SUCCEEDED
+            # and honestly reported nothing (see quality.py::assess_evidence).
+            # Re-running it here with the same empty arguments asks the same
+            # question of the same rows and gets the same nothing -- the
+            # exact reasoning quality.py already applies to conflicts ("the
+            # same contradiction twice") and to filing search (which is why
+            # filing widens k instead of repeating itself).
+            #
+            # Observed live on 2026-10-01: a SUNB guidance question re-ran
+            # compare_guidance, and the answer told the reader "This result
+            # was returned twice, consistently" -- a duplicated evidence
+            # block that cost input tokens and degraded the prose. The gap
+            # is still reported by the gate; it just is not re-fetched.
             continue
         records.append(
             _run_one_tool(
