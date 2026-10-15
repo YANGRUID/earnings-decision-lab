@@ -49,6 +49,13 @@ os.environ.setdefault("IBKR_PROVIDER", "web")
 # test, from 2026-09-11). Tests that exercise the challenger pass explicit
 # settings; everything else runs the flag's documented default.
 os.environ.setdefault("V4_2_PARALLEL_ENABLED", "false")
+# And again for Phase 2, prospectively activated in production on
+# 2026-10-01. Two tests that override only V4_2_PARALLEL_ENABLED=False went
+# red the moment it was switched on -- run_challenger_phase reports health
+# "ready" when EITHER phase is enabled, so the challenger phase was still
+# live underneath a test asserting it was disabled. Exactly the failure the
+# note above describes, one phase later.
+os.environ.setdefault("V4_2_INDEPENDENT_SEARCH_ENABLED", "false")
 
 # --------------------------------------------------------------------------
 # Pre-live hardening (2026-08-25): pytest used to import `engine` directly
