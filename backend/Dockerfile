@@ -28,6 +28,22 @@ WORKDIR /app
 # script is idempotent and network-bound only to interactivebrokers.
 # github.io's own documented download URL -- never PyPI, never a mirror.
 COPY scripts/fetch_ibapi_official.py scripts/fetch_ibapi_official.py
+# The vendor directory comes in BEFORE the fetch so the script's own
+# already-present check (dest/setup.py exists -> return) can find a copy
+# that was already downloaded and SHA256-verified on this machine.
+#
+# Not an optimisation. IBKR rotates that download path: the pinned
+# twsapi_macunix.1045.01.zip began returning HTTP 404 and the image could
+# no longer be rebuilt at all (found 2026-10-15 deploying an unrelated
+# fix). The verified 1045.01 bits are the same ones already running in
+# production, so reusing them changes no dependency version -- it only
+# stops a rebuild depending on a URL that has already disappeared once.
+#
+# A machine with no verified copy still falls through to the download, and
+# that path is still broken until the version pin and SHA256 in the script
+# are refreshed against IBKR's current release. See vendor/ibapi_official/
+# PROVENANCE.md.
+COPY vendor/ vendor/
 RUN python3 scripts/fetch_ibapi_official.py
 
 RUN --mount=type=cache,target=/root/.cache/uv \
