@@ -949,7 +949,9 @@ class TWSConnectionManager(EWrapper, EClient):
         request here."""
         self.ensure_connected()
         req_id = self.next_request_id()
-        pending = self._register(req_id, "market_data_streaming")
+        pending = self._register(
+            req_id, "market_data_streaming", security_type=getattr(contract, "secType", None)
+        )
         pending.result = {"_raw_ticks": []}
         started = time.monotonic()
         self.reqMktData(req_id, contract, _OPTION_PROBE_GENERIC_TICKS, False, False, [])
@@ -1007,7 +1009,9 @@ class TWSConnectionManager(EWrapper, EClient):
             return result
 
         req_id = self.next_request_id()
-        pending = self._register(req_id, "market_data_streaming")
+        pending = self._register(
+            req_id, "market_data_streaming", security_type=getattr(contract, "secType", None)
+        )
         pending.result = {}
         self.reqMktData(req_id, contract, generic_ticks, False, False, [])
         try:

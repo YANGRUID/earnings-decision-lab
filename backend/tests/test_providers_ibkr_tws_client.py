@@ -1171,3 +1171,62 @@ class TestMarketDataQualityIsPerSecurityType:
         manager = _manager()
         manager.nextValidId(1)
         assert manager.health_snapshot().market_data_quality_by_security_type == {}
+
+
+class TestEveryMarketDataRequestIsAttributed:
+    """Structural, not path-by-path.
+
+    The first cut of the per-class fix patched only one of the three
+    reqMktData sites, so OPT never reached the map -- and the omission was
+    invisible until a live probe came back with {"STK": "delayed"} and no
+    option entry at all. Enumerating the sites is what catches a fourth one
+    being added later.
+    """
+
+    @staticmethod
+    def _market_data_register_calls():
+        import ast
+        import inspect
+
+        import providers.ibkr_tws_client as mod
+
+        tree = ast.parse(inspect.getsource(mod))
+        calls = []
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            if not (isinstance(func, ast.Attribute) and func.attr == "_register"):
+                continue
+            # The request-type argument may be a plain literal OR a ternary
+            # ("...streaming" if x else "...snapshot"), so look at every
+            # string constant in the call rather than only args[1]. Missing
+            # the ternary form is exactly how a site stays unchecked.
+            literals = [
+                n.value
+                for n in ast.walk(node)
+                if isinstance(n, ast.Constant) and isinstance(n.value, str)
+            ]
+            if any(lit.startswith("market_data") for lit in literals):
+                calls.append(node)
+        return calls
+
+    def test_no_market_data_request_registers_without_a_security_type(self):
+        offenders = [
+            call.lineno
+            for call in self._market_data_register_calls()
+            if not any(kw.arg == "security_type" for kw in call.keywords)
+        ]
+        assert offenders == [], (
+            "every market-data _register must attribute its contract's secType, "
+            "otherwise its marketDataType callback speaks for no instrument class; "
+            f"unattributed call sites at lines {offenders}"
+        )
+
+    def test_all_known_market_data_sites_are_found(self):
+        """A companion count, so the test above cannot pass by finding none."""
+        calls = self._market_data_register_calls()
+        assert len(calls) >= 3, (
+            f"expected at least 3 market-data request sites, found {len(calls)} -- "
+            "the detector has stopped seeing them"
+        )
