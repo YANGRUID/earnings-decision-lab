@@ -235,6 +235,12 @@ class _PendingRequest:
     done: threading.Event = field(default_factory=threading.Event)
     result: Any = None
     error: IBKRError | None = None
+    #: IBKR secType of the contract this request is for ("STK", "OPT", ...).
+    #: Carried so the marketDataType() callback can attribute an entitlement
+    #: to an instrument CLASS instead of to the connection as a whole --
+    #: entitlements are per market-data feed, and an account can hold OPRA
+    #: (options) without holding every equity network.
+    security_type: str | None = None
 
 
 @dataclass(frozen=True)
@@ -257,6 +263,10 @@ class TWSHealthSnapshot:
     #: API-ready socket says nothing about this.
     upstream_connected: bool = True
     upstream_lost_since: datetime | None = None
+    #: secType -> last observed quality for that instrument class. Empty
+    #: until a real marketDataType() callback has landed for that class;
+    #: never pre-populated from configuration or from a subscription claim.
+    market_data_quality_by_security_type: dict[str, str] = field(default_factory=dict)
 
 
 class TWSConnectionManager(EWrapper, EClient):
@@ -299,6 +309,13 @@ class TWSConnectionManager(EWrapper, EClient):
         self._last_heartbeat: datetime | None = None
         self._last_error: str | None = None
         self._last_market_data_quality: str | None = None
+        #: secType -> the most recent marketDataType() the API reported for
+        #: THAT instrument class. A single connection-wide "last seen" cannot
+        #: express a real entitlement set: with OPRA but no NYSE equity feed,
+        #: the same connection honestly reports live for an option and
+        #: delayed for an NYSE underlying, seconds apart, and whichever
+        #: arrived last would speak for both.
+        self._quality_by_security_type: dict[str, str] = {}
         #: When IB Gateway last reported losing its own link to IBKR (1100)
         #: without reporting it restored since; None while connected.
         self._upstream_lost_since: datetime | None = None
@@ -410,6 +427,7 @@ class TWSConnectionManager(EWrapper, EClient):
             socket_connected=socket_connected,
             api_ready=state == TWSConnectionState.READY,
             market_data_quality_last_seen=self._last_market_data_quality,
+            market_data_quality_by_security_type=dict(self._quality_by_security_type),
             last_heartbeat=self._last_heartbeat,
             last_error=self._last_error,
             reconnect_state=state.value,
@@ -433,9 +451,14 @@ class TWSConnectionManager(EWrapper, EClient):
             self._next_req_id += 1
             return req_id
 
-    def _register(self, request_id: int, request_type: str) -> _PendingRequest:
+    def _register(
+        self, request_id: int, request_type: str, *, security_type: str | None = None
+    ) -> _PendingRequest:
         pending = _PendingRequest(
-            request_id=request_id, request_type=request_type, started_at=time.monotonic()
+            request_id=request_id,
+            request_type=request_type,
+            started_at=time.monotonic(),
+            security_type=security_type,
         )
         with self._pending_lock:
             self._pending[request_id] = pending
@@ -731,8 +754,11 @@ class TWSConnectionManager(EWrapper, EClient):
         pending = self._peek(reqId)
         quality = _MARKET_DATA_TYPE_TO_QUALITY.get(marketDataType, "unknown")
         self._last_market_data_quality = quality
-        if pending is not None and isinstance(pending.result, dict):
-            pending.result["market_data_quality"] = quality
+        if pending is not None:
+            if pending.security_type:
+                self._quality_by_security_type[pending.security_type] = quality
+            if isinstance(pending.result, dict):
+                pending.result["market_data_quality"] = quality
 
     def _trace_raw_tick(self, req_id: int, kind: str, tick_type: int, value: object) -> None:
         """Opt-in forensic capture of the RAW wire tick, before any
@@ -894,7 +920,9 @@ class TWSConnectionManager(EWrapper, EClient):
         use_streaming = bool(generic_ticks)
         req_id = self.next_request_id()
         pending = self._register(
-            req_id, "market_data_streaming" if use_streaming else "market_data_snapshot"
+            req_id,
+            "market_data_streaming" if use_streaming else "market_data_snapshot",
+            security_type=getattr(contract, "secType", None),
         )
         pending.result = {}
         self.reqMktData(req_id, contract, generic_ticks, not use_streaming, False, [])

@@ -1083,3 +1083,91 @@ class TestInformationalErrors:
         manager.error(
             9999, _now_ms(), 200, "No security definition has been found"
         )  # no exception raised
+
+
+# --- entitlement is per instrument class (OPRA upgrade, 2026-10-15) ------
+#
+# The account gained OPRA (US options) and NASDAQ Network C (equities) but
+# NOT NYSE Network A. Verified live the same day: an AAPL option reports
+# live, an AAPL underlying reports live, and JNJ/WFC underlyings report
+# delayed -- on ONE connection, seconds apart. A single connection-wide
+# "last seen" value is therefore whichever class was asked about most
+# recently, not a statement about entitlement: six minutes of probing
+# flipped the system-status label from "delayed" to "live" while the
+# account's entitlements had not changed at all.
+
+
+class TestMarketDataQualityIsPerSecurityType:
+    def _request(self, manager, req_id, sec_type):
+        pending = manager._register(req_id, "test", security_type=sec_type)  # noqa: SLF001
+        pending.result = {}
+        return pending
+
+    def test_option_live_and_equity_delayed_are_both_retained(self):
+        manager = _manager()
+        manager.nextValidId(1)
+        self._request(manager, 10, "OPT")
+        self._request(manager, 11, "STK")
+
+        manager.marketDataType(10, 1)  # OPRA: live
+        manager.marketDataType(11, 3)  # NYSE equity: delayed
+
+        snapshot = manager.health_snapshot()
+        assert snapshot.market_data_quality_by_security_type == {
+            "OPT": "live",
+            "STK": "delayed",
+        }
+        # Each request still carries its OWN quality, unchanged.
+        assert manager._pending[10].result["market_data_quality"] == "live"  # noqa: SLF001
+        assert manager._pending[11].result["market_data_quality"] == "delayed"  # noqa: SLF001
+
+    def test_the_equity_class_is_not_relabelled_live_by_a_later_option(self):
+        """The defect this replaces: whichever class answered LAST spoke
+        for the whole connection, so probing an option after an NYSE
+        underlying reported the account as live."""
+        manager = _manager()
+        manager.nextValidId(1)
+        self._request(manager, 20, "STK")
+        manager.marketDataType(20, 3)  # delayed equity
+        self._request(manager, 21, "OPT")
+        manager.marketDataType(21, 1)  # live option, asked afterwards
+
+        by_type = manager.health_snapshot().market_data_quality_by_security_type
+        assert by_type["STK"] == "delayed", "a live option must not relabel the equity feed"
+        assert by_type["OPT"] == "live"
+
+    @pytest.mark.parametrize(
+        "mode,expected",
+        [
+            (1, "live"),
+            (2, "frozen"),
+            (3, "delayed"),
+            (4, "frozen"),  # DELAYED_FROZEN -- a stale delayed value
+            (99, "unknown"),  # never seen; never guessed at
+        ],
+    )
+    def test_every_market_data_type_maps_to_a_declared_quality(self, mode, expected):
+        manager = _manager()
+        manager.nextValidId(1)
+        self._request(manager, 30, "OPT")
+        manager.marketDataType(30, mode)
+        assert manager._pending[30].result["market_data_quality"] == expected  # noqa: SLF001
+        assert manager.health_snapshot().market_data_quality_by_security_type["OPT"] == expected
+
+    def test_an_unattributed_callback_does_not_invent_a_class(self):
+        """A request registered without a security type (every pre-existing
+        call site) must still record its own quality and must not write a
+        bogus entry into the per-class map."""
+        manager = _manager()
+        manager.nextValidId(1)
+        pending = manager._register(40, "test")  # noqa: SLF001
+        pending.result = {}
+        manager.marketDataType(40, 1)
+        assert pending.result["market_data_quality"] == "live"
+        assert manager.health_snapshot().market_data_quality_by_security_type == {}
+
+    def test_the_map_is_empty_until_a_real_callback_lands(self):
+        """Never pre-populated from configuration or a subscription claim."""
+        manager = _manager()
+        manager.nextValidId(1)
+        assert manager.health_snapshot().market_data_quality_by_security_type == {}

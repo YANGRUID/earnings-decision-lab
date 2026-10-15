@@ -351,6 +351,14 @@ class TestGetTwsStatus:
             "last_heartbeat",
             "reconnect_state",
             "upstream_lost_since",
+            # OPRA/NASDAQ entitlement upgrade (2026-10-15) -- additive, and
+            # deliberately listed here rather than the assertion loosened:
+            # this allowlist exists so a new field has to be looked at. It
+            # maps an IBKR secType ("OPT"/"STK") to an observed market-data
+            # quality ("live"/"delayed"/...), both drawn from the API's own
+            # marketDataType callback. No account id, username or secret can
+            # reach it.
+            "market_data_quality_by_security_type",
         }
 
 
