@@ -5,7 +5,7 @@ the same window as production at all. None of them is about whether V4.2 makes
 good decisions; all of them are about whether V4.2 can hurt V4.1.
 """
 
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 
 import pytest
@@ -537,3 +537,83 @@ class TestProspectiveOnly:
         assert summary.skipped_historical == 1
         frozen = db_session.query(V42ChallengerDecision).all()
         assert [d.ticker for d in frozen] == ["MIXNW"]
+
+
+# --- the challenger phase must appear in window telemetry (2026-10-15) --
+#
+# Phase 2 opens real market-data subscriptions per event, so the challenger
+# phase became a material share of the window the moment it was activated.
+# Measured on the 2026-10-12 production window: the decision phase recorded
+# 210s while Phase 2 alone spent 471s, and only the decision row existed --
+# so Operations reported 17.5% of the 1200s budget where the truth was over
+# half. Capacity is the known Phase-2 risk, and this is the number an
+# operator watches it with.
+
+
+class TestTheChallengerPhaseIsMeasured:
+    def _run(self, db, **settings_overrides):  # noqa: D401
+        from services.v4_shadow_scheduler import run_forward_window
+
+        captured: list = []
+        ticks = iter(
+            [WINDOW, WINDOW, WINDOW, WINDOW + timedelta(seconds=7), WINDOW + timedelta(seconds=7)]
+        )
+        last = {"t": WINDOW}
+
+        def clock():
+            try:
+                last["t"] = next(ticks)
+            except StopIteration:
+                pass
+            return last["t"]
+
+        run_forward_window(
+            db,
+            _settings(**{"v4_2_parallel_enabled": True, **settings_overrides}),
+            provider=None,
+            now=WINDOW,
+            clock=clock,
+            candidate_events=[],
+            deadline=None,
+            scheduled_at=WINDOW,
+            job_started_at=WINDOW,
+            on_telemetry=captured.append,
+        )
+        return captured
+
+    def test_a_challenger_row_is_emitted_alongside_the_decision_row(self, db_session):
+        _control(db_session, "ZZTM01")
+        captured = self._run(db_session)
+
+        phases = [t.phase for t in captured]
+        assert "challenger" in phases, (
+            f"the challenger phase must record its own window time; got {phases}"
+        )
+
+    def test_the_challenger_row_carries_a_measured_duration(self, db_session):
+        _control(db_session, "ZZTM02")
+        captured = self._run(db_session)
+        row = next(t for t in captured if t.phase == "challenger")
+
+        assert row.total_ms is not None, "a phase recorded with no duration measures nothing"
+        assert row.total_ms >= 0
+        assert row.scheduled_at == WINDOW
+        assert row.outcome in ("completed", "skipped")
+
+    def test_exactly_one_challenger_row_and_it_displaces_nothing(self, db_session):
+        """Additive. The challenger gets its OWN row -- it is never folded
+        into the control's decision telemetry, which would make a
+        challenger cost look like a control cost."""
+        _control(db_session, "ZZTM03")
+        captured = self._run(db_session)
+
+        challenger = [t for t in captured if t.phase == "challenger"]
+        assert len(challenger) == 1, f"expected one challenger row, got {len(challenger)}"
+        # Every other row keeps its own phase; none was relabelled.
+        assert all(t.phase in ("settlement", "decision") for t in captured if t not in challenger)
+
+    def test_no_challenger_row_when_both_phases_are_disabled(self, db_session):
+        """The row follows the phase: no phase, no measurement to report."""
+        _control(db_session, "ZZTM04")
+        captured = self._run(db_session, v4_2_parallel_enabled=False)
+        assert [t for t in captured if t.phase == "challenger"] == []

@@ -468,6 +468,15 @@ class TwsStatusResponse(BaseModel):
     last_heartbeat: datetime | None
     reconnect_state: str
     upstream_lost_since: datetime | None = None
+    #: Observed entitlement per IBKR instrument class, e.g.
+    #: {"OPT": "live", "STK": "delayed"}. Market-data entitlements are per
+    #: feed: an account can hold OPRA for US options without holding every
+    #: equity network, so ``market_data_quality`` above -- a single
+    #: connection-wide last-seen value -- can report the class that happened
+    #: to be asked about most recently and is not a statement about
+    #: entitlement. Empty until a real marketDataType() callback has landed
+    #: for a class; never pre-populated from configuration.
+    market_data_quality_by_security_type: dict[str, str] = {}
 
 
 class TwsProductionSanityResponse(BaseModel):

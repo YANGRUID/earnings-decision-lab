@@ -4,7 +4,7 @@ this deployment's own database or settings, never an assumption about what
 should be there.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime
 
 from sqlalchemy import func
@@ -201,6 +201,13 @@ class TwsStatus:
     # Settings page needs for its headline state).
     last_heartbeat: datetime | None
     reconnect_state: str
+    #: Observed entitlement per instrument class, e.g. {"OPT": "live",
+    #: "STK": "delayed"}. A single scalar cannot express a real entitlement
+    #: set -- an account can hold OPRA (US options) without holding every
+    #: equity network -- and the scalar above is whichever class was asked
+    #: about most recently, which is not a statement about entitlement at
+    #: all. Empty until a real marketDataType() callback has landed.
+    market_data_quality_by_security_type: dict[str, str] = field(default_factory=dict)
     #: When IB Gateway lost its own link to IBKR, if it still has not
     #: reported it restored (see TWSHealthSnapshot.upstream_lost_since).
     upstream_lost_since: datetime | None = None
@@ -235,7 +242,11 @@ def tws_status_label(
     return "CONNECTED"
 
 
-def _status_from_snapshot(snapshot, provider_quality: str | None = None) -> TwsStatus:  # noqa: ANN001 -- TWSHealthSnapshot, avoids an import cycle note below
+def _status_from_snapshot(  # noqa: ANN001 -- TWSHealthSnapshot, avoids an import cycle
+    snapshot,
+    provider_quality: str | None = None,
+    provider_quality_by_sec_type: dict[str, str] | None = None,
+) -> TwsStatus:
     upstream_connected = getattr(snapshot, "upstream_connected", True)
     lost_since = getattr(snapshot, "upstream_lost_since", None)
     error = snapshot.last_error if not snapshot.api_ready else None
@@ -254,6 +265,10 @@ def _status_from_snapshot(snapshot, provider_quality: str | None = None) -> TwsS
         # connection has never seen a marketDataType callback -- see
         # get_tws_status's own docstring for the real reason.
         market_data_quality=snapshot.market_data_quality_last_seen or provider_quality,
+        market_data_quality_by_security_type=(
+            dict(snapshot.market_data_quality_by_security_type)
+            or dict(provider_quality_by_sec_type or {})
+        ),
         error=error,
         status_label=tws_status_label(
             configured=True,
@@ -313,11 +328,18 @@ def get_tws_status(
         )
 
     provider_quality: str | None = None
+    provider_quality_by_sec_type: dict[str, str] = {}
     if provider is not None:
-        provider_quality = provider._connection.health_snapshot().market_data_quality_last_seen  # noqa: SLF001
+        provider_snapshot = provider._connection.health_snapshot()  # noqa: SLF001
+        provider_quality = provider_snapshot.market_data_quality_last_seen
+        provider_quality_by_sec_type = dict(
+            getattr(provider_snapshot, "market_data_quality_by_security_type", {}) or {}
+        )
 
     if probe is not None:
-        return _status_from_snapshot(probe.snapshot(), provider_quality)
+        return _status_from_snapshot(
+            probe.snapshot(), provider_quality, provider_quality_by_sec_type
+        )
 
     connection = TWSConnectionManager(
         host=settings.ibkr_tws_host,
@@ -327,7 +349,9 @@ def get_tws_status(
     )
     try:
         connection.connect_and_start()
-        return _status_from_snapshot(connection.health_snapshot(), provider_quality)
+        return _status_from_snapshot(
+            connection.health_snapshot(), provider_quality, provider_quality_by_sec_type
+        )
     except IBKRError as exc:
         return TwsStatus(
             configured=True,

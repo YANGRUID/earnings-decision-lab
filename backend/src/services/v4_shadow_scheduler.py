@@ -573,6 +573,7 @@ def run_forward_window(
 
         if before_phase is not None:
             before_phase("challenger")
+        challenger_started_at = clock()
         try:
             summary.challenger = run_challenger_phase(
                 db,
@@ -589,6 +590,38 @@ def run_forward_window(
             )
         except Exception:  # noqa: BLE001 -- a challenger fault is never a control fault
             log.error("v4.2 challenger phase failed; control window unaffected", exc_info=True)
+
+        # Phase 2 opens real market-data subscriptions per event, so the
+        # challenger phase is now a material share of the window -- on
+        # 2026-10-12 it spent 471s against a decision phase of 210s. Without
+        # its own telemetry row the Operations window duration omitted the
+        # most expensive phase entirely, reporting 17.5% of the 1200s budget
+        # where the truth was over half. Recorded under phase="challenger"
+        # so it is additive: nothing reads the decision row differently.
+        if on_telemetry is not None:
+            challenger_completed_at = clock()
+            result = summary.challenger
+            on_telemetry(
+                SettlementTelemetry(
+                    phase="challenger",
+                    scheduled_at=scheduled_at,
+                    job_started_at=job_started_at,
+                    due_detected_at=challenger_started_at,
+                    completed_at=challenger_completed_at,
+                    total_ms=_ms(challenger_started_at, challenger_completed_at),
+                    outcome="completed" if result is not None else "skipped",
+                    detail=(
+                        None
+                        if result is None
+                        else (
+                            f"evaluated={result.evaluated} action={result.action} "
+                            f"no_action={result.no_action} failed={result.failed} "
+                            f"md_requests={result.market_data_requests} "
+                            f"reused={result.contracts_reused_from_control}"
+                        )
+                    ),
+                )
+            )
         if after_phase is not None:
             after_phase("challenger", summary.challenger)
     return summary
