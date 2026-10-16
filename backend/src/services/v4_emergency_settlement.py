@@ -24,7 +24,6 @@ from decimal import Decimal
 
 from sqlalchemy.orm import Session
 
-from analytics.market_session import EASTERN
 from models.enums import QuoteRequirement
 from models.v4_shadow import (
     V4ShadowCandidate,
@@ -39,10 +38,26 @@ from services.v4_settlement_fallback import (
     LegExitPrice,
     resolve_leg_exit_price,
 )
+from services.v4_settlement_sessions import (
+    SettlementSessionResolver,
+    eastern_date,
+    session_has_closed,
+)
 
 RECOVERY_PHASE = "EXIT_EOD"
+#: A recovery that runs on a LATER session than the one it settles needs its
+#: own evidence row. The unique index on (decision, candidate, phase) allows
+#: exactly one observation per phase, and a session whose own 16:30 attempt
+#: already failed has used EXIT_EOD up -- reusing that row silently attached
+#: recovered settlements to an observation that said NOT_EXECUTABLE and
+#: carried no closing marks at all (found on the JNJ rows, 2026-10-16).
+LATE_RECOVERY_PHASE = "EXIT_LATE_RECOVERY"
 RECOVERY_PROVENANCE = "LATE_SETTLEMENT_OVERRIDE"
 RECOVERY_UNRESOLVED = "MARKET_DATA_UNAVAILABLE_AFTER_EMERGENCY_RETRY"
+#: Why a leg took no executable price on a cross-session recovery: a quote
+#: taken now is NOW's price, and for a position due in an earlier session
+#: that is not a late fill, it is a different trade.
+REQUOTE_SUPPRESSED_CROSS_SESSION = "requote_suppressed_cross_session"
 
 
 @dataclass
@@ -69,36 +84,40 @@ class RecoverySummary:
     unresolved: int = 0
     settled_at: str | None = None
     skipped_already_settled: int = 0
+    #: Configurations left alone because both recovery evidence phases are
+    #: already used -- see _free_observation_phase.
+    skipped_exhausted: int = 0
     candidate_rows: list[dict] = field(default_factory=list)
     config_rows: list[dict] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
 
 
-def _session_has_closed(now: datetime, session_date: date) -> bool:
-    """True once the regular US session on ``session_date`` has ended.
+def _free_observation_phase(db: Session, decision_id: int, candidate_id: str) -> str | None:
+    """A free observation-phase slot for THIS recovery's own evidence.
 
-    A closing mark that does not yet exist must not be used as one; this is
-    what keeps MARKET_CLOSE_FALLBACK meaning what the released methodology
-    says it means.
+    (decision, candidate, phase) is unique, so a recovery cannot share a
+    phase with an earlier attempt -- and must not, because that earlier row
+    is the immutable record of what that attempt saw. EXIT_EOD is used by
+    the first recovery of a candidate and EXIT_LATE_RECOVERY by a second;
+    beyond that there is no slot, and the caller leaves the position open
+    rather than settling it with nowhere to put the provenance.
     """
-    from analytics.earnings_timing import EASTERN  # noqa: PLC0415
-
-    local = now.astimezone(EASTERN)
-    if local.date() > session_date:
-        return True
-    if local.date() < session_date:
-        return False
-    return (local.hour, local.minute) >= (16, 0)
-
-
-def _eastern_date(moment: datetime) -> date:
-    return moment.astimezone(EASTERN).date()
+    taken = {
+        row.phase
+        for row in db.query(V4ShadowCandidateObservation)
+        .filter_by(shadow_decision_id=decision_id, candidate_id=candidate_id)
+        .all()
+    }
+    for phase in (RECOVERY_PHASE, LATE_RECOVERY_PHASE):
+        if phase not in taken:
+            return phase
+    return None
 
 
-def _pending_configs(db: Session, session_date: date) -> list[V4ShadowConfigSettlement]:
-    """The configurations whose scheduled attempt ran on ``session_date`` and
-    is still not settled. A configuration that already has ANY settled row
-    is never returned -- that is the idempotency guarantee."""
+def _unsettled_attempts(db: Session) -> list[V4ShadowConfigSettlement]:
+    """The earliest still-open failed attempt per configuration, oldest
+    first. A configuration that already has ANY settled row is never
+    returned -- that is the idempotency guarantee."""
     settled_result_ids = {
         r.shadow_config_result_id
         for r in db.query(V4ShadowConfigSettlement).filter(
@@ -116,11 +135,46 @@ def _pending_configs(db: Session, session_date: date) -> list[V4ShadowConfigSett
             continue
         if row.shadow_config_result_id in seen:
             continue
-        if _eastern_date(row.settled_at) != session_date:
-            continue
         seen.add(row.shadow_config_result_id)
         out.append(row)
     return out
+
+
+def _pending_configs(
+    db: Session, session_date: date, resolver: SettlementSessionResolver
+) -> list[V4ShadowConfigSettlement]:
+    """The still-unsettled configurations whose LEGAL settlement session is
+    ``session_date``.
+
+    The session comes from the calendar event via the active timing policy,
+    never from when the failed attempt happened to be stamped: see
+    services/v4_settlement_sessions.py for the NKE case where those differ
+    by three sessions and the stamp-based match could never recover.
+    """
+    out: list[V4ShadowConfigSettlement] = []
+    for row in _unsettled_attempts(db):
+        decision = db.get(V4ShadowDecision, row.shadow_decision_id)
+        if decision is None:
+            continue
+        if resolver.for_event(decision.earnings_calendar_event_id) != session_date:
+            continue
+        out.append(row)
+    return out
+
+
+def pending_settlement_sessions(db: Session) -> list[date]:
+    """Every legal settlement session that still has an unsettled control
+    configuration, oldest first -- what a catch-up sweep iterates."""
+    resolver = SettlementSessionResolver(db)
+    sessions: set[date] = set()
+    for row in _unsettled_attempts(db):
+        decision = db.get(V4ShadowDecision, row.shadow_decision_id)
+        if decision is None:
+            continue
+        resolved = resolver.for_event(decision.earnings_calendar_event_id)
+        if resolved is not None:
+            sessions.add(resolved)
+    return sorted(sessions)
 
 
 def recover_due_settlements(
@@ -140,17 +194,52 @@ def recover_due_settlements(
     # MARKET_CLOSE_FALLBACK would claim a finality the session has not
     # reached. Executable prices are unaffected -- those are still preferred
     # and still settle mid-session.
-    session_close_is_final = _session_has_closed(now, session_date)
+    session_close_is_final = session_has_closed(now, session_date)
     if not session_close_is_final:
         summary.notes.append(
             f"session {session_date.isoformat()} has not closed at {now.isoformat()}: "
             "executable sides are settled now, and any leg with an empty book is left "
             "unresolved for a post-close retry rather than priced from an intraday bar"
         )
+    # Is this recovery running on the session it is settling, or later?
+    same_session = eastern_date(now) == session_date
+    if not same_session:
+        summary.notes.append(
+            f"cross-session recovery: settling session {session_date.isoformat()} from "
+            f"{eastern_date(now).isoformat()}, so no leg is requoted -- the only "
+            "executable prices admitted are the ones the original legal window captured"
+        )
 
-    pending = _pending_configs(db, session_date)
+    resolver = SettlementSessionResolver(db)
+    pending = _pending_configs(db, session_date, resolver)
     if not pending:
         summary.notes.append("no unsettled configurations due on this session date")
+        return summary
+
+    # A candidate with no free evidence phase has already had its two
+    # recovery attempts; it is dropped from the work set entirely rather
+    # than re-priced. That is what makes a catch-up sweep idempotent: no
+    # further market-data calls, and no third failed settlement row piling
+    # up on a position that is simply not recoverable.
+    phases: dict[tuple[int, str], str] = {}
+    exhausted: list[V4ShadowConfigSettlement] = []
+    for row in pending:
+        key = (row.shadow_decision_id, row.candidate_id)
+        if key not in phases:
+            free = _free_observation_phase(db, key[0], key[1])
+            if free is None:
+                exhausted.append(row)
+                continue
+            phases[key] = free
+    if exhausted:
+        pending = [row for row in pending if row not in exhausted]
+        summary.skipped_exhausted = len(exhausted)
+        summary.notes.append(
+            f"{len(exhausted)} configuration(s) skipped: both recovery evidence phases "
+            "are already used, so a further attempt could not persist its own "
+            "closing-mark provenance"
+        )
+    if not pending:
         return summary
 
     decisions: dict[int, V4ShadowDecision] = {}
@@ -223,22 +312,25 @@ def recover_due_settlements(
     for conid, key in unique_conids.items():
         candidate = candidates[key]
         decision = decisions[key[0]]
-        try:
-            fetched = provider.get_quotes_for_known_contracts(
-                decision.ticker,
-                [
-                    _known_contract(leg)
-                    for leg in legs_by_candidate[key]
-                    if leg.conid == conid
-                ],
-                candidate.expiration,
-                now,
-            )
-            summary.quote_calls += 1
-            if fetched:
-                quotes[conid] = fetched[0]
-        except Exception as exc:  # noqa: BLE001 -- one contract must not stop the rest
-            summary.notes.append(f"quote failed for conId {conid}: {type(exc).__name__}: {exc}")
+        if same_session:
+            try:
+                fetched = provider.get_quotes_for_known_contracts(
+                    decision.ticker,
+                    [
+                        _known_contract(leg)
+                        for leg in legs_by_candidate[key]
+                        if leg.conid == conid
+                    ],
+                    candidate.expiration,
+                    now,
+                )
+                summary.quote_calls += 1
+                if fetched:
+                    quotes[conid] = fetched[0]
+            except Exception as exc:  # noqa: BLE001 -- one contract must not stop the rest
+                summary.notes.append(
+                    f"quote failed for conId {conid}: {type(exc).__name__}: {exc}"
+                )
         try:
             close_value, close_source = provider.get_session_close_with_source(
                 int(conid), session_date
@@ -316,6 +408,10 @@ def recover_due_settlements(
                 resolution.provenance["executable_observed_at"] = (
                     prior_row.get("retrieved_at") if captured is not None else now.isoformat()
                 )
+            if not same_session:
+                resolution.provenance["requote"] = REQUOTE_SUPPRESSED_CROSS_SESSION
+            resolution.provenance["settlement_session"] = session_date.isoformat()
+            resolution.provenance["closing_mark_source"] = close_sources.get(leg.conid or "")
             leg.resolution = resolution
             if quality:
                 qualities.add(quality)
@@ -355,18 +451,12 @@ def recover_due_settlements(
         method = "+".join(sorted(sources)) if sources else None
         method_by_candidate[key] = method
         obs = None
+        obs_phase = phases[key]
         if not dry_run:
-            existing = (
-                db.query(V4ShadowCandidateObservation)
-                .filter_by(
-                    shadow_decision_id=key[0], candidate_id=key[1], phase=RECOVERY_PHASE
-                )
-                .one_or_none()
-            )
-            obs = existing or V4ShadowCandidateObservation(
+            obs = V4ShadowCandidateObservation(
                 shadow_decision_id=key[0],
                 candidate_id=key[1],
-                phase=RECOVERY_PHASE,
+                phase=obs_phase,
                 observed_at=now,
                 status="NOT_EXECUTABLE" if unresolved else "OBSERVED",
                 failure_category=RECOVERY_UNRESOLVED if unresolved else None,
@@ -389,10 +479,12 @@ def recover_due_settlements(
                     "pricing_convention": method or RECOVERY_UNRESOLVED,
                     "recovery_provenance": RECOVERY_PROVENANCE,
                     "session_date": session_date.isoformat(),
+                    "settlement_session_source": "calendar_event+active_timing_policy",
+                    "recovered_on_session": eastern_date(now).isoformat(),
+                    "requote": None if same_session else REQUOTE_SUPPRESSED_CROSS_SESSION,
                 },
             )
-            if existing is None:
-                db.add(obs)
+            db.add(obs)
         observations[key] = obs
         summary.candidate_rows.append(
             {
@@ -400,9 +492,11 @@ def recover_due_settlements(
                 "candidate_id": key[1],
                 "expiration": candidate.expiration.isoformat(),
                 "expires_on_settlement_date": expires_today,
+                "settlement_session": session_date.isoformat(),
+                "evidence_phase": obs_phase,
                 "unresolved_legs": unresolved,
                 "pricing_method": method,
-                "net_exit_per_unit": None if unresolved else str(net),
+                "net_exit_per_unit": None if net_by_candidate[key] is None else str(net),
                 "legs": rows,
             }
         )
@@ -539,10 +633,13 @@ def _known_contract(leg: RecoveryLeg):
 
 __all__ = [
     "FALLBACK_PRICING_SOURCES",
+    "LATE_RECOVERY_PHASE",
     "QuoteRequirement",
     "RECOVERY_PHASE",
     "RECOVERY_PROVENANCE",
     "RECOVERY_UNRESOLVED",
+    "REQUOTE_SUPPRESSED_CROSS_SESSION",
     "RecoverySummary",
+    "pending_settlement_sessions",
     "recover_due_settlements",
 ]

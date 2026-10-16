@@ -42,8 +42,17 @@ from models.v4_2_challenger import (
     V42ChallengerDecision,
 )
 from providers.types import KnownContract
+from services.v4_emergency_settlement import (
+    LATE_RECOVERY_PHASE,
+    REQUOTE_SUPPRESSED_CROSS_SESSION,
+)
 from services.v4_settlement_fallback import resolve_leg_exit_price
 from services.v4_settlement_quality import settlement_grade
+from services.v4_settlement_sessions import (
+    SettlementSessionResolver,
+    eastern_date,
+    session_has_closed,
+)
 
 log = logging.getLogger("services.v4_2_challenger_recovery")
 
@@ -62,13 +71,16 @@ class ChallengerRecoverySummary:
     close_lookups: int = 0
     settled: int = 0
     unresolved: int = 0
+    #: Configurations left alone because both recovery evidence phases are
+    #: already used -- see _free_observation_phase.
+    skipped_exhausted: int = 0
     rows: list[dict] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
 
 
-def _pending_entries(db: Session, session_date: date) -> list[V42ChallengerConfigEntry]:
-    """Challenger positions observed at entry, with a failed settlement attempt
-    on this session and no settlement of record."""
+def _unsettled_entries(db: Session) -> list[V42ChallengerConfigEntry]:
+    """Challenger positions observed at entry, with at least one failed
+    settlement attempt and no settlement of record -- of any age."""
     settled_ids = {
         r[0]
         for r in db.query(V42ChallengerConfigSettlement.challenger_config_result_id).filter(
@@ -93,6 +105,62 @@ def _pending_entries(db: Session, session_date: date) -> list[V42ChallengerConfi
     )
 
 
+def _pending_entries(
+    db: Session, session_date: date, resolver: SettlementSessionResolver
+) -> list[V42ChallengerConfigEntry]:
+    """The stranded challenger positions whose LEGAL settlement session is
+    ``session_date``.
+
+    This scoping is the fix for a real incident (2026-10-16): without it the
+    daily 16:30 job swept EVERY stranded challenger position, of any age, and
+    priced them all from the session it happened to run in -- settling JNJ,
+    due 2026-10-13, from the 2026-10-16 close. The control has always scoped
+    its recovery; the challenger never did.
+    """
+    out: list[V42ChallengerConfigEntry] = []
+    for entry in _unsettled_entries(db):
+        decision = db.get(V42ChallengerDecision, entry.challenger_decision_id)
+        if decision is None:
+            continue
+        if resolver.for_event(decision.earnings_calendar_event_id) != session_date:
+            continue
+        out.append(entry)
+    return out
+
+
+def pending_settlement_sessions(db: Session) -> list[date]:
+    """Every legal settlement session that still has a stranded challenger
+    position, oldest first."""
+    resolver = SettlementSessionResolver(db)
+    sessions: set[date] = set()
+    for entry in _unsettled_entries(db):
+        decision = db.get(V42ChallengerDecision, entry.challenger_decision_id)
+        if decision is None:
+            continue
+        resolved = resolver.for_event(decision.earnings_calendar_event_id)
+        if resolved is not None:
+            sessions.add(resolved)
+    return sorted(sessions)
+
+
+def _free_observation_phase(db: Session, decision_id: int, candidate_id: str) -> str | None:
+    """A free observation-phase slot for this recovery's own evidence -- the
+    challenger twin of the control's rule, and for the same reason: the
+    (decision, candidate, phase) index allows one row per phase, and an
+    earlier attempt's row is the immutable record of what that attempt
+    saw."""
+    taken = {
+        row.phase
+        for row in db.query(V42ChallengerCandidateObservation)
+        .filter_by(challenger_decision_id=decision_id, candidate_id=candidate_id)
+        .all()
+    }
+    for phase in (RECOVERY_PHASE, LATE_RECOVERY_PHASE):
+        if phase not in taken:
+            return phase
+    return None
+
+
 def recover_challenger_settlements(
     db: Session,
     *,
@@ -108,9 +176,51 @@ def recover_challenger_settlements(
     now = now or datetime.now(UTC)
     summary = ChallengerRecoverySummary(session_date=session_date, dry_run=dry_run)
 
-    pending = _pending_entries(db, session_date)
+    session_close_is_final = session_has_closed(now, session_date)
+    if not session_close_is_final:
+        summary.notes.append(
+            f"session {session_date.isoformat()} has not closed at {now.isoformat()}: "
+            "an intraday bar is a real same-session price but not a closing mark, so "
+            "an empty-book leg waits for a post-close retry"
+        )
+    same_session = eastern_date(now) == session_date
+    if not same_session:
+        summary.notes.append(
+            f"cross-session recovery: settling session {session_date.isoformat()} from "
+            f"{eastern_date(now).isoformat()}, so no leg is requoted -- the only "
+            "executable prices admitted are the ones the original legal window captured"
+        )
+
+    resolver = SettlementSessionResolver(db)
+    pending = _pending_entries(db, session_date, resolver)
     if not pending:
-        summary.notes.append("no unsettled challenger configurations")
+        summary.notes.append("no unsettled challenger configurations due in this session")
+        return summary
+
+    # Same rule as the control: a candidate whose two recovery evidence
+    # phases are both used is dropped from the work set, so a catch-up sweep
+    # is idempotent and never accumulates further failed rows.
+    phases: dict[tuple[int, str], str] = {}
+    kept: list[V42ChallengerConfigEntry] = []
+    skipped = 0
+    for entry in pending:
+        key = (entry.challenger_decision_id, entry.candidate_id)
+        if key not in phases:
+            free = _free_observation_phase(db, key[0], key[1])
+            if free is None:
+                skipped += 1
+                continue
+            phases[key] = free
+        kept.append(entry)
+    if skipped:
+        summary.skipped_exhausted = skipped
+        summary.notes.append(
+            f"{skipped} configuration(s) skipped: both recovery evidence phases are "
+            "already used, so a further attempt could not persist its own "
+            "closing-mark provenance"
+        )
+    pending = kept
+    if not pending:
         return summary
 
     by_candidate: dict[tuple[int, str], list[dict]] = {}
@@ -174,25 +284,28 @@ def recover_challenger_settlements(
         )
         if matching is None:
             continue
-        try:
-            fetched = provider.get_quotes_for_known_contracts(
-                decision.ticker,
-                [
-                    KnownContract(
-                        strike=Decimal(str(matching["strike"])),
-                        option_type=str(matching["right"]),
-                        external_contract_id=conid,
-                        action=str(matching["action"]),
-                    )
-                ],
-                entry.expiration,
-                now,
-            )
-            summary.quote_calls += 1
-            if fetched:
-                quotes[conid] = fetched[0]
-        except Exception as exc:  # noqa: BLE001 -- one contract must not stop the rest
-            summary.notes.append(f"quote failed for conId {conid}: {type(exc).__name__}: {exc}")
+        if same_session:
+            try:
+                fetched = provider.get_quotes_for_known_contracts(
+                    decision.ticker,
+                    [
+                        KnownContract(
+                            strike=Decimal(str(matching["strike"])),
+                            option_type=str(matching["right"]),
+                            external_contract_id=conid,
+                            action=str(matching["action"]),
+                        )
+                    ],
+                    entry.expiration,
+                    now,
+                )
+                summary.quote_calls += 1
+                if fetched:
+                    quotes[conid] = fetched[0]
+            except Exception as exc:  # noqa: BLE001 -- one contract must not stop the rest
+                summary.notes.append(
+                    f"quote failed for conId {conid}: {type(exc).__name__}: {exc}"
+                )
         try:
             value, source = provider.get_session_close_with_source(int(conid), session_date)
             closes[conid] = value
@@ -260,11 +373,16 @@ def recover_challenger_settlements(
                     getattr(quote, f"{side}_book_empty", None) if quote is not None else None
                 ),
                 market_data_quality=quality,
+                session_close_is_final=session_close_is_final,
             )
             if resolution.is_executable:
                 resolution.provenance["executable_source"] = (
                     "scheduled_window_capture" if captured is not None else "recovery_requote"
                 )
+            if not same_session:
+                resolution.provenance["requote"] = REQUOTE_SUPPRESSED_CROSS_SESSION
+            resolution.provenance["settlement_session"] = session_date.isoformat()
+            resolution.provenance["closing_mark_source"] = close_sources.get(conid)
             if quality:
                 qualities.add(quality)
             if resolution.resolved and resolution.price is not None:
@@ -306,16 +424,12 @@ def recover_challenger_settlements(
         method_by_key[key] = method
 
         obs = None
+        obs_phase = phases[key]
         if not dry_run:
-            existing = (
-                db.query(V42ChallengerCandidateObservation)
-                .filter_by(challenger_decision_id=key[0], candidate_id=key[1], phase=RECOVERY_PHASE)
-                .one_or_none()
-            )
-            obs = existing or V42ChallengerCandidateObservation(
+            obs = V42ChallengerCandidateObservation(
                 challenger_decision_id=key[0],
                 candidate_id=key[1],
-                phase=RECOVERY_PHASE,
+                phase=obs_phase,
                 observed_at=now,
                 status="NOT_EXECUTABLE" if unresolved else "OBSERVED",
                 failure_category=RECOVERY_UNRESOLVED if unresolved else None,
@@ -347,10 +461,12 @@ def recover_challenger_settlements(
                     "pricing_convention": method or RECOVERY_UNRESOLVED,
                     "recovery_provenance": RECOVERY_PROVENANCE,
                     "session_date": session_date.isoformat(),
+                    "settlement_session_source": "calendar_event+active_timing_policy",
+                    "recovered_on_session": eastern_date(now).isoformat(),
+                    "requote": None if same_session else REQUOTE_SUPPRESSED_CROSS_SESSION,
                 },
             )
-            if existing is None:
-                db.add(obs)
+            db.add(obs)
         observations[key] = obs
     if not dry_run:
         db.flush()
