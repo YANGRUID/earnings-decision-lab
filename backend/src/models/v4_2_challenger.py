@@ -444,7 +444,7 @@ class V42ChallengerCandidateObservation(Base):
         ForeignKey("v4_2_challenger_decision.id"), nullable=False
     )
     candidate_id: Mapped[str] = mapped_column(String(128), nullable=False)
-    phase: Mapped[str] = mapped_column(String(8), nullable=False)
+    phase: Mapped[str] = mapped_column(String(24), nullable=False)
     observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     status: Mapped[str] = mapped_column(String(24), nullable=False)
     failure_category: Mapped[str | None] = mapped_column(String(48))

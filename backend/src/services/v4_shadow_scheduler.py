@@ -48,7 +48,7 @@ import logging
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import TYPE_CHECKING, Any, cast
 
 from core.config import get_settings
@@ -877,24 +877,53 @@ def _decision_phase_row(
 
 V4_EOD_SETTLEMENT_FALLBACK_JOB_ID = "v4_eod_settlement_fallback"
 
+#: How far back a catch-up sweep will reach for a session it has never
+#: managed to settle. Bounded on purpose: an option's own closing marks stop
+#: being served by IBKR once the contract expires (measured 2026-10-16 --
+#: PEP's 10-09 contracts returned no data for their own 10-08 session), so a
+#: longer window buys nothing and only re-probes dead contracts. Ten calendar
+#: days covers a long weekend plus a multi-session gateway outage.
+RECOVERY_CATCHUP_LOOKBACK_DAYS = 10
+
+
+def _catchup_sessions(pending: list[date], today: date) -> list[date]:
+    """The sessions a sweep will attempt: everything still unsettled inside
+    the lookback, oldest first, plus today itself."""
+    floor = today - timedelta(days=RECOVERY_CATCHUP_LOOKBACK_DAYS)
+    wanted = {s for s in pending if floor <= s <= today}
+    wanted.add(today)
+    return sorted(wanted)
+
 
 def run_v4_eod_settlement_fallback_job(*, now: datetime | None = None) -> None:
     """The post-close job that stops a position being stranded by an empty
     book (authorized 2026-09-04).
 
     The 15:30 window settles at real executable prices and is unchanged.
-    This runs after the close, over the SAME session's still-unsettled due
-    configurations only, and applies the explicit end-of-day hierarchy in
-    services/v4_settlement_fallback.py: a captured executable side first,
+    This runs after the close and applies the explicit end-of-day hierarchy
+    in services/v4_settlement_fallback.py: a captured executable side first,
     then that contract's own same-session closing mark, then -- only for a
     contract expiring that day -- expiration intrinsic against the official
     underlying close.
 
+    It sweeps today's session AND any earlier session inside
+    RECOVERY_CATCHUP_LOOKBACK_DAYS that still has an unsettled position,
+    pricing each one from ITS OWN close. Before 2026-10-16 this job only ever
+    looked at the session it ran in, so a day when the gateway was down at
+    both 15:30 and 16:30 stranded its positions permanently -- which is
+    exactly what happened on 2026-10-13 and, for a weekend-slept Mac, on
+    2026-10-02. A fallback that cannot outlive the outage that triggered it
+    is not a fallback.
+
     Append-only and idempotent: a configuration that already has a settled
-    row is skipped, so a repeat run is a no-op. Never raises; every outcome
-    is recorded as run evidence.
+    row is skipped, and a candidate that has used both recovery evidence
+    phases is dropped from the work set, so a repeat run is a no-op. Never
+    raises; every outcome is recorded as run evidence.
     """
-    from services.v4_emergency_settlement import recover_due_settlements  # noqa: PLC0415
+    from services.v4_emergency_settlement import (  # noqa: PLC0415
+        pending_settlement_sessions,
+        recover_due_settlements,
+    )
 
     resolved_now = now or datetime.now(UTC)
     db = SessionLocal()
@@ -911,16 +940,30 @@ def run_v4_eod_settlement_fallback_job(*, now: datetime | None = None) -> None:
         from analytics.earnings_timing import EASTERN  # noqa: PLC0415
 
         session_date = resolved_now.astimezone(EASTERN).date()
+        considered = succeeded = failed = 0
+        sessions = _catchup_sessions(pending_settlement_sessions(db), session_date)
         # The market-data lock covers the quote/closing-mark sweep, exactly
         # as the 15:30 window's own settlement phase does.
-        with V4_MARKET_DATA_LOCK:
-            summary = recover_due_settlements(
-                db,
-                provider=provider,
-                session_date=session_date,
-                now=resolved_now,
-                dry_run=False,
-            )
+        for target in sessions:
+            with V4_MARKET_DATA_LOCK:
+                summary = recover_due_settlements(
+                    db,
+                    provider=provider,
+                    session_date=target,
+                    now=resolved_now,
+                    dry_run=False,
+                )
+            considered += summary.candidates_considered
+            succeeded += summary.settled
+            failed += summary.unresolved
+            if summary.candidates_considered:
+                log.info(
+                    "v4.1 eod recovery session=%s considered=%d settled=%d unresolved=%d",
+                    target.isoformat(),
+                    summary.candidates_considered,
+                    summary.settled,
+                    summary.unresolved,
+                )
         # V4.2 parity (Section 84): the SAME released fallback recovers a
         # stranded challenger position, with the same hierarchy and the same
         # provenance labels. Isolated: a challenger recovery failure never
@@ -929,24 +972,33 @@ def run_v4_eod_settlement_fallback_job(*, now: datetime | None = None) -> None:
         if getattr(settings, "v4_2_parallel_enabled", False):
             try:
                 from services.v4_2_challenger_recovery import (  # noqa: PLC0415
+                    pending_settlement_sessions as challenger_pending_sessions,
+                )
+                from services.v4_2_challenger_recovery import (  # noqa: PLC0415
                     recover_challenger_settlements,
                 )
 
-                with V4_MARKET_DATA_LOCK:
-                    challenger = recover_challenger_settlements(
-                        db,
-                        provider=provider,
-                        session_date=session_date,
-                        now=resolved_now,
-                        dry_run=False,
-                    )
-                db.commit()
-                log.info(
-                    "v4.2 challenger eod recovery: considered=%d settled=%d unresolved=%d",
-                    challenger.candidates_considered,
-                    challenger.settled,
-                    challenger.unresolved,
-                )
+                for target in _catchup_sessions(
+                    challenger_pending_sessions(db), session_date
+                ):
+                    with V4_MARKET_DATA_LOCK:
+                        challenger = recover_challenger_settlements(
+                            db,
+                            provider=provider,
+                            session_date=target,
+                            now=resolved_now,
+                            dry_run=False,
+                        )
+                    db.commit()
+                    if challenger.candidates_considered:
+                        log.info(
+                            "v4.2 challenger eod recovery session=%s considered=%d "
+                            "settled=%d unresolved=%d",
+                            target.isoformat(),
+                            challenger.candidates_considered,
+                            challenger.settled,
+                            challenger.unresolved,
+                        )
             except Exception:  # noqa: BLE001 -- never the control's problem
                 log.error("v4.2 challenger eod recovery failed", exc_info=True)
 
@@ -954,9 +1006,9 @@ def run_v4_eod_settlement_fallback_job(*, now: datetime | None = None) -> None:
             db,
             run,
             status=RUN_STATUS_SUCCESS,
-            items_evaluated=summary.candidates_considered,
-            items_succeeded=summary.settled,
-            items_failed=summary.unresolved,
+            items_evaluated=considered,
+            items_succeeded=succeeded,
+            items_failed=failed,
         )
     except Exception as exc:  # noqa: BLE001 -- a fallback failure must never take the scheduler down
         log.exception("v4 end-of-day settlement fallback failed")

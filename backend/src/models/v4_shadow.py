@@ -381,8 +381,8 @@ class V4ShadowObservation(Base):
     shadow_decision_id: Mapped[int] = mapped_column(
         ForeignKey("v4_shadow_decision.id"), nullable=False, index=True
     )
-    #: "ENTRY" | "EXIT"
-    phase: Mapped[str] = mapped_column(String(8), nullable=False, index=True)
+    #: "ENTRY" | "EXIT" | "EXIT_EOD" | "EXIT_LATE_RECOVERY"
+    phase: Mapped[str] = mapped_column(String(24), nullable=False, index=True)
     candidate_id: Mapped[str] = mapped_column(String(128), nullable=False)
 
     observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

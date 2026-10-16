@@ -67,3 +67,70 @@ def eod_settlement_recovery(
         "candidates": summary.candidate_rows,
         "configurations": summary.config_rows,
     }
+
+
+@router.post("/challenger-eod-recovery", response_model=None)
+def challenger_eod_settlement_recovery(
+    db: DbSession,
+    tws_provider: TwsProviderDep,
+    session_date: str,
+    confirm: str = "",
+) -> dict:
+    """The V4.2 twin of the route above, for both challenger phases.
+
+    Parity, not privilege (Section 84): the same released hierarchy, the same
+    provenance labels, the same append-only guarantees. Separate route only
+    because the control and the challenger live in different tables; a single
+    ``confirm=APPEND`` never crosses from one to the other.
+    """
+    from services.v4_2_challenger_recovery import (  # noqa: PLC0415
+        recover_challenger_settlements,
+    )
+
+    if tws_provider is None:
+        raise InvalidRequestError("no shared TWS provider on this process")
+    try:
+        target = date.fromisoformat(session_date)
+    except ValueError as exc:
+        raise InvalidRequestError("session_date must be YYYY-MM-DD") from exc
+
+    summary = recover_challenger_settlements(
+        db,
+        provider=tws_provider,
+        session_date=target,
+        now=datetime.now(UTC),
+        dry_run=confirm != "APPEND",
+    )
+    if confirm == "APPEND":
+        db.commit()
+    return {
+        "session_date": summary.session_date.isoformat(),
+        "dry_run": summary.dry_run,
+        "candidates_considered": summary.candidates_considered,
+        "unique_contracts": summary.unique_contracts,
+        "quote_calls": summary.quote_calls,
+        "close_lookups": summary.close_lookups,
+        "settled": summary.settled,
+        "unresolved": summary.unresolved,
+        "skipped_exhausted": summary.skipped_exhausted,
+        "notes": summary.notes,
+        "configurations": summary.rows,
+    }
+
+
+@router.get("/pending-sessions", response_model=None)
+def pending_recovery_sessions(db: DbSession) -> dict:
+    """READ-ONLY: which legal settlement sessions still hold an unsettled
+    position, per methodology. Opens no provider connection -- this is the
+    inventory an operator reads before authorizing a recovery."""
+    from services.v4_2_challenger_recovery import (  # noqa: PLC0415
+        pending_settlement_sessions as challenger_sessions,
+    )
+    from services.v4_emergency_settlement import (  # noqa: PLC0415
+        pending_settlement_sessions as control_sessions,
+    )
+
+    return {
+        "control": [s.isoformat() for s in control_sessions(db)],
+        "challenger": [s.isoformat() for s in challenger_sessions(db)],
+    }
