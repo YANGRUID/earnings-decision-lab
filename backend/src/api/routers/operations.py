@@ -26,6 +26,7 @@ from services.operations import (
     compute_forward_window,
     compute_research_readiness,
     compute_today_summary,
+    detect_ibkr_upstream_alerts,
     detect_missed_job_alerts,
     forward_pipeline,
     get_market_clock,
@@ -57,7 +58,7 @@ def get_operations_summary(
     today = compute_today_summary(db, pipeline)
     jobs = get_scheduler_jobs(db, scheduler_status)
     _, staleness = detect_missed_job_alerts(db, jobs, pipeline)
-    preflight = get_preflight_readiness(db, health, readiness, staleness)
+    preflight = get_preflight_readiness(db, health, readiness, staleness, pipeline=pipeline)
     return OperationsSummaryResponse(
         health=SystemHealthResponse.model_validate(health),
         today=V4TodaySummaryResponse.model_validate(today),
@@ -93,13 +94,24 @@ def get_operations_jobs(db: DbSession, scheduler: Scheduler) -> OperationsJobsRe
 
 
 @router.get("/failures", response_model=OperationsFailuresResponse)
-def get_operations_failures(db: DbSession, scheduler: Scheduler) -> OperationsFailuresResponse:
+def get_operations_failures(
+    db: DbSession,
+    scheduler: Scheduler,
+    tws_health_probe: TwsHealthProbeDep,
+    tws_provider: TwsProviderDep,
+) -> OperationsFailuresResponse:
     scheduler_status = get_scheduler_status(scheduler)
     pipeline = get_v4_pipeline(db, us_listing=default_us_listing())
     jobs = get_scheduler_jobs(db, scheduler_status)
     failures = get_recent_failures(db)
     alerts, _ = detect_missed_job_alerts(db, jobs, pipeline)
-    combined = sorted([*alerts, *failures], key=lambda f: f.occurred_at, reverse=True)
+    health = get_system_health(
+        db, get_settings(), scheduler_status, tws_health_probe, tws_provider
+    )
+    upstream = detect_ibkr_upstream_alerts(health)
+    combined = sorted(
+        [*upstream, *alerts, *failures], key=lambda f: f.occurred_at, reverse=True
+    )
     return OperationsFailuresResponse(failures=combined)  # type: ignore[arg-type]
 
 

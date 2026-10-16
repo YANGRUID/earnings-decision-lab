@@ -178,6 +178,13 @@ class IbkrHealth:
     last_heartbeat_at: datetime | None
     last_error: str | None
     provider: str
+    #: When IB Gateway last reported losing its own link to IBKR without
+    #: reporting it restored. ``connected`` above is the LOCAL socket to the
+    #: gateway, which stays up throughout such an outage -- on 2026-10-13 it
+    #: read True for 26 hours while no market data could be obtained at all,
+    #: so pre-flight passed and two forward windows were lost. Anything that
+    #: asks "can we observe the market right now" must read this too.
+    upstream_lost_since: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -631,6 +638,7 @@ def get_system_health(  # noqa: PLR0912, PLR0915 -- one aggregation, kept in one
             last_heartbeat_at=ibkr_run.started_at if ibkr_run else None,
             last_error=tws_status.error,
             provider="tws",
+            upstream_lost_since=tws_status.upstream_lost_since,
         )
     else:
         ibkr_status = get_ibkr_status(settings)
@@ -2119,6 +2127,58 @@ def detect_missed_job_alerts(
 
 
 # ---------------------------------------------------------------------------
+# IBKR upstream loss -- the failure mode that costs whole windows
+# ---------------------------------------------------------------------------
+
+#: How long IB Gateway may be disconnected from IBKR before Operations calls
+#: it critical. A genuine blip is reported and withdrawn within seconds (IBKR
+#: error 1100 followed by 1101/1102), and ``upstream_lost_since`` is only set
+#: while a loss is still UNRECOVERED -- so this grace exists only to avoid
+#: alarming on a reconnect that is already in flight.
+IBKR_UPSTREAM_LOSS_GRACE = timedelta(minutes=5)
+
+#: What an operator has to do about it. Re-login is interactive by design:
+#: IBKR requires a second factor, and nothing here tries to work around it.
+IBKR_UPSTREAM_REMEDY = "IBKR NOT READY -- USER LOGIN / 2FA REQUIRED on IB Gateway"
+
+
+def detect_ibkr_upstream_alerts(
+    health: SystemHealth, *, now: datetime | None = None
+) -> list[FailureEntry]:
+    """A P0 alert for as long as IB Gateway has no link to IBKR.
+
+    Added after the 2026-10-13 outage, which cost two forward windows and
+    stranded 42 settlements: the gateway lost IBKR at 17:06 UTC and said so
+    in its own status label for over a day, but nothing in Operations read
+    that label. The LOCAL socket stayed connected throughout, so every check
+    that asked ``ibkr.connected`` passed while no market data existed.
+    """
+    now = now or datetime.now(UTC)
+    lost_since = health.ibkr.upstream_lost_since
+    if lost_since is None:
+        return []
+    outage = now - lost_since
+    if outage < IBKR_UPSTREAM_LOSS_GRACE:
+        return []
+    hours = outage.total_seconds() / 3600
+    return [
+        FailureEntry(
+            occurred_at=lost_since,
+            symbol=None,
+            stage="ibkr_upstream",
+            category="ibkr_upstream_lost_critical",
+            explanation=(
+                f"CRITICAL (P0): IB Gateway has had no connection to IBKR for "
+                f"{hours:.1f}h. No decision, entry or settlement can observe the "
+                f"market until it is restored. {IBKR_UPSTREAM_REMEDY}"
+            ),
+            detail=health.ibkr.last_error,
+            retryability=RETRYABLE,
+        )
+    ]
+
+
+# ---------------------------------------------------------------------------
 # Pre-flight readiness for today's 15:30 ET window
 # ---------------------------------------------------------------------------
 
@@ -2143,11 +2203,22 @@ def get_preflight_readiness(
     readiness: ResearchReadiness,
     staleness: list[JobStaleness],
     *,
+    pipeline: list[V4PipelineEvent] | None = None,
     now: datetime | None = None,
 ) -> PreflightReadiness:
-    del db, now  # signature kept uniform with the other read models
+    now = now or datetime.now(UTC)
+    # A connected local socket is NOT market-data readiness: see
+    # IbkrHealth.upstream_lost_since. Both halves have to hold, and when the
+    # upstream half fails the detail says what the operator has to do.
+    upstream_ok = health.ibkr.upstream_lost_since is None
     checks = [
-        PreflightCheck("TWS market data connected", health.ibkr.connected, health.ibkr.last_error),
+        PreflightCheck(
+            "IBKR ready to observe the market",
+            health.ibkr.connected and upstream_ok,
+            IBKR_UPSTREAM_REMEDY
+            if not upstream_ok
+            else (health.ibkr.last_error or "socket connected, upstream live"),
+        ),
         PreflightCheck(
             "V4 DecisionView model configured",
             health.ai_provider.configured and not health.ai_provider.decision_view_config_error,
@@ -2178,8 +2249,43 @@ def get_preflight_readiness(
             ),
         )
     )
+    # Settlement pre-flight (Part S of the 2026-10-16 recovery brief): a due
+    # settlement has a legal window of its own, and a position that misses it
+    # can only ever be recovered from a closing mark -- never re-settled at
+    # the price it should have had. So the positions due next get their own
+    # check rather than riding on the decision window's.
+    due = _settlements_due_next(pipeline or [], now)
+    if due:
+        when, count = due
+        checks.append(
+            PreflightCheck(
+                "IBKR ready for the next due settlements",
+                health.ibkr.connected and upstream_ok,
+                (
+                    f"{count} position(s) settle at "
+                    f"{when.astimezone(EASTERN).strftime('%Y-%m-%d %H:%M')} ET"
+                    + ("" if upstream_ok else f" -- {IBKR_UPSTREAM_REMEDY}")
+                ),
+            )
+        )
     blockers = [c.label for c in checks if not c.passed]
     return PreflightReadiness(checks=checks, ready=not blockers, blockers=blockers)
+
+
+def _settlements_due_next(
+    pipeline: list[V4PipelineEvent], now: datetime
+) -> tuple[datetime, int] | None:
+    """The next settlement window that still has positions waiting, and how
+    many. ``None`` when nothing is waiting to settle."""
+    waiting = [
+        p
+        for p in pipeline
+        if p.lifecycle_state == STATE_WAITING_SETTLEMENT and p.exit_timestamp >= now
+    ]
+    if not waiting:
+        return None
+    soonest = min(p.exit_timestamp for p in waiting)
+    return soonest, sum(1 for p in waiting if p.exit_timestamp == soonest)
 
 
 # ---------------------------------------------------------------------------

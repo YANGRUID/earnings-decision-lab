@@ -1033,6 +1033,9 @@ class IbkrHealthResponse(BaseModel):
     # IBKR TWS Migration, Phase 3 readiness -- see services/operations.py
     # ::IbkrHealth's own comment. "web" for every deployment today.
     provider: str
+    #: Set while IB Gateway has no link to IBKR. Distinct from ``connected``,
+    #: which is only the local socket -- see IbkrHealth's own comment.
+    upstream_lost_since: datetime | None = None
 
 
 class CalendarProviderUsageResponse(BaseModel):
